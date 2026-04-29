@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Alternative Care · Manufacturing OS</title>
+<link rel="stylesheet" href="assets/css/styles.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90' font-family='Georgia' font-style='italic' fill='%235b7a5a'>a</text></svg>">
+</head>
+<body>
+
+<!-- LOGIN -->
+<div id="login-view" class="login-page hidden">
+  <div class="login-art">
+    <div class="login-art-content">
+      <div class="login-art-mark"><span>alt</span>care</div>
+      <div class="login-art-tag">Manufacturing OS · Venezuela</div>
+    </div>
+    <div class="login-quote">
+      Sistema integral de gestión para fabricación de cosméticos. Trazabilidad, control de calidad y operación multi-moneda en un solo lugar.
+    </div>
+    <div style="position:relative;font-size:11px;letter-spacing:0.16em;text-transform:uppercase;color:rgba(255,255,255,0.4);">
+      v1.0 · Fase 1
+    </div>
+  </div>
+  <div class="login-form-side">
+    <form class="login-form" id="login-form">
+      <h2>Iniciar sesión</h2>
+      <p class="lead">Ingresa con tus credenciales para acceder al sistema.</p>
+      <div class="field">
+        <label class="field-label">Usuario</label>
+        <input class="input" type="text" name="username" id="login-username" autocomplete="username" required>
+      </div>
+      <div class="field" style="margin-top:14px;">
+        <label class="field-label">Contraseña</label>
+        <input class="input" type="password" name="password" id="login-password" autocomplete="current-password" required>
+      </div>
+      <button type="submit" class="btn btn-primary" style="width:100%;justify-content:center;margin-top:20px;padding:11px;">
+        Entrar
+      </button>
+      <div class="login-roles">
+        <strong>Acceso por defecto</strong>
+        Usuario: <span class="role-chip" onclick="document.getElementById('login-username').value='admin';document.getElementById('login-password').value='admin';">admin / admin</span>
+        <div style="margin-top:8px;font-size:11px;">Cambia esta contraseña en Configuración después de iniciar sesión.</div>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- DASHBOARD se renderiza dinámicamente por ui.renderLayout -->
+
+<script src="assets/js/db.js"></script>
+<script src="assets/js/auth.js"></script>
+<script src="assets/js/currency.js"></script>
+<script src="assets/js/tax.js"></script>
+<script src="assets/js/ui.js"></script>
+<script>
+(function() {
+  if (auth.isLoggedIn()) {
+    renderDashboard();
+  } else {
+    document.getElementById('login-view').classList.remove('hidden');
+    document.getElementById('login-form').addEventListener('submit', e => {
+      e.preventDefault();
+      const u = document.getElementById('login-username').value.trim();
+      const p = document.getElementById('login-password').value;
+      const r = auth.login(u, p);
+      if (r.ok) {
+        renderDashboard();
+      } else {
+        ui.toast(r.error, 'error');
+      }
+    });
+  }
+})();
+
+function renderDashboard() {
+  document.getElementById('login-view')?.classList.add('hidden');
+
+  // KPIs
+  const rmCount = db.getAll(db.COLLECTIONS.rawMaterials).length;
+  const supplierCount = db.getAll(db.COLLECTIONS.suppliers).length;
+  const customerCount = db.getAll(db.COLLECTIONS.customers).length;
+  const formulaCount = db.getAll(db.COLLECTIONS.formulas).length;
+  const activeRate = currency.getActiveRate();
+  const rates = currency.getRates();
+  const cfg = db.getById(db.COLLECTIONS.config, 'main');
+
+  // Alertas
+  const alerts = [];
+  if (!cfg?.companyName) alerts.push({ type: 'warning', text: 'Configura los datos fiscales de tu empresa', link: 'modules/configuracion.html' });
+  if (!activeRate || !activeRate.value) alerts.push({ type: 'warning', text: 'Aún no hay una tasa de cambio activa', link: 'modules/tasas-cambio.html' });
+  if (db.getAll(db.COLLECTIONS.users).length === 1) alerts.push({ type: 'warning', text: 'Solo existe el usuario admin. Crea cuentas para tu equipo', link: 'modules/usuarios.html' });
+
+  const alertsHtml = alerts.length ? `
+    <div class="card" style="background:var(--warning-soft);border-color:#e6d4a8;margin-bottom:24px;">
+      <div class="section-title" style="color:var(--warning);margin-bottom:8px;">Pendientes de configuración</div>
+      ${alerts.map(a => `
+        <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 0;border-bottom:1px solid rgba(184,134,11,0.15);">
+          <span style="font-size:13.5px;color:var(--ink-2);">${a.text}</span>
+          <a href="${a.link}" class="btn btn-sm btn-secondary">Ir →</a>
+        </div>
+      `).join('')}
+    </div>
+  ` : '';
+
+  const ratesHtml = rates.map(r => `
+    <div class="list-row" style="grid-template-columns:1fr auto auto;">
+      <div>
+        <div class="list-row-title">${r.label}</div>
+        <div class="list-row-meta">Actualizada ${ui.formatDate(r.updatedDate)}</div>
+      </div>
+      <div class="text-mono text-strong" style="font-size:15px;">
+        ${r.value > 0 ? r.value.toFixed(2) + ' Bs' : '—'}
+      </div>
+      <div>${r.active ? '<span class="badge badge-accent">Activa</span>' : ''}</div>
+    </div>
+  `).join('');
+
+  const content = `
+    ${alertsHtml}
+
+    <div class="grid grid-4 mb-24">
+      <div class="kpi">
+        <div class="kpi-mark">${ui.icon('box')}</div>
+        <div class="kpi-label">Materias primas</div>
+        <div class="kpi-value">${rmCount}</div>
+        <div class="kpi-value-sub">referencias activas</div>
+      </div>
+      <div class="kpi">
+        <div class="kpi-mark">${ui.icon('flask')}</div>
+        <div class="kpi-label">Fórmulas</div>
+        <div class="kpi-value">${formulaCount}</div>
+        <div class="kpi-value-sub">recetas registradas</div>
+      </div>
+      <div class="kpi">
+        <div class="kpi-mark">${ui.icon('users')}</div>
+        <div class="kpi-label">Proveedores</div>
+        <div class="kpi-value">${supplierCount}</div>
+        <div class="kpi-value-sub">socios activos</div>
+      </div>
+      <div class="kpi">
+        <div class="kpi-mark">${ui.icon('users')}</div>
+        <div class="kpi-label">Clientes</div>
+        <div class="kpi-value">${customerCount}</div>
+        <div class="kpi-value-sub">cuentas registradas</div>
+      </div>
+    </div>
+
+    <div class="grid" style="grid-template-columns:2fr 1fr;gap:16px;">
+      <div class="card" style="padding:0;">
+        <div style="padding:20px 24px 16px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center;">
+          <div>
+            <div class="card-title">Tasas de cambio</div>
+            <div class="text-muted" style="font-size:12px;margin-top:2px;">Selecciona la tasa activa desde el módulo Tasas de Cambio</div>
+          </div>
+          <a href="modules/tasas-cambio.html" class="btn btn-secondary btn-sm">Gestionar</a>
+        </div>
+        <div>${ratesHtml}</div>
+      </div>
+
+      <div class="card">
+        <div class="card-title mb-16">Acciones rápidas</div>
+        <div style="display:flex;flex-direction:column;gap:8px;">
+          <a href="modules/materias-primas.html" class="btn btn-secondary" style="justify-content:flex-start;">${ui.icon('plus')} Registrar materia prima</a>
+          <a href="modules/proveedores.html" class="btn btn-secondary" style="justify-content:flex-start;">${ui.icon('plus')} Agregar proveedor</a>
+          <a href="modules/clientes.html" class="btn btn-secondary" style="justify-content:flex-start;">${ui.icon('plus')} Agregar cliente</a>
+          <a href="modules/tasas-cambio.html" class="btn btn-secondary" style="justify-content:flex-start;">${ui.icon('refresh')} Actualizar tasas</a>
+          <a href="modules/configuracion.html" class="btn btn-secondary" style="justify-content:flex-start;">${ui.icon('settings')} Configuración</a>
+        </div>
+      </div>
+    </div>
+
+    <div class="divider-section">
+      <span class="section-title" style="margin:0;">Estado del sistema</span>
+    </div>
+
+    <div class="card" style="background:var(--surface-2);border-style:dashed;">
+      <div style="display:flex;gap:24px;align-items:center;flex-wrap:wrap;">
+        <div style="flex:1;min-width:200px;">
+          <div class="card-title" style="font-size:16px;">Fase 1 activa · Núcleo operativo</div>
+          <div class="text-muted" style="font-size:13px;margin-top:4px;">
+            Configuración, multi-moneda, materias primas, proveedores, clientes y usuarios listos. Próximas fases: Fórmulas → Producción → Calidad → Compras/Ventas con IVA.
+          </div>
+        </div>
+        <div class="badge badge-accent">v1.0</div>
+      </div>
+    </div>
+  `;
+
+  ui.renderLayout({
+    activeModule: 'dashboard',
+    pageEyebrow: 'Inicio',
+    pageTitle: 'Dashboard',
+    contentHtml: content
+  });
+}
+</script>
+</body>
+</html>
