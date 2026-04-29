@@ -1,7 +1,8 @@
 <!DOCTYPE html>
 <html lang="es">
 <head>
-<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Ventas · altcare</title>
 <link rel="stylesheet" href="../assets/css/styles.css">
 </head>
@@ -10,20 +11,894 @@
 <script src="../assets/js/auth.js"></script>
 <script src="../assets/js/currency.js"></script>
 <script src="../assets/js/tax.js"></script>
+<script src="../assets/js/inventory.js"></script>
+<script src="../assets/js/formulas.js"></script>
+<script src="../assets/js/purchases.js"></script>
+<script src="../assets/js/sales.js"></script>
+<script src="../assets/js/payments.js"></script>
 <script src="../assets/js/ui.js"></script>
 <script>
 if (!auth.guard('ventas')) throw new Error('blocked');
-ui.renderLayout({
-  activeModule: 'ventas',
-  pageEyebrow: 'Comercial',
-  pageTitle: 'Ventas',
-  contentHtml: `
-    <div class="card" style="text-align:center;padding:64px 32px;">
-      <div style="font-size:48px;margin-bottom:16px;">💼</div>
-      <h3 style="font-family:var(--font-display);font-style:italic;font-size:24px;margin-bottom:8px;">Próximamente</h3>
-      <p class="text-muted" style="max-width:520px;margin:0 auto;">Pedidos y facturas con IVA, asignación FEFO de lotes (first expired first out), facturación en bolívares y/o dólares — Fase 3.</p>
+
+let view = 'list';        // list | detail | create | assignLots
+let selectedId = null;
+let creating = null;
+let assigning = null;
+let typeFilter = '';
+let searchTerm = '';
+
+function render() {
+  if (view === 'detail' && selectedId) return renderDetail();
+  if (view === 'create') return renderCreate();
+  if (view === 'assignLots') return renderAssignLots();
+  return renderList();
+}
+
+// ====== LISTA ======
+
+function renderList() {
+  let docs = db.getAll(db.COLLECTIONS.salesOrders).filter(d => !d.cancelled || typeFilter === 'CANCELLED');
+  const all = docs;
+  if (typeFilter) docs = docs.filter(d => d.type === typeFilter || d.status === typeFilter);
+  if (searchTerm) {
+    const q = searchTerm.toLowerCase();
+    docs = docs.filter(d => (d.code||'').toLowerCase().includes(q) || (d.invoiceNumber||'').toLowerCase().includes(q) || (d.customerName||'').toLowerCase().includes(q));
+  }
+  docs.sort((a,b) => (b.issueDate||'').localeCompare(a.issueDate||''));
+
+  // Stats
+  const counts = {
+    pedidos: all.filter(d => d.type === 'PEDIDO').length,
+    cotizaciones: all.filter(d => d.type === 'COTIZACION').length,
+    facturas: all.filter(d => d.type === 'FACTURA').length
+  };
+
+  // Total facturado por moneda
+  const billedByCcy = { VES: 0, USD: 0, EUR: 0 };
+  all.filter(d => d.type === 'FACTURA' && !d.cancelled).forEach(d => {
+    billedByCcy[d.currency] = (billedByCcy[d.currency] || 0) + d.total;
+  });
+  const fmtMulti = (byCcy) => {
+    const parts = [];
+    if (byCcy.VES > 0.01) parts.push(currency.format(byCcy.VES, 'VES'));
+    if (byCcy.USD > 0.01) parts.push(currency.format(byCcy.USD, 'USD'));
+    if (byCcy.EUR > 0.01) parts.push(currency.format(byCcy.EUR, 'EUR'));
+    return parts.length ? parts : ['0,00'];
+  };
+  const billedParts = fmtMulti(billedByCcy);
+
+  const tableHtml = docs.length ? `<table>
+    <thead><tr><th>Código</th><th>N° Factura</th><th>Cliente</th><th>Fecha</th><th>Vence</th><th style="text-align:right;">Total</th><th>Moneda</th><th>Tipo</th><th>Estado</th><th style="text-align:right;width:100px;">Acciones</th></tr></thead>
+    <tbody>${docs.map(d => {
+      const today = new Date().toISOString().slice(0,10);
+      const overdue = d.dueDate && d.dueDate < today && d.status !== 'PAID' && d.type === 'FACTURA';
+      const tBadge = d.type === 'PEDIDO' ? 'badge-plain' : d.type === 'COTIZACION' ? 'badge-accent' : 'badge-success';
+      const sBadge = sales.STATUS[d.status]?.color || 'badge-plain';
+      return `<tr style="cursor:pointer;${d.cancelled?'opacity:0.5;':''}" onclick="openDetail('${d.id}')">
+        <td><span class="td-mono td-strong">${d.code}</span></td>
+        <td>${d.invoiceNumber ? `<span class="td-mono">${d.invoiceNumber}</span><div class="text-muted" style="font-size:11px;">Ctrl: ${d.controlNumber||'—'}</div>` : '<span class="td-muted">—</span>'}</td>
+        <td><div class="td-strong">${ui.escape(d.customerName)}</div><div class="text-muted" style="font-size:11px;">${ui.escape(d.customerRif||'')}</div></td>
+        <td><span class="text-muted">${ui.formatDate(d.issueDate)}</span></td>
+        <td>${d.dueDate ? `<span class="${overdue?'badge badge-danger':'text-muted'}">${ui.formatDate(d.dueDate)}</span>` : '<span class="td-muted">—</span>'}</td>
+        <td style="text-align:right;"><span class="td-mono td-strong">${currency.format(d.total, d.currency)}</span></td>
+        <td><span class="badge ${d.currency==='USD'?'badge-accent':d.currency==='EUR'?'badge-warning':'badge-plain'}">${d.currency}</span></td>
+        <td><span class="badge ${tBadge}">${d.type}</span></td>
+        <td>${d.cancelled ? '<span class="badge badge-danger">Anulada</span>' : `<span class="badge ${sBadge}">${sales.STATUS[d.status]?.label || d.status}</span>`}</td>
+        <td class="td-actions" onclick="event.stopPropagation()">
+          <button class="btn-icon" onclick="openDetail('${d.id}')">${ui.icon('edit')}</button>
+        </td>
+      </tr>`;
+    }).join('')}</tbody></table>` : (all.length === 0 ?
+      `<div class="empty-state"><div class="empty-state-icon">${ui.icon('flask')}</div><div class="empty-state-title">Sin documentos de venta</div><div class="empty-state-text">Crea tu primer pedido. Después podrás convertirlo en cotización o factura.</div></div>`
+      : '<div class="empty-state"><div class="empty-state-title">Sin resultados</div></div>');
+
+  ui.renderLayout({
+    activeModule: 'ventas', pageEyebrow: 'Comercial', pageTitle: 'Ventas',
+    contentHtml: `
+      <div class="action-bar">
+        <div class="action-bar-left">
+          <h2 class="action-bar-title">Ventas</h2>
+          <span class="action-bar-count">${all.length} documentos · ${counts.pedidos} pedidos · ${counts.cotizaciones} cotizaciones · ${counts.facturas} facturas</span>
+        </div>
+      </div>
+
+      <div class="grid grid-4 mb-24">
+        <div class="kpi"><div class="kpi-label">Pedidos abiertos</div><div class="kpi-value">${all.filter(d=>d.type==='PEDIDO'&&!d.cancelled).length}</div><div class="kpi-value-sub">en gestión</div></div>
+        <div class="kpi"><div class="kpi-label">Cotizaciones</div><div class="kpi-value">${all.filter(d=>d.type==='COTIZACION'&&!d.cancelled).length}</div><div class="kpi-value-sub">enviadas</div></div>
+        <div class="kpi"><div class="kpi-label">Facturas</div><div class="kpi-value">${all.filter(d=>d.type==='FACTURA'&&!d.cancelled).length}</div><div class="kpi-value-sub">emitidas</div></div>
+        <div class="kpi">
+          <div class="kpi-label">Total facturado</div>
+          ${billedParts.length === 1
+            ? `<div class="kpi-value" style="color:var(--accent-ink);font-size:22px;">${billedParts[0]}</div>`
+            : `<div style="display:flex;flex-direction:column;gap:2px;margin-top:4px;">${billedParts.map(p => `<div style="font-family:var(--font-display);font-size:16px;letter-spacing:-0.02em;color:var(--accent-ink);line-height:1.2;">${p}</div>`).join('')}</div>`}
+        </div>
+      </div>
+
+      <div class="table-wrap">
+        <div class="table-toolbar">
+          <div class="search-box">${ui.icon('search')}<input class="input" type="search" placeholder="Buscar por código, factura o cliente..." value="${ui.escape(searchTerm)}" oninput="onSearch(this.value)"></div>
+          <select class="select" style="max-width:200px;" onchange="onTypeFilter(this.value)">
+            <option value="">Todos los tipos</option>
+            <option value="PEDIDO" ${typeFilter==='PEDIDO'?'selected':''}>Pedidos</option>
+            <option value="COTIZACION" ${typeFilter==='COTIZACION'?'selected':''}>Cotizaciones</option>
+            <option value="FACTURA" ${typeFilter==='FACTURA'?'selected':''}>Facturas</option>
+            <option value="PAID" ${typeFilter==='PAID'?'selected':''}>Pagadas</option>
+            <option value="PARTIAL" ${typeFilter==='PARTIAL'?'selected':''}>Pago parcial</option>
+            <option value="CANCELLED" ${typeFilter==='CANCELLED'?'selected':''}>Anuladas</option>
+          </select>
+        </div>
+        ${tableHtml}
+      </div>
+
+      <div style="display:flex;justify-content:flex-end;gap:8px;padding:24px 0;border-top:1px solid var(--border);margin-top:24px;">
+        <button class="btn btn-primary" onclick="newDoc()">${ui.icon('plus')} Nuevo pedido</button>
+      </div>
+    `
+  });
+}
+
+function onSearch(v) { searchTerm = v; render(); }
+function onTypeFilter(v) { typeFilter = v; render(); }
+
+// ====== CREAR ======
+
+function newDoc() {
+  const customers = db.getAll(db.COLLECTIONS.customers);
+  if (!customers.length) { ui.toast('Primero crea un cliente', 'error'); return; }
+  const formulas = db.getAll(db.COLLECTIONS.formulas);
+  const fgLots = db.getAll(db.COLLECTIONS.finishedGoods).filter(l => l.status === 'LIBERADO' && l.balance > 0);
+  if (!formulas.length && !fgLots.length) {
+    ui.toast('Necesitas fórmulas o lotes de PT liberados para vender', 'error', 4000);
+    return;
+  }
+
+  const cfg = db.getById(db.COLLECTIONS.config, 'main') || {};
+  creating = {
+    code: db.nextCode(db.COLLECTIONS.salesOrders, 'V'),
+    customerId: '', customerName: '',
+    currency: 'VES',
+    rateType: cfg.defaultRateType || 'BCV_USD',
+    issueDate: new Date().toISOString().slice(0,10),
+    dueDate: '',
+    paymentTerms: cfg.invoicePaymentTermsDefault || 'Contado',
+    items: [],
+    notes: ''
+  };
+  view = 'create'; render();
+}
+
+function renderCreate() {
+  const c = creating;
+  const customers = db.getAll(db.COLLECTIONS.customers);
+  const formulas = db.getAll(db.COLLECTIONS.formulas);
+
+  // Cálculos
+  const cfg = db.getById(db.COLLECTIONS.config, 'main') || {};
+  const ivaRate = cfg.ivaRate || 16;
+  const subtotal = c.items.reduce((s, it) => s + ((parseFloat(it.quantity)||0) * (parseFloat(it.unitPrice)||0) * (1 - (parseFloat(it.discount)||0)/100)), 0);
+  const taxableBase = c.items.filter(it => !it.exempt).reduce((s, it) => s + ((parseFloat(it.quantity)||0) * (parseFloat(it.unitPrice)||0) * (1 - (parseFloat(it.discount)||0)/100)), 0);
+  const ivaAmount = taxableBase * ivaRate / 100;
+  const total = subtotal + ivaAmount;
+
+  const itemsHtml = `<div class="card mb-24" style="padding:0;">
+    <div style="padding:14px 20px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center;">
+      <div class="card-title" style="font-size:15px;">Ítems</div>
+      <button class="btn btn-secondary btn-sm" onclick="addItem()">${ui.icon('plus')} Agregar producto</button>
     </div>
-  `
-});
+    ${c.items.length ? `<table>
+      <thead><tr>
+        <th style="width:30%;">Producto</th>
+        <th style="text-align:right;">Cantidad</th>
+        <th>Unidad</th>
+        <th style="text-align:right;">Precio unit.</th>
+        <th style="text-align:right;">Desc %</th>
+        <th style="text-align:center;">Exento</th>
+        <th style="text-align:right;">Subtotal</th>
+        <th style="width:40px;"></th>
+      </tr></thead>
+      <tbody>${c.items.map((it, idx) => `<tr>
+        <td>
+          <select class="select" onchange="updateItemFormula(${idx}, this.value)">
+            <option value="">— Selecciona producto —</option>
+            ${formulas.map(f => `<option value="${f.id}" ${f.id===it.formulaId?'selected':''}>${ui.escape(f.code)} · ${ui.escape(f.name)}</option>`).join('')}
+          </select>
+        </td>
+        <td style="text-align:right;"><input class="input" type="number" step="0.001" value="${it.quantity||''}" style="text-align:right;font-family:var(--font-mono);" oninput="updateItemFast(${idx},'quantity',this.value)"></td>
+        <td><span class="text-muted" id="ven-unit-${idx}">${it.unit||'—'}</span></td>
+        <td style="text-align:right;"><input class="input" type="number" step="0.0001" value="${it.unitPrice||''}" style="text-align:right;font-family:var(--font-mono);" oninput="updateItemFast(${idx},'unitPrice',this.value)"></td>
+        <td style="text-align:right;"><input class="input" type="number" step="0.01" value="${it.discount||0}" style="text-align:right;font-family:var(--font-mono);width:80px;" oninput="updateItemFast(${idx},'discount',this.value)"></td>
+        <td style="text-align:center;"><input type="checkbox" ${it.exempt?'checked':''} onchange="updateItemExempt(${idx}, this.checked)"></td>
+        <td style="text-align:right;"><span class="td-mono td-strong" id="ven-line-${idx}">${currency.format((it.quantity||0)*(it.unitPrice||0)*(1-(it.discount||0)/100), c.currency)}</span></td>
+        <td><button class="btn-icon" onclick="removeItem(${idx})">${ui.icon('trash')}</button></td>
+      </tr>`).join('')}</tbody>
+    </table>` : '<div style="padding:32px;text-align:center;color:var(--ink-3);">Sin productos. Agregá al menos uno.</div>'}
+  </div>`;
+
+  // Disponibilidad de cada producto
+  const stockInfoHtml = c.items.length && c.items.some(it => it.formulaId) ? `<div class="card mb-24" style="padding:14px 18px;background:#eff6ff;border-color:#bfdbfe;">
+    <div style="font-size:12.5px;color:#1e3a8a;line-height:1.6;">
+      <strong>📦 Stock disponible (Producto Terminado liberado):</strong>
+      <div style="margin-top:6px;">${c.items.filter(it => it.formulaId).map(it => {
+        const f = db.getById(db.COLLECTIONS.formulas, it.formulaId);
+        const lots = db.query(db.COLLECTIONS.finishedGoods, l => l.formulaId === it.formulaId && l.status === 'LIBERADO' && (l.balance - (l.reserved||0)) > 0);
+        const totalAvail = lots.reduce((s,l) => s + (l.balance - (l.reserved||0)), 0);
+        const enough = totalAvail >= it.quantity;
+        return `<div style="${!enough?'color:var(--danger);':''}">${ui.escape(f?.name||'')}: ${totalAvail.toFixed(3)} ${lots[0]?.unit||''} disponible${enough?' ✓':` (faltan ${(it.quantity - totalAvail).toFixed(3)})`}</div>`;
+      }).join('')}</div>
+    </div>
+  </div>` : '';
+
+  ui.renderLayout({
+    activeModule: 'ventas', pageEyebrow: 'Nuevo pedido', pageTitle: c.code,
+    contentHtml: `
+      <div class="card mb-24">
+        <div class="card-header"><div class="card-title">Información</div></div>
+        <div class="form-grid form-grid-2">
+          <div class="field"><label class="field-label">Código</label><input class="input" value="${c.code}" disabled style="font-family:var(--font-mono);"></div>
+          <div class="field"><label class="field-label">Cliente *</label><select class="select" onchange="onCustomerChange(this.value)">
+            <option value="">— Selecciona —</option>
+            ${customers.map(cu => `<option value="${cu.id}" ${cu.id===c.customerId?'selected':''}>${ui.escape(cu.name)} · ${ui.escape(cu.rif||'')}</option>`).join('')}
+          </select></div>
+          <div class="field"><label class="field-label">Fecha emisión</label><input class="input" type="date" value="${c.issueDate}" onchange="creating.issueDate=this.value"></div>
+          <div class="field"><label class="field-label">Vencimiento</label><input class="input" type="date" value="${c.dueDate||''}" onchange="creating.dueDate=this.value"></div>
+          <div class="field"><label class="field-label">Términos de pago</label><select class="select" onchange="creating.paymentTerms=this.value">
+            ${['Contado','7 días','15 días','30 días','45 días','60 días','90 días'].map(t => `<option ${t===c.paymentTerms?'selected':''}>${t}</option>`).join('')}
+          </select></div>
+          <div class="field"><label class="field-label">Moneda</label><select class="select" onchange="creating.currency=this.value;render()">
+            <option value="VES" ${c.currency==='VES'?'selected':''}>Bolívares (VES)</option>
+            <option value="USD" ${c.currency==='USD'?'selected':''}>Dólares (USD)</option>
+            <option value="EUR" ${c.currency==='EUR'?'selected':''}>Euros (EUR)</option>
+          </select></div>
+          ${c.currency !== 'VES' ? `<div class="field" style="grid-column:1/-1;"><label class="field-label">Tasa para conversión a Bs (libro de ventas)</label><select class="select" onchange="creating.rateType=this.value">${currency.getRates().map(r => `<option value="${r.type}" ${r.type===c.rateType?'selected':''}>${r.label} (${r.value.toFixed(2)})</option>`).join('')}</select><div class="field-hint">SENIAT exige reportar todo en Bs aunque factures en USD</div></div>` : ''}
+        </div>
+      </div>
+
+      ${itemsHtml}
+
+      ${stockInfoHtml}
+
+      <!-- Resumen -->
+      <div class="card mb-24" style="padding:0;" id="ven-summary-card">
+        <div style="padding:14px 20px;border-bottom:1px solid var(--border);"><div class="card-title" style="font-size:15px;">Resumen</div></div>
+        <div style="padding:0 20px;" id="ven-summary-body">
+          ${renderVenSummary(subtotal, ivaAmount, total, ivaRate, c)}
+        </div>
+      </div>
+
+      <div class="card mb-24">
+        <div class="card-header"><div class="card-title">Notas</div></div>
+        <textarea class="textarea" onchange="creating.notes=this.value">${ui.escape(c.notes||'')}</textarea>
+      </div>
+
+      <div style="display:flex;justify-content:space-between;gap:8px;padding:24px 0;border-top:1px solid var(--border);margin-top:24px;">
+        <button class="btn btn-secondary" onclick="cancelCreate()">← Cancelar</button>
+        <button class="btn btn-primary" onclick="saveDoc()">${ui.icon('check')} Crear pedido</button>
+      </div>
+      <div style="height:40px;"></div>
+    `
+  });
+}
+
+function renderVenSummary(subtotal, ivaAmount, total, ivaRate, c) {
+  const exemptTotal = c.items.filter(it => it.exempt).reduce((s, it) => s + ((parseFloat(it.quantity)||0) * (parseFloat(it.unitPrice)||0) * (1 - (parseFloat(it.discount)||0)/100)), 0);
+  return [
+    ['Subtotal', currency.format(subtotal, c.currency), false],
+    ...(exemptTotal > 0 ? [[`Exento de IVA`, currency.format(exemptTotal, c.currency), false]] : []),
+    [`IVA ${ivaRate}%`, currency.format(ivaAmount, c.currency), false],
+    ['Total', currency.format(total, c.currency), true, true]
+  ].map(([label, val, strong, accent]) => `
+    <div class="list-row" style="grid-template-columns:1fr auto;border:none;padding:10px 0;${accent?'border-top:1px solid var(--border);background:var(--accent-soft);margin:0 -20px;padding:14px 20px;':''}">
+      <span style="font-size:13px;${strong?'font-weight:600;':''}${accent?'color:var(--accent-ink);font-weight:600;':''}">${label}</span>
+      <span class="${strong?'td-mono td-strong':'td-mono'}" style="font-size:14px;${accent?'color:var(--accent-ink);font-size:18px;font-family:var(--font-display);font-style:italic;':''}">${val}</span>
+    </div>
+  `).join('');
+}
+
+function onCustomerChange(cid) {
+  creating.customerId = cid;
+  const cu = db.getById(db.COLLECTIONS.customers, cid);
+  if (cu) {
+    creating.customerName = cu.name;
+    if (cu.preferredCurrency) creating.currency = cu.preferredCurrency;
+    if (cu.paymentTerms) creating.paymentTerms = cu.paymentTerms;
+  }
+  render();
+}
+
+function addItem() {
+  creating.items.push({ formulaId: '', formulaName: '', description: '', quantity: 0, unit: 'kg', unitPrice: 0, discount: 0, exempt: false });
+  render();
+}
+
+function updateItemFormula(idx, fid) {
+  const f = db.getById(db.COLLECTIONS.formulas, fid);
+  if (f) {
+    creating.items[idx].formulaId = fid;
+    creating.items[idx].formulaName = f.name;
+    creating.items[idx].description = f.name;
+    creating.items[idx].unit = f.batchUnit;
+  } else {
+    creating.items[idx].formulaId = '';
+    creating.items[idx].formulaName = '';
+  }
+  render();
+}
+
+function updateItemFast(idx, field, val) {
+  const num = parseFloat(val) || 0;
+  creating.items[idx][field] = num;
+  // Actualizar línea
+  const item = creating.items[idx];
+  const line = (item.quantity||0) * (item.unitPrice||0) * (1 - (item.discount||0)/100);
+  const lineEl = document.getElementById(`ven-line-${idx}`);
+  if (lineEl) lineEl.textContent = currency.format(line, creating.currency);
+  // Actualizar totales
+  recomputeAndRefreshSummary();
+}
+
+function updateItemExempt(idx, checked) {
+  creating.items[idx].exempt = checked;
+  recomputeAndRefreshSummary();
+}
+
+function recomputeAndRefreshSummary() {
+  const cfg = db.getById(db.COLLECTIONS.config, 'main') || {};
+  const ivaRate = cfg.ivaRate || 16;
+  const subtotal = creating.items.reduce((s, it) => s + ((parseFloat(it.quantity)||0) * (parseFloat(it.unitPrice)||0) * (1 - (parseFloat(it.discount)||0)/100)), 0);
+  const taxableBase = creating.items.filter(it => !it.exempt).reduce((s, it) => s + ((parseFloat(it.quantity)||0) * (parseFloat(it.unitPrice)||0) * (1 - (parseFloat(it.discount)||0)/100)), 0);
+  const ivaAmount = taxableBase * ivaRate / 100;
+  const total = subtotal + ivaAmount;
+  const summaryBody = document.getElementById('ven-summary-body');
+  if (summaryBody) summaryBody.innerHTML = renderVenSummary(subtotal, ivaAmount, total, ivaRate, creating);
+}
+
+function removeItem(idx) {
+  creating.items.splice(idx, 1);
+  render();
+}
+
+function cancelCreate() { creating = null; view = 'list'; render(); }
+
+function saveDoc() {
+  const c = creating;
+  if (!c.customerId) { ui.toast('Selecciona un cliente', 'error'); return; }
+  if (!c.items.length) { ui.toast('Agrega al menos un ítem', 'error'); return; }
+  for (const it of c.items) {
+    if (!it.formulaId) { ui.toast('Cada ítem debe tener producto seleccionado', 'error'); return; }
+    if (!it.quantity || it.quantity <= 0) { ui.toast('Cada ítem debe tener cantidad', 'error'); return; }
+    if (!it.unitPrice || it.unitPrice <= 0) { ui.toast('Cada ítem debe tener precio', 'error'); return; }
+  }
+  try {
+    const doc = sales.create({
+      customerId: c.customerId,
+      currency: c.currency,
+      rateType: c.rateType,
+      items: c.items,
+      status: 'PEDIDO',
+      notes: c.notes,
+      paymentTerms: c.paymentTerms,
+      dueDate: c.dueDate
+    });
+    ui.toast('Pedido creado', 'success');
+    selectedId = doc.id; view = 'detail'; creating = null;
+    render();
+  } catch (err) {
+    ui.toast(err.message, 'error');
+  }
+}
+
+// ====== DETALLE ======
+
+function openDetail(id) { selectedId = id; view = 'detail'; render(); }
+function backToList() { view = 'list'; selectedId = null; render(); }
+
+function renderDetail() {
+  const d = db.getById(db.COLLECTIONS.salesOrders, selectedId);
+  if (!d) { backToList(); return; }
+  const sBadge = d.cancelled ? 'badge-danger' : (sales.STATUS[d.status]?.color || 'badge-plain');
+  const sLabel = d.cancelled ? 'Anulada' : (sales.STATUS[d.status]?.label || d.status);
+  const tBadge = d.type === 'PEDIDO' ? 'badge-plain' : d.type === 'COTIZACION' ? 'badge-accent' : 'badge-success';
+  const remaining = d.total - (d.paidAmount||0);
+  const paymentsForDoc = payments.getPaymentsForDoc('IN', d.id);
+
+  // Acciones según tipo y estado
+  let actions = '';
+  if (!d.cancelled) {
+    if (d.type === 'PEDIDO') {
+      actions += `<button class="btn btn-secondary" onclick="convertTo('${d.id}','COTIZACION')">→ Cotización</button>`;
+      actions += `<button class="btn btn-primary" onclick="convertTo('${d.id}','FACTURA')">${ui.icon('check')} → Factura</button>`;
+    } else if (d.type === 'COTIZACION') {
+      actions += `<button class="btn btn-primary" onclick="convertTo('${d.id}','FACTURA')">${ui.icon('check')} Convertir a Factura</button>`;
+    } else if (d.type === 'FACTURA') {
+      if (!d.lotsAssigned) {
+        actions += `<button class="btn btn-primary" onclick="goAssignLots('${d.id}')">${ui.icon('box')} Asignar lotes</button>`;
+      }
+      actions += `<button class="btn btn-secondary" onclick="printDoc('${d.id}')">${ui.icon('download')} Imprimir factura</button>`;
+      if (remaining > 0.01 && d.status !== 'PAID') {
+        actions += `<a href="pagos.html?doc=${d.id}" class="btn btn-primary">${ui.icon('plus')} Registrar cobro</a>`;
+      }
+    }
+    actions += `<button class="btn btn-danger" onclick="cancelDoc('${d.id}')">${ui.icon('x')} Anular</button>`;
+  }
+
+  const itemsTable = `<table>
+    <thead><tr><th>Producto</th><th style="text-align:right;">Cantidad</th><th>Unidad</th><th style="text-align:right;">Precio</th><th style="text-align:right;">Desc</th><th>IVA</th><th style="text-align:right;">Subtotal</th></tr></thead>
+    <tbody>${d.items.map(it => `<tr>
+      <td><div class="td-strong">${ui.escape(it.formulaName||it.description)}</div>${it.allocations && it.allocations.length ? `<div class="text-muted" style="font-size:11px;">Lotes: ${it.allocations.map(a => a.lotCode).join(', ')}</div>` : ''}</td>
+      <td style="text-align:right;"><span class="td-mono">${(it.quantity||0).toFixed(3)}</span></td>
+      <td><span class="text-muted">${it.unit||'—'}</span></td>
+      <td style="text-align:right;"><span class="td-mono">${currency.format(it.unitPrice, d.currency)}</span></td>
+      <td style="text-align:right;"><span class="td-mono ${(it.discount||0)>0?'':'td-muted'}">${(it.discount||0).toFixed(2)}%</span></td>
+      <td>${it.exempt ? '<span class="badge badge-warning" style="font-size:10px;">Exento</span>' : `<span class="text-muted" style="font-size:11px;">${d.ivaRate}%</span>`}</td>
+      <td style="text-align:right;"><span class="td-mono td-strong">${currency.format(it.subtotal, d.currency)}</span></td>
+    </tr>`).join('')}</tbody>
+  </table>`;
+
+  ui.renderLayout({
+    activeModule: 'ventas', pageEyebrow: d.type, pageTitle: d.invoiceNumber || d.code,
+    contentHtml: `
+      <div class="action-bar">
+        <div class="action-bar-left">
+          <button class="btn btn-ghost btn-sm" onclick="backToList()">← Volver</button>
+          <span style="margin-left:16px;">
+            <span class="badge ${tBadge}">${d.type}</span>
+            <span class="badge ${sBadge}" style="margin-left:8px;">${sLabel}</span>
+          </span>
+        </div>
+      </div>
+
+      ${d.type === 'FACTURA' && !d.lotsAssigned && !d.cancelled ? `
+        <div class="card mb-24" style="padding:14px 18px;background:#fef3c7;border-color:#fcd34d;">
+          <div style="font-size:13px;color:#92400e;line-height:1.5;">
+            <strong>⚠️ Falta asignar lotes:</strong> Esta factura aún no descontó inventario. Asigna los lotes de PT que se entregarán al cliente.
+          </div>
+        </div>
+      ` : ''}
+
+      <div class="grid grid-4 mb-24">
+        <div class="kpi"><div class="kpi-label">Cliente</div><div class="kpi-value" style="font-size:18px;">${ui.escape(d.customerName)}</div><div class="kpi-value-sub">${ui.escape(d.customerRif||'')}</div></div>
+        <div class="kpi"><div class="kpi-label">Emitido</div><div class="kpi-value" style="font-size:20px;">${ui.formatDate(d.issueDate)}</div><div class="kpi-value-sub">${d.paymentTerms||'—'}</div></div>
+        <div class="kpi"><div class="kpi-label">Total</div><div class="kpi-value" style="color:var(--accent-ink);">${currency.formatCompact(d.total, d.currency)}</div><div class="kpi-value-sub">${d.currency}${d.currency!=='VES'?` · ≈ ${currency.formatCompact(d.totalVES, 'VES')}`:''}</div></div>
+        <div class="kpi"><div class="kpi-label">${d.type === 'FACTURA' ? 'Pendiente' : 'Estado'}</div>${d.type === 'FACTURA' ? `<div class="kpi-value" style="color:${remaining>0.01?'var(--danger)':'var(--success)'};">${currency.formatCompact(remaining, d.currency)}</div><div class="kpi-value-sub">de ${currency.format(d.total, d.currency)}</div>` : `<div class="kpi-value" style="font-size:20px;">${sLabel}</div>`}</div>
+      </div>
+
+      ${d.invoiceNumber ? `<div class="card mb-24" style="padding:14px 18px;background:var(--accent-soft);border-color:#cdd9c8;">
+        <div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:12px;font-size:13px;">
+          <div><span class="kpi-label">Nº Factura</span><div class="td-mono td-strong" style="font-size:18px;margin-top:2px;">${d.invoiceNumber}</div></div>
+          <div><span class="kpi-label">Nº Control</span><div class="td-mono td-strong" style="font-size:18px;margin-top:2px;">${d.controlNumber}</div></div>
+          <div><span class="kpi-label">Total en Bs (libro ventas)</span><div class="td-mono td-strong" style="font-size:18px;margin-top:2px;">${currency.format(d.totalVES, 'VES')}</div></div>
+        </div>
+      </div>` : ''}
+
+      <div class="grid grid-2 mb-24">
+        <div class="card">
+          <div class="card-header"><div class="card-title">Detalle fiscal</div></div>
+          <div style="font-size:13px;line-height:2;">
+            <div class="flex-between"><span class="text-muted">Subtotal</span><span class="td-mono">${currency.format(d.subtotal, d.currency)}</span></div>
+            ${d.exemptBase > 0 ? `<div class="flex-between"><span class="text-muted">Exento de IVA</span><span class="td-mono">${currency.format(d.exemptBase, d.currency)}</span></div>` : ''}
+            <div class="flex-between"><span class="text-muted">Base imponible</span><span class="td-mono">${currency.format(d.taxableBase, d.currency)}</span></div>
+            <div class="flex-between"><span class="text-muted">IVA ${d.ivaRate}%</span><span class="td-mono">${currency.format(d.ivaAmount, d.currency)}</span></div>
+            <div class="flex-between" style="border-top:1px solid var(--border);padding-top:8px;margin-top:8px;background:var(--accent-soft);padding:8px 12px;border-radius:6px;"><span class="text-strong" style="color:var(--accent-ink);">Total</span><span class="td-mono td-strong" style="color:var(--accent-ink);font-size:16px;">${currency.format(d.total, d.currency)}</span></div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-header"><div class="card-title">Cobros (${paymentsForDoc.length})</div></div>
+          ${paymentsForDoc.length ? paymentsForDoc.map(p => `
+            <div class="list-row" style="grid-template-columns:1fr auto;padding:10px 0;border-bottom:1px solid var(--border);">
+              <div>
+                <div class="td-strong" style="font-size:13px;">${ui.escape(p.paymentMethodName)}</div>
+                <div class="text-muted" style="font-size:11px;">${ui.formatDate(p.date)} · ${ui.escape(p.reference||'')}</div>
+              </div>
+              <div class="td-mono td-strong">${currency.format(p.amountInDocCurrency, d.currency)}</div>
+            </div>
+          `).join('') : '<div class="text-muted" style="font-size:13px;padding:16px 0;">Sin cobros registrados</div>'}
+          ${d.paidAmount > 0 ? `
+            <div style="margin-top:12px;padding:10px;background:var(--surface-2);border-radius:6px;font-size:12px;">
+              Cobrado: <strong>${currency.format(d.paidAmount, d.currency)}</strong> de ${currency.format(d.total, d.currency)} (${d.paidPercent.toFixed(1)}%)
+            </div>
+          ` : ''}
+        </div>
+      </div>
+
+      <div class="card mb-24" style="padding:0;">
+        <div style="padding:14px 20px;border-bottom:1px solid var(--border);"><div class="card-title" style="font-size:15px;">Productos</div></div>
+        ${itemsTable}
+      </div>
+
+      ${d.notes ? `<div class="card mb-24" style="padding:16px;"><div class="kpi-label">Notas</div><div style="margin-top:6px;">${ui.escape(d.notes)}</div></div>` : ''}
+
+      ${d.cancelled ? `<div class="card mb-24" style="padding:14px 18px;background:var(--danger-soft);border-color:#e0b8b8;"><div style="font-size:13px;color:var(--danger);"><strong>Anulada el ${ui.formatDate(d.cancelledAt)}.</strong> ${d.cancellationReason ? 'Motivo: '+ui.escape(d.cancellationReason) : ''}</div></div>` : ''}
+
+      <div style="display:flex;justify-content:flex-end;gap:8px;padding:24px 0;border-top:1px solid var(--border);margin-top:24px;flex-wrap:wrap;">
+        ${actions || '<span class="text-muted" style="font-size:13px;align-self:center;">Sin acciones disponibles</span>'}
+      </div>
+    `
+  });
+}
+
+function convertTo(docId, newStatus) {
+  const d = db.getById(db.COLLECTIONS.salesOrders, docId);
+  const labels = { COTIZACION: 'Cotización', FACTURA: 'Factura' };
+  const message = newStatus === 'FACTURA'
+    ? `¿Convertir a Factura? Se asignará un número fiscal de factura y de control. Después podrás asignar los lotes de PT que se entregarán.`
+    : `¿Convertir a ${labels[newStatus]}?`;
+  ui.confirm(message, () => {
+    try {
+      sales.convertTo(docId, newStatus);
+      ui.toast(`Convertido a ${labels[newStatus]}`, 'success');
+      render();
+    } catch (err) {
+      ui.toast(err.message, 'error');
+    }
+  }, { confirmLabel: 'Convertir' });
+}
+
+function cancelDoc(docId) {
+  const d = db.getById(db.COLLECTIONS.salesOrders, docId);
+  ui.openModal({
+    title: 'Anular documento',
+    body: `
+      <form id="cancel-form" onsubmit="confirmCancel(event, '${docId}')">
+        <p style="font-size:13.5px;color:var(--ink-2);margin-bottom:16px;">
+          ${d.type === 'FACTURA' ? 'En documentos fiscales, la factura no se elimina, se anula. Si tenía lotes asignados, se devolverán al inventario.' : '¿Anular este documento?'}
+        </p>
+        <div class="field">
+          <label class="field-label">Motivo de anulación *</label>
+          <textarea class="textarea" name="reason" required placeholder="Ej: Error en factura, cancelación del cliente..."></textarea>
+        </div>
+      </form>
+    `,
+    footer: `<button class="btn btn-secondary" onclick="ui.closeModal()">Cancelar</button><button class="btn btn-danger" onclick="document.getElementById('cancel-form').requestSubmit()">${ui.icon('x')} Anular</button>`
+  });
+}
+
+function confirmCancel(e, docId) {
+  e.preventDefault();
+  const data = ui.formData(e.target);
+  if (!data.reason) { ui.toast('El motivo es obligatorio', 'error'); return; }
+  try {
+    sales.cancel(docId, data.reason);
+    ui.closeModal();
+    ui.toast('Documento anulado', 'success');
+    render();
+  } catch (err) {
+    ui.toast(err.message, 'error');
+  }
+}
+
+// ====== ASIGNACIÓN DE LOTES (FEFO) ======
+
+function goAssignLots(docId) {
+  const d = db.getById(db.COLLECTIONS.salesOrders, docId);
+  if (!d) return;
+  const suggested = sales.suggestLotsForDoc(d);
+  assigning = {
+    docId,
+    docCode: d.invoiceNumber || d.code,
+    items: suggested.map(it => ({
+      ...it,
+      // Si hay sugerencia, preestablecer las allocations con la sugerencia
+      allocations: it.suggestions ? it.suggestions.map(s => ({ lotId: s.lotId, lotCode: s.lotCode, expiryDate: s.expiryDate, available: s.available, quantity: s.take })) : []
+    }))
+  };
+  view = 'assignLots'; render();
+}
+
+function renderAssignLots() {
+  const a = assigning;
+  const d = db.getById(db.COLLECTIONS.salesOrders, a.docId);
+
+  // Verificar si todos los items están cubiertos
+  const allCovered = a.items.every(it => {
+    const totalAssigned = (it.allocations||[]).reduce((s, al) => s + (parseFloat(al.quantity)||0), 0);
+    return Math.abs(totalAssigned - it.quantity) < 0.01;
+  });
+
+  const itemsHtml = a.items.map((it, idx) => {
+    const totalAssigned = (it.allocations||[]).reduce((s, al) => s + (parseFloat(al.quantity)||0), 0);
+    const remaining = it.quantity - totalAssigned;
+    const ok = Math.abs(remaining) < 0.01;
+    // Lotes disponibles (FEFO) para este formula
+    const availableLots = db.query(db.COLLECTIONS.finishedGoods, l =>
+      l.formulaId === it.formulaId &&
+      l.status === 'LIBERADO' &&
+      (l.balance - (l.reserved||0)) > 0
+    ).sort((x,y) => (x.expiryDate||'9999').localeCompare(y.expiryDate||'9999'));
+
+    return `<div class="card mb-24" style="padding:0;">
+      <div style="padding:14px 20px;border-bottom:1px solid var(--border);">
+        <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
+          <div>
+            <div class="card-title" style="font-size:15px;">${ui.escape(it.formulaName||it.description)}</div>
+            <div class="text-muted" style="font-size:12px;margin-top:2px;">Solicitado: ${it.quantity.toFixed(3)} ${it.unit} · Asignado: ${totalAssigned.toFixed(3)} · ${ok ? '<span style="color:var(--success);">✓ Completo</span>' : `<span style="color:var(--danger);">Falta: ${remaining.toFixed(3)}</span>`}</div>
+          </div>
+          <button class="btn btn-secondary btn-sm" onclick="addAllocation(${idx})">${ui.icon('plus')} Agregar lote</button>
+        </div>
+      </div>
+      ${(it.allocations||[]).length ? `<table>
+        <thead><tr><th>Lote</th><th>Vence</th><th style="text-align:right;">Disponible</th><th style="text-align:right;">A entregar</th><th style="width:40px;"></th></tr></thead>
+        <tbody>${it.allocations.map((al, alIdx) => {
+          const lot = db.getById(db.COLLECTIONS.finishedGoods, al.lotId);
+          return `<tr>
+            <td><select class="select" onchange="updateAllocation(${idx}, ${alIdx}, 'lotId', this.value)">
+              <option value="">— Selecciona lote —</option>
+              ${availableLots.map(l => `<option value="${l.id}" ${l.id===al.lotId?'selected':''}>${l.code} · vence ${l.expiryDate||'—'} · disp: ${(l.balance - (l.reserved||0)).toFixed(3)}</option>`).join('')}
+            </select></td>
+            <td><span class="text-muted">${lot?.expiryDate ? ui.formatDate(lot.expiryDate) : '—'}</span></td>
+            <td style="text-align:right;"><span class="td-mono">${al.available?.toFixed(3) || (lot ? (lot.balance - (lot.reserved||0)).toFixed(3) : '—')}</span></td>
+            <td style="text-align:right;"><input class="input" type="number" step="0.001" value="${al.quantity||''}" style="text-align:right;font-family:var(--font-mono);width:140px;" oninput="updateAllocationFast(${idx}, ${alIdx}, this.value)"></td>
+            <td><button class="btn-icon" onclick="removeAllocation(${idx}, ${alIdx})">${ui.icon('trash')}</button></td>
+          </tr>`;
+        }).join('')}</tbody>
+      </table>` : `<div style="padding:24px;text-align:center;color:var(--ink-3);">Sin lotes asignados.${availableLots.length ? '' : ' <span style="color:var(--danger);">No hay lotes liberados de este producto.</span>'}</div>`}
+    </div>`;
+  }).join('');
+
+  ui.renderLayout({
+    activeModule: 'ventas', pageEyebrow: 'Asignar lotes', pageTitle: a.docCode,
+    contentHtml: `
+      <div class="card mb-24" style="padding:14px 18px;background:#eff6ff;border-color:#bfdbfe;">
+        <div style="font-size:12.5px;color:#1e3a8a;line-height:1.5;">
+          <strong>📦 Asignación FEFO:</strong> Los lotes están ordenados automáticamente por fecha de vencimiento (los que vencen primero, salen primero). Podés cambiar la asignación si querés. Al confirmar, se descontará el inventario.
+        </div>
+      </div>
+
+      ${itemsHtml}
+
+      <div style="display:flex;justify-content:space-between;gap:8px;padding:24px 0;border-top:1px solid var(--border);margin-top:24px;">
+        <button class="btn btn-secondary" onclick="cancelAssign()">← Cancelar</button>
+        <button class="btn btn-primary" onclick="saveAssignment()" ${!allCovered?'disabled style="opacity:0.5;cursor:not-allowed;"':''}>${ui.icon('check')} Confirmar asignación y descontar inventario</button>
+      </div>
+      <div style="height:40px;"></div>
+    `
+  });
+}
+
+function addAllocation(itemIdx) {
+  if (!assigning.items[itemIdx].allocations) assigning.items[itemIdx].allocations = [];
+  assigning.items[itemIdx].allocations.push({ lotId: '', quantity: 0 });
+  render();
+}
+
+function updateAllocation(itemIdx, alIdx, field, val) {
+  assigning.items[itemIdx].allocations[alIdx][field] = val;
+  // Si cambió el lote, actualizar disponibilidad
+  if (field === 'lotId' && val) {
+    const lot = db.getById(db.COLLECTIONS.finishedGoods, val);
+    if (lot) {
+      assigning.items[itemIdx].allocations[alIdx].lotCode = lot.code;
+      assigning.items[itemIdx].allocations[alIdx].expiryDate = lot.expiryDate;
+      assigning.items[itemIdx].allocations[alIdx].available = lot.balance - (lot.reserved||0);
+    }
+  }
+  render();
+}
+
+function updateAllocationFast(itemIdx, alIdx, val) {
+  assigning.items[itemIdx].allocations[alIdx].quantity = parseFloat(val) || 0;
+  // Solo actualizar el "Asignado / Falta" sin re-render completo. Re-render para validación final.
+  // Por simplicidad, hacer render ahora — es solo el panel de asignación
+  render();
+}
+
+function removeAllocation(itemIdx, alIdx) {
+  assigning.items[itemIdx].allocations.splice(alIdx, 1);
+  render();
+}
+
+function cancelAssign() { assigning = null; selectedId = assigning?.docId; view = 'detail'; render(); }
+
+function saveAssignment() {
+  const a = assigning;
+  const lotAssignments = a.items.map((it, idx) => ({
+    itemIdx: idx,
+    allocations: (it.allocations||[]).filter(al => al.lotId && al.quantity > 0).map(al => ({ lotId: al.lotId, quantity: al.quantity }))
+  }));
+  try {
+    sales.confirmLotAssignment(a.docId, lotAssignments);
+    ui.toast('Lotes asignados · inventario descontado', 'success');
+    selectedId = a.docId; view = 'detail'; assigning = null;
+    render();
+  } catch (err) {
+    ui.toast(err.message, 'error');
+  }
+}
+
+// ====== IMPRESIÓN FACTURA ======
+
+function printDoc(docId) {
+  const d = db.getById(db.COLLECTIONS.salesOrders, docId);
+  if (!d) return;
+  const cfg = db.getById(db.COLLECTIONS.config, 'main') || {};
+  const isFiscal = (cfg.invoiceMode || 'SENIAT') === 'SENIAT';
+  const customer = db.getById(db.COLLECTIONS.customers, d.customerId);
+
+  const html = `<!DOCTYPE html>
+<html><head><meta charset="UTF-8"><title>${d.invoiceNumber || d.code}</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500&family=Inter+Tight:wght@400;500;600&display=swap');
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'Inter Tight', sans-serif; font-size: 11pt; color: #1a1a18; padding: 40px 50px; line-height: 1.5; }
+  .header { display: flex; justify-content: space-between; align-items: flex-start; padding-bottom: 24px; border-bottom: 2px solid #1a1a18; margin-bottom: 24px; }
+  .brand { font-family: 'Fraunces', serif; font-size: 28pt; font-style: italic; letter-spacing: -1px; line-height: 1; }
+  .brand span { color: #5b7a5a; }
+  .company-info { text-align: right; font-size: 10pt; color: #4a4a45; line-height: 1.6; }
+  .doc-title { font-family: 'Fraunces', serif; font-size: 26pt; font-style: italic; margin-bottom: 4px; }
+  .doc-sub { font-size: 10pt; letter-spacing: 0.16em; text-transform: uppercase; color: #8a8a82; font-weight: 600; }
+  .doc-numbers { display: flex; gap: 32px; margin-top: 16px; padding: 12px 16px; background: #1a1a18; color: white; border-radius: 6px; }
+  .doc-num-block { font-size: 10pt; }
+  .doc-num-block .label { letter-spacing: 0.12em; text-transform: uppercase; opacity: 0.6; font-size: 8pt; }
+  .doc-num-block .value { font-family: monospace; font-size: 14pt; font-weight: 600; margin-top: 2px; }
+  .info-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; margin: 24px 0; padding: 20px; background: #f4f3ef; border-radius: 8px; }
+  .info-box h3 { font-size: 9pt; letter-spacing: 0.12em; text-transform: uppercase; color: #8a8a82; font-weight: 600; margin-bottom: 8px; }
+  .info-line { font-size: 11pt; margin-bottom: 4px; }
+  .info-line strong { font-weight: 600; }
+  table { width: 100%; border-collapse: collapse; margin: 16px 0; }
+  th { text-align: left; font-size: 9pt; letter-spacing: 0.12em; text-transform: uppercase; color: #8a8a82; font-weight: 600; padding: 10px 12px; border-bottom: 2px solid #1a1a18; }
+  td { padding: 12px; border-bottom: 1px solid #e7e5df; font-size: 10.5pt; }
+  .num { text-align: right; font-family: monospace; }
+  .totals-section { margin-top: 24px; display: grid; grid-template-columns: 1fr 380px; gap: 24px; }
+  .totals { padding: 16px 20px; background: #f4f3ef; border-radius: 8px; }
+  .totals-row { display: flex; justify-content: space-between; padding: 6px 0; font-size: 10.5pt; }
+  .totals-row.grand { border-top: 2px solid #1a1a18; margin-top: 8px; padding-top: 12px; font-size: 14pt; font-weight: 600; color: #5b7a5a; }
+  .footer-info { padding-top: 24px; font-size: 9.5pt; color: #4a4a45; }
+  .footer-info .row { margin-bottom: 6px; }
+  .toolbar { background: #1a1a18; color: white; padding: 12px 20px; margin: -40px -50px 32px -50px; display: flex; justify-content: space-between; align-items: center; }
+  .btn-print { background: #5b7a5a; color: white; padding: 8px 16px; border: none; border-radius: 4px; cursor: pointer; font-family: inherit; font-size: 11pt; font-weight: 500; }
+  .signatures { display: grid; grid-template-columns: 1fr 1fr; gap: 48px; margin-top: 64px; padding-top: 32px; }
+  .signature { text-align: center; }
+  .signature-line { border-top: 1px solid #1a1a18; padding-top: 8px; }
+  .currency-note { margin-top: 12px; padding: 10px; background: #e8eee5; border-radius: 6px; font-size: 9.5pt; color: #3d5a3c; }
+  .cancelled-stamp { position: fixed; top: 40%; left: 50%; transform: translate(-50%, -50%) rotate(-15deg); font-size: 80pt; font-family: 'Fraunces', serif; font-style: italic; color: rgba(168, 50, 50, 0.15); border: 6px solid rgba(168, 50, 50, 0.15); padding: 20px 60px; pointer-events: none; }
+  @media print { body { padding: 20mm; } .no-print { display: none; } @page { margin: 0; size: A4; } }
+</style></head><body>
+
+<div class="toolbar no-print">
+  <span>${d.invoiceNumber || d.code} · Vista previa</span>
+  <button class="btn-print" onclick="window.print()">Imprimir / Guardar como PDF</button>
+</div>
+
+${d.cancelled ? '<div class="cancelled-stamp">ANULADA</div>' : ''}
+
+<div class="header">
+  <div>
+    <div class="brand"><span>alt</span>care</div>
+    <div style="font-size: 9pt; letter-spacing: 0.16em; text-transform: uppercase; color: #8a8a82; font-weight: 600; margin-top: 4px;">${cfg.companyName || ''}</div>
+  </div>
+  <div class="company-info">
+    ${cfg.companyName ? `<div style="font-weight:600;color:#1a1a18;font-size:11pt;">${escapeHtml(cfg.companyName)}</div>` : ''}
+    ${cfg.rif ? `<div>RIF: ${escapeHtml(cfg.rif)}</div>` : ''}
+    ${cfg.address ? `<div>${escapeHtml(cfg.address)}</div>` : ''}
+    ${cfg.phone ? `<div>${escapeHtml(cfg.phone)}</div>` : ''}
+    ${cfg.email ? `<div>${escapeHtml(cfg.email)}</div>` : ''}
+  </div>
+</div>
+
+<div class="doc-sub">${d.type === 'FACTURA' ? 'Factura' : d.type === 'COTIZACION' ? 'Cotización' : 'Pedido'}</div>
+<h1 class="doc-title">${d.type === 'FACTURA' ? 'Factura de Venta' : d.type === 'COTIZACION' ? 'Cotización' : 'Pedido de Venta'}</h1>
+
+${d.invoiceNumber ? `
+  <div class="doc-numbers">
+    <div class="doc-num-block">
+      <div class="label">Nº Factura</div>
+      <div class="value">${d.invoiceNumber}</div>
+    </div>
+    <div class="doc-num-block">
+      <div class="label">Nº Control</div>
+      <div class="value">${d.controlNumber}</div>
+    </div>
+    <div class="doc-num-block">
+      <div class="label">Fecha</div>
+      <div class="value">${formatDate(d.issueDate)}</div>
+    </div>
+  </div>
+` : `<div style="margin-top:16px;padding:12px 16px;background:#f4f3ef;border-radius:6px;display:flex;gap:32px;font-size:10pt;">
+  <div><span class="label" style="text-transform:uppercase;letter-spacing:0.12em;color:#8a8a82;font-size:8pt;">Código</span><div style="font-family:monospace;font-weight:600;">${d.code}</div></div>
+  <div><span class="label" style="text-transform:uppercase;letter-spacing:0.12em;color:#8a8a82;font-size:8pt;">Fecha</span><div>${formatDate(d.issueDate)}</div></div>
+</div>`}
+
+<div class="info-grid">
+  <div class="info-box">
+    <h3>Emisor</h3>
+    <div class="info-line"><strong>${escapeHtml(cfg.companyName||'—')}</strong></div>
+    <div class="info-line">RIF: ${escapeHtml(cfg.rif||'—')}</div>
+    <div class="info-line">${escapeHtml(cfg.address||'')}</div>
+    ${cfg.phone ? `<div class="info-line">Tel: ${escapeHtml(cfg.phone)}</div>` : ''}
+  </div>
+  <div class="info-box">
+    <h3>Cliente</h3>
+    <div class="info-line"><strong>${escapeHtml(d.customerName)}</strong></div>
+    <div class="info-line">RIF/CI: ${escapeHtml(d.customerRif||'—')}</div>
+    ${d.customerAddress ? `<div class="info-line">${escapeHtml(d.customerAddress)}</div>` : ''}
+    ${d.customerPhone ? `<div class="info-line">Tel: ${escapeHtml(d.customerPhone)}</div>` : ''}
+    ${customer?.email ? `<div class="info-line">${escapeHtml(customer.email)}</div>` : ''}
+  </div>
+</div>
+
+<table>
+  <thead><tr>
+    <th style="width:5%;">#</th>
+    <th>Descripción</th>
+    <th class="num">Cantidad</th>
+    <th>Unidad</th>
+    <th class="num">Precio Unit.</th>
+    ${d.items.some(it => it.discount > 0) ? '<th class="num">Desc.</th>' : ''}
+    <th>IVA</th>
+    <th class="num">Subtotal</th>
+  </tr></thead>
+  <tbody>
+    ${d.items.map((it, idx) => `<tr>
+      <td>${idx+1}</td>
+      <td>
+        <strong>${escapeHtml(it.formulaName || it.description)}</strong>
+        ${it.allocations && it.allocations.length ? `<div style="font-size:9pt;color:#8a8a82;margin-top:2px;">Lotes: ${it.allocations.map(a => a.lotCode).join(', ')}</div>` : ''}
+      </td>
+      <td class="num">${it.quantity.toFixed(3)}</td>
+      <td>${escapeHtml(it.unit||'')}</td>
+      <td class="num">${formatMoney(it.unitPrice, d.currency)}</td>
+      ${d.items.some(x => x.discount > 0) ? `<td class="num">${(it.discount||0).toFixed(2)}%</td>` : ''}
+      <td>${it.exempt ? '<span style="color:#b8860b;font-size:9pt;">Exento</span>' : `${d.ivaRate}%`}</td>
+      <td class="num"><strong>${formatMoney(it.subtotal, d.currency)}</strong></td>
+    </tr>`).join('')}
+  </tbody>
+</table>
+
+<div class="totals-section">
+  <div class="footer-info">
+    <div class="row"><strong>Términos de pago:</strong> ${escapeHtml(d.paymentTerms||'—')}</div>
+    ${d.dueDate ? `<div class="row"><strong>Fecha de vencimiento:</strong> ${formatDate(d.dueDate)}</div>` : ''}
+    ${d.notes ? `<div class="row" style="margin-top:12px;"><strong>Observaciones:</strong><br>${escapeHtml(d.notes)}</div>` : ''}
+    ${d.currency !== 'VES' ? `<div class="currency-note"><strong>Moneda de la factura:</strong> ${d.currency} · Tasa de referencia: ${d.rateValue?.toFixed(4)} Bs/${d.currency} · Total en bolívares: <strong>${formatMoney(d.totalVES, 'VES')}</strong></div>` : ''}
+  </div>
+  <div class="totals">
+    <div class="totals-row"><span>Subtotal</span><span class="num">${formatMoney(d.subtotal, d.currency)}</span></div>
+    ${d.exemptBase > 0 ? `<div class="totals-row"><span>Exento de IVA</span><span class="num">${formatMoney(d.exemptBase, d.currency)}</span></div>` : ''}
+    <div class="totals-row"><span>Base imponible</span><span class="num">${formatMoney(d.taxableBase, d.currency)}</span></div>
+    <div class="totals-row"><span>IVA ${d.ivaRate}%</span><span class="num">${formatMoney(d.ivaAmount, d.currency)}</span></div>
+    <div class="totals-row grand"><span>TOTAL</span><span class="num">${formatMoney(d.total, d.currency)}</span></div>
+  </div>
+</div>
+
+${d.type === 'FACTURA' && isFiscal ? `
+<div style="margin-top:32px;padding:12px 16px;background:#f4f3ef;border-radius:6px;font-size:9pt;color:#4a4a45;">
+  Documento emitido conforme a la normativa SENIAT vigente. Imprenta autorizada según providencia administrativa correspondiente.
+</div>
+` : ''}
+
+<div class="signatures">
+  <div class="signature">
+    <div class="signature-line">
+      ${escapeHtml(cfg.companyName||'—')}<br>
+      <span style="font-size:9pt;color:#8a8a82;">Emisor</span>
+    </div>
+  </div>
+  <div class="signature">
+    <div class="signature-line">
+      ${escapeHtml(d.customerName)}<br>
+      <span style="font-size:9pt;color:#8a8a82;">Recibí conforme</span>
+    </div>
+  </div>
+</div>
+
+</body></html>`;
+
+  const w = window.open('', '_blank');
+  if (!w) { ui.toast('Permite ventanas emergentes para imprimir', 'error'); return; }
+  w.document.write(html);
+  w.document.close();
+}
+
+function escapeHtml(s) { return String(s ?? '').replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m])); }
+function formatDate(iso) { return iso ? new Date(iso).toLocaleDateString('es-VE', { day: '2-digit', month: 'long', year: 'numeric' }) : '—'; }
+function formatMoney(amount, ccy) {
+  const n = parseFloat(amount) || 0;
+  if (ccy === 'USD') return '$ ' + n.toLocaleString('en-US', { minimumFractionDigits: 2 });
+  if (ccy === 'EUR') return '€ ' + n.toLocaleString('de-DE', { minimumFractionDigits: 2 });
+  return n.toLocaleString('es-VE', { minimumFractionDigits: 2 }) + ' Bs.';
+}
+
+render();
 </script>
-</body></html>
+</body>
+</html>
