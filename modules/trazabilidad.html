@@ -1,7 +1,8 @@
 <!DOCTYPE html>
 <html lang="es">
 <head>
-<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Trazabilidad · altcare</title>
 <link rel="stylesheet" href="../assets/css/styles.css">
 </head>
@@ -10,20 +11,337 @@
 <script src="../assets/js/auth.js"></script>
 <script src="../assets/js/currency.js"></script>
 <script src="../assets/js/tax.js"></script>
+<script src="../assets/js/inventory.js"></script>
+<script src="../assets/js/formulas.js"></script>
 <script src="../assets/js/ui.js"></script>
 <script>
 if (!auth.guard('trazabilidad')) throw new Error('blocked');
-ui.renderLayout({
-  activeModule: 'trazabilidad',
-  pageEyebrow: 'Producción',
-  pageTitle: 'Trazabilidad',
-  contentHtml: `
-    <div class="card" style="text-align:center;padding:64px 32px;">
-      <div style="font-size:48px;margin-bottom:16px;">🔍</div>
-      <h3 style="font-family:var(--font-display);font-style:italic;font-size:24px;margin-bottom:8px;">Próximamente</h3>
-      <p class="text-muted" style="max-width:520px;margin:0 auto;">Busca cualquier lote y mira toda su historia: qué materias primas usó, quién lo fabricó, a qué clientes se vendió. Crítico para auditorías y recalls — Fase 2.</p>
-    </div>
-  `
-});
+
+let view = 'search';   // search | fgLot | rmLot | of
+let target = null;     // {kind, id}
+
+function render() {
+  if (view === 'fgLot') return renderFGLot();
+  if (view === 'rmLot') return renderRMLot();
+  if (view === 'of') return renderOF();
+  return renderSearch();
+}
+
+// ====== BUSCADOR ======
+
+function renderSearch() {
+  const fgLots = db.getAll(db.COLLECTIONS.finishedGoods);
+  const rmLots = db.getAll(db.COLLECTIONS.rmLots);
+  const ofs = db.getAll(db.COLLECTIONS.productionOrders);
+
+  const recentFG = [...fgLots].sort((a,b)=>(b.manufactureDate||'').localeCompare(a.manufactureDate||'')).slice(0, 10);
+
+  ui.renderLayout({
+    activeModule: 'trazabilidad', pageEyebrow: 'Producción', pageTitle: 'Trazabilidad',
+    contentHtml: `
+      <div class="action-bar">
+        <div class="action-bar-left">
+          <h2 class="action-bar-title">Trazabilidad navegable</h2>
+          <span class="action-bar-count">Buscá un lote, OF o MP y navegá su historia completa</span>
+        </div>
+      </div>
+
+      <div class="card mb-24">
+        <div class="card-header"><div class="card-title">Buscar</div></div>
+        <div class="form-grid form-grid-2">
+          <div class="field">
+            <label class="field-label">Lote PT (producto terminado)</label>
+            <select class="select" onchange="if(this.value)openFGLot(this.value)">
+              <option value="">— Buscar lote PT —</option>
+              ${fgLots.map(l => `<option value="${l.id}">${ui.escape(l.code)} · ${ui.escape(l.formulaName||'')}</option>`).join('')}
+            </select>
+          </div>
+          <div class="field">
+            <label class="field-label">Lote MP (materia prima)</label>
+            <select class="select" onchange="if(this.value)openRMLot(this.value)">
+              <option value="">— Buscar lote MP —</option>
+              ${rmLots.map(l => `<option value="${l.id}">${ui.escape(l.code)} · ${ui.escape(l.rawMaterialName||'')}</option>`).join('')}
+            </select>
+          </div>
+          <div class="field" style="grid-column:1/-1;">
+            <label class="field-label">Orden de Fabricación</label>
+            <select class="select" onchange="if(this.value)openOF(this.value)">
+              <option value="">— Buscar OF —</option>
+              ${ofs.map(o => `<option value="${o.id}">${ui.escape(o.code)} · ${ui.escape(o.formulaName||'')} · ${ui.formatDate(o.scheduledDate)}</option>`).join('')}
+            </select>
+          </div>
+        </div>
+      </div>
+
+      <div class="divider-section"><span class="section-title" style="margin:0;">Lotes PT recientes</span></div>
+      <div class="grid grid-2">
+        ${recentFG.length ? recentFG.map(l => `
+          <div class="card" style="cursor:pointer;padding:16px;" onclick="openFGLot('${l.id}')">
+            <div style="display:flex;justify-content:space-between;align-items:start;gap:8px;margin-bottom:8px;">
+              <div><div class="td-mono td-strong">${ui.escape(l.code)}</div><div class="text-muted" style="font-size:12px;margin-top:2px;">${ui.escape(l.formulaName||'')}</div></div>
+              <span class="badge ${l.status==='LIBERADO'?'badge-success':l.status==='RECHAZADO'?'badge-danger':'badge-warning'}">${l.status||'—'}</span>
+            </div>
+            <div class="text-muted" style="font-size:11px;">Fabricado: ${ui.formatDate(l.manufactureDate)} · ${l.balance||0} ${l.unit}</div>
+          </div>
+        `).join('') : '<div class="text-muted">No hay lotes aún.</div>'}
+      </div>
+    `
+  });
+}
+
+function openFGLot(id) { target = { kind: 'fg', id }; view = 'fgLot'; render(); }
+function openRMLot(id) { target = { kind: 'rm', id }; view = 'rmLot'; render(); }
+function openOF(id) { target = { kind: 'of', id }; view = 'of'; render(); }
+function backToSearch() { view = 'search'; target = null; render(); }
+
+// ====== LOTE PT ======
+
+function renderFGLot() {
+  const l = db.getById(db.COLLECTIONS.finishedGoods, target.id);
+  if (!l) { backToSearch(); return; }
+  const of = l.productionOrderId ? db.getById(db.COLLECTIONS.productionOrders, l.productionOrderId) : null;
+  const qc = l.qcTestId ? db.getById(db.COLLECTIONS.qcTests, l.qcTestId) : null;
+
+  // MPs usadas
+  const mpUsed = of?.items?.map(it => {
+    const rm = db.getById(db.COLLECTIONS.rawMaterials, it.rawMaterialId);
+    const lot = db.getById(db.COLLECTIONS.rmLots, it.lotId);
+    return { ...it, rm, lot };
+  }) || [];
+
+  ui.renderLayout({
+    activeModule: 'trazabilidad', pageEyebrow: 'Lote PT', pageTitle: l.code,
+    contentHtml: `
+      <div class="action-bar">
+        <div class="action-bar-left"><button class="btn btn-ghost btn-sm" onclick="backToSearch()">← Volver</button></div>
+      </div>
+
+      <!-- Estado del lote -->
+      <div class="card mb-24" style="background:${l.status==='LIBERADO'?'var(--success-soft)':l.status==='RECHAZADO'?'var(--danger-soft)':'var(--warning-soft)'};border-color:${l.status==='LIBERADO'?'#bdd6c5':l.status==='RECHAZADO'?'#e0b8b8':'#e6d4a8'};">
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:16px;">
+          <div>
+            <div class="kpi-label">Lote de producto terminado</div>
+            <div style="font-family:var(--font-display);font-style:italic;font-size:32px;letter-spacing:-0.02em;margin-top:4px;">${ui.escape(l.formulaName||'—')}</div>
+            <div style="margin-top:8px;font-size:13px;color:var(--ink-2);">${l.balance||0} de ${l.quantity||0} ${l.unit} disponibles · Fabricado ${ui.formatDate(l.manufactureDate)}${l.expiryDate?' · Vence '+ui.formatDate(l.expiryDate):''}</div>
+          </div>
+          <span class="badge" style="font-size:14px;padding:6px 14px;background:white;">${l.status||'—'}</span>
+        </div>
+      </div>
+
+      <!-- Cadena de trazabilidad -->
+      <div class="divider-section"><span class="section-title" style="margin:0;">Cadena de trazabilidad</span></div>
+
+      <div class="grid grid-2 mb-24">
+
+        <!-- ORIGEN: Orden de fabricación -->
+        <div class="card" style="cursor:${of?'pointer':'default'};" ${of?`onclick="openOF('${of.id}')"`:''}>
+          <div class="card-header">
+            <div>
+              <div class="kpi-label">Origen</div>
+              <div class="card-title">Orden de fabricación</div>
+            </div>
+            ${of?'<span style="color:var(--ink-3);">→</span>':''}
+          </div>
+          ${of ? `
+            <div class="td-strong td-mono" style="font-size:18px;margin-bottom:8px;">${ui.escape(of.code)}</div>
+            <div style="font-size:13px;color:var(--ink-2);">v${of.formulaVersion} · ${of.batchSize} ${of.batchUnit} · ${of.status}</div>
+            <div class="text-muted" style="font-size:12px;margin-top:4px;">Operario: ${ui.escape(of.operatorName||'—')}</div>
+            ${of.completedAt ? `<div class="text-muted" style="font-size:12px;">Terminada: ${ui.formatDateTime(of.completedAt)}</div>` : ''}
+          ` : '<div class="text-muted" style="font-size:13px;">Sin OF asociada</div>'}
+        </div>
+
+        <!-- CALIDAD -->
+        <div class="card">
+          <div class="card-header">
+            <div>
+              <div class="kpi-label">Calidad</div>
+              <div class="card-title">Control de QC</div>
+            </div>
+            ${qc?'<a href="calidad.html" style="color:var(--ink-3);text-decoration:none;">→</a>':''}
+          </div>
+          ${qc ? `
+            <div class="td-strong td-mono" style="font-size:18px;margin-bottom:8px;">${ui.escape(qc.code)}</div>
+            <div style="font-size:13px;color:var(--ink-2);">${ui.formatDate(qc.testDate)} · ${ui.escape(qc.analystName||'—')}</div>
+            <div style="margin-top:8px;"><span class="badge ${qc.status==='APPROVED'?'badge-success':qc.status==='REJECTED'?'badge-danger':'badge-warning'}">${qc.status}</span></div>
+            <button class="btn btn-secondary btn-sm mt-16" onclick="event.stopPropagation();downloadCOAFromTrace('${qc.id}')">${ui.icon('download')} Descargar COA</button>
+          ` : '<div class="text-muted" style="font-size:13px;">Sin prueba de QC realizada</div>'}
+        </div>
+      </div>
+
+      <!-- Materias primas que componen este lote -->
+      <div class="divider-section"><span class="section-title" style="margin:0;">Composición · Materias primas usadas (${mpUsed.length})</span></div>
+
+      <div class="card" style="padding:0;">
+        ${mpUsed.length ? `<table>
+          <thead><tr><th>Fase</th><th>Materia prima</th><th>Lote MP</th><th>Proveedor lote</th><th>Vence MP</th><th style="text-align:right;">Cantidad usada</th><th style="width:60px;"></th></tr></thead>
+          <tbody>${mpUsed.map(it => {
+            const supplier = it.lot?.supplierId ? db.getById(db.COLLECTIONS.suppliers, it.lot.supplierId) : null;
+            return `<tr>
+              <td><span class="badge badge-plain" style="font-size:10px;">${ui.escape(it.phase||'—')}</span></td>
+              <td><div class="td-strong">${it.rm?ui.escape(it.rm.name):'—'}</div><div class="text-muted" style="font-size:11px;">${it.rm?.code||''}</div></td>
+              <td><span class="td-mono">${it.lot?.code || '—'}</span></td>
+              <td>${supplier ? ui.escape(supplier.name) : '<span class="text-muted">—</span>'}</td>
+              <td><span class="text-muted">${it.lot?.expiryDate ? ui.formatDate(it.lot.expiryDate) : '—'}</span></td>
+              <td style="text-align:right;"><span class="td-mono td-strong">${(it.required||0).toFixed(3)}</span> <span class="text-muted">${it.rm?.unit||''}</span></td>
+              <td>${it.lot ? `<button class="btn-icon" onclick="openRMLot('${it.lot.id}')" title="Ver lote MP">→</button>` : ''}</td>
+            </tr>`;
+          }).join('')}</tbody>
+        </table>` : '<div style="padding:24px;text-align:center;color:var(--ink-3);">Sin información de MP</div>'}
+      </div>
+
+      ${l.notes ? `<div class="card mt-24"><div class="kpi-label">Notas</div><div style="margin-top:8px;">${ui.escape(l.notes)}</div></div>` : ''}
+    `
+  });
+}
+
+// ====== LOTE MP ======
+
+function renderRMLot() {
+  const l = db.getById(db.COLLECTIONS.rmLots, target.id);
+  if (!l) { backToSearch(); return; }
+  const rm = db.getById(db.COLLECTIONS.rawMaterials, l.rawMaterialId);
+  const supplier = l.supplierId ? db.getById(db.COLLECTIONS.suppliers, l.supplierId) : null;
+
+  // ¿En qué OFs se usó este lote?
+  const usedInOFs = db.query(db.COLLECTIONS.productionOrders, o => o.items?.some(it => it.lotId === l.id));
+
+  ui.renderLayout({
+    activeModule: 'trazabilidad', pageEyebrow: 'Lote MP', pageTitle: l.code,
+    contentHtml: `
+      <div class="action-bar">
+        <div class="action-bar-left"><button class="btn btn-ghost btn-sm" onclick="backToSearch()">← Volver</button></div>
+      </div>
+
+      <div class="card mb-24" style="background:var(--accent-soft);border-color:#cdd9c8;">
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:16px;">
+          <div>
+            <div class="kpi-label">Lote de materia prima</div>
+            <div style="font-family:var(--font-display);font-style:italic;font-size:32px;letter-spacing:-0.02em;margin-top:4px;">${ui.escape(rm?.name||'—')}</div>
+            <div style="margin-top:8px;font-size:13px;color:var(--ink-2);">${l.balance||0} de ${l.quantity||0} ${l.unit} restantes · Recibido ${ui.formatDate(l.receiptDate)}${l.expiryDate?' · Vence '+ui.formatDate(l.expiryDate):''}</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="grid grid-2 mb-24">
+
+        <!-- ORIGEN: Proveedor -->
+        <div class="card">
+          <div class="card-header"><div><div class="kpi-label">Origen</div><div class="card-title">Proveedor</div></div></div>
+          ${supplier ? `
+            <div class="td-strong" style="font-size:18px;">${ui.escape(supplier.name)}</div>
+            <div class="text-muted" style="font-size:13px;margin-top:4px;">RIF: ${ui.escape(supplier.rif||'—')}</div>
+            ${l.supplierLotNumber ? `<div style="margin-top:8px;font-size:13px;">Lote del proveedor: <span class="td-mono td-strong">${ui.escape(l.supplierLotNumber)}</span></div>` : ''}
+          ` : '<div class="text-muted">Sin proveedor asignado</div>'}
+        </div>
+
+        <!-- COSTO -->
+        <div class="card">
+          <div class="card-header"><div><div class="kpi-label">Costos</div><div class="card-title">Información económica</div></div></div>
+          <div style="font-family:var(--font-display);font-size:24px;letter-spacing:-0.02em;">${currency.format(l.unitCost, l.costCurrency)}</div>
+          <div class="text-muted" style="font-size:12px;margin-top:4px;">por ${l.unit}</div>
+          <div style="margin-top:12px;font-size:13px;">Valor recepción: <strong>${currency.format(l.quantity * l.unitCost, l.costCurrency)}</strong></div>
+        </div>
+      </div>
+
+      <!-- Destinos: en qué OFs se usó -->
+      <div class="divider-section"><span class="section-title" style="margin:0;">Destino · Usado en ${usedInOFs.length} orden${usedInOFs.length!==1?'es':''} de fabricación</span></div>
+
+      ${usedInOFs.length ? `<div class="card" style="padding:0;"><table>
+        <thead><tr><th>OF</th><th>Fórmula</th><th>Lote PT generado</th><th>Estado</th><th>Fecha</th><th style="text-align:right;">Cantidad usada</th><th style="width:60px;"></th></tr></thead>
+        <tbody>${usedInOFs.map(o => {
+          const used = o.items.find(it => it.lotId === l.id);
+          const fg = o.fgLotId ? db.getById(db.COLLECTIONS.finishedGoods, o.fgLotId) : null;
+          return `<tr>
+            <td><span class="td-mono td-strong">${ui.escape(o.code)}</span></td>
+            <td>${ui.escape(o.formulaName||'—')}</td>
+            <td>${fg ? `<span class="td-mono">${ui.escape(fg.code)}</span>` : '<span class="text-muted">—</span>'}</td>
+            <td><span class="badge badge-plain">${o.status}</span></td>
+            <td><span class="text-muted">${ui.formatDate(o.scheduledDate)}</span></td>
+            <td style="text-align:right;"><span class="td-mono td-strong">${(used?.required||0).toFixed(3)}</span> <span class="text-muted">${l.unit}</span></td>
+            <td><button class="btn-icon" onclick="openOF('${o.id}')" title="Ver OF">→</button></td>
+          </tr>`;
+        }).join('')}</tbody>
+      </table></div>` : '<div class="card" style="padding:32px;text-align:center;color:var(--ink-3);">Este lote aún no se ha usado en ninguna OF</div>'}
+    `
+  });
+}
+
+// ====== OF ======
+
+function renderOF() {
+  const o = db.getById(db.COLLECTIONS.productionOrders, target.id);
+  if (!o) { backToSearch(); return; }
+  const fg = o.fgLotId ? db.getById(db.COLLECTIONS.finishedGoods, o.fgLotId) : null;
+  const qc = o.qcTestId ? db.getById(db.COLLECTIONS.qcTests, o.qcTestId) : null;
+
+  const mpUsed = o.items?.map(it => ({
+    ...it,
+    rm: db.getById(db.COLLECTIONS.rawMaterials, it.rawMaterialId),
+    lot: db.getById(db.COLLECTIONS.rmLots, it.lotId)
+  })) || [];
+
+  ui.renderLayout({
+    activeModule: 'trazabilidad', pageEyebrow: 'OF', pageTitle: o.code,
+    contentHtml: `
+      <div class="action-bar">
+        <div class="action-bar-left"><button class="btn btn-ghost btn-sm" onclick="backToSearch()">← Volver</button></div>
+      </div>
+
+      <div class="card mb-24">
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:16px;">
+          <div>
+            <div class="kpi-label">Orden de fabricación</div>
+            <div style="font-family:var(--font-display);font-style:italic;font-size:32px;letter-spacing:-0.02em;margin-top:4px;">${ui.escape(o.formulaName||'—')}</div>
+            <div style="margin-top:8px;font-size:13px;color:var(--ink-2);">v${o.formulaVersion} · ${o.batchSize} ${o.batchUnit} · Programada ${ui.formatDate(o.scheduledDate)}</div>
+          </div>
+          <span class="badge badge-plain" style="font-size:14px;padding:6px 14px;">${o.status}</span>
+        </div>
+      </div>
+
+      <!-- Lote PT generado -->
+      ${fg ? `
+        <div class="divider-section"><span class="section-title" style="margin:0;">Resultado</span></div>
+        <div class="card mb-24" style="cursor:pointer;" onclick="openFGLot('${fg.id}')">
+          <div class="card-header"><div><div class="kpi-label">Lote PT generado</div><div class="card-title">${ui.escape(fg.code)}</div></div><span style="color:var(--ink-3);">→</span></div>
+          <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:16px;">
+            <div><div class="kpi-label">Cantidad</div><div class="td-strong">${fg.balance||0} de ${fg.quantity||0} ${fg.unit}</div></div>
+            <div><div class="kpi-label">Fabricación</div><div class="td-strong">${ui.formatDate(fg.manufactureDate)}</div></div>
+            <div><div class="kpi-label">Vencimiento</div><div class="td-strong">${fg.expiryDate?ui.formatDate(fg.expiryDate):'—'}</div></div>
+            <div><div class="kpi-label">Estado</div><span class="badge ${fg.status==='LIBERADO'?'badge-success':fg.status==='RECHAZADO'?'badge-danger':'badge-warning'}">${fg.status}</span></div>
+          </div>
+        </div>
+      ` : ''}
+
+      <!-- Materias primas -->
+      <div class="divider-section"><span class="section-title" style="margin:0;">Materias primas (${mpUsed.length})</span></div>
+
+      <div class="card" style="padding:0;">
+        <table>
+          <thead><tr><th>Fase</th><th>MP</th><th>Lote MP</th><th>Proveedor</th><th style="text-align:right;">Cantidad</th><th style="width:60px;"></th></tr></thead>
+          <tbody>${mpUsed.map(it => {
+            const supplier = it.lot?.supplierId ? db.getById(db.COLLECTIONS.suppliers, it.lot.supplierId) : null;
+            return `<tr>
+              <td><span class="badge badge-plain" style="font-size:10px;">${ui.escape(it.phase||'')}</span></td>
+              <td><div class="td-strong">${it.rm?ui.escape(it.rm.name):'—'}</div></td>
+              <td><span class="td-mono">${it.lot?.code||'—'}</span></td>
+              <td>${supplier ? ui.escape(supplier.name) : '<span class="text-muted">—</span>'}</td>
+              <td style="text-align:right;"><span class="td-mono td-strong">${(it.required||0).toFixed(3)}</span> <span class="text-muted">${it.rm?.unit||''}</span></td>
+              <td>${it.lot?`<button class="btn-icon" onclick="openRMLot('${it.lot.id}')">→</button>`:''}</td>
+            </tr>`;
+          }).join('')}</tbody>
+        </table>
+      </div>
+    `
+  });
+}
+
+function downloadCOAFromTrace(qcId) {
+  // Reutiliza función del módulo calidad redirigiendo
+  sessionStorage.setItem('downloadCOAOnLoad', qcId);
+  window.location.href = 'calidad.html';
+}
+
+render();
 </script>
-</body></html>
+</body>
+</html>

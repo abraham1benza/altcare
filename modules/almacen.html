@@ -1,7 +1,8 @@
 <!DOCTYPE html>
 <html lang="es">
 <head>
-<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Almacén · altcare</title>
 <link rel="stylesheet" href="../assets/css/styles.css">
 </head>
@@ -10,20 +11,206 @@
 <script src="../assets/js/auth.js"></script>
 <script src="../assets/js/currency.js"></script>
 <script src="../assets/js/tax.js"></script>
+<script src="../assets/js/inventory.js"></script>
+<script src="../assets/js/formulas.js"></script>
 <script src="../assets/js/ui.js"></script>
 <script>
 if (!auth.guard('almacen')) throw new Error('blocked');
-ui.renderLayout({
-  activeModule: 'almacen',
-  pageEyebrow: 'Inventario',
-  pageTitle: 'Almacén',
-  contentHtml: `
-    <div class="card" style="text-align:center;padding:64px 32px;">
-      <div style="font-size:48px;margin-bottom:16px;">🏬</div>
-      <h3 style="font-family:var(--font-display);font-style:italic;font-size:24px;margin-bottom:8px;">Próximamente</h3>
-      <p class="text-muted" style="max-width:520px;margin:0 auto;">Movimientos: entradas, salidas, traspasos, ajustes. Histórico completo de cada item del inventario — Fase 2.</p>
-    </div>
-  `
-});
+
+let view = 'overview';   // overview | kardex
+let kardexItem = null;   // {kind, id}
+let typeFilter = '';
+let searchTerm = '';
+
+function render() {
+  if (view === 'kardex' && kardexItem) return renderKardex();
+  return renderOverview();
+}
+
+function renderOverview() {
+  const moves = db.getAll(db.COLLECTIONS.warehouseMoves);
+  let filtered = moves;
+  if (typeFilter) filtered = filtered.filter(m => m.type === typeFilter);
+  if (searchTerm) {
+    const q = searchTerm.toLowerCase();
+    filtered = filtered.filter(m => (m.itemName||'').toLowerCase().includes(q) || (m.lotCode||'').toLowerCase().includes(q) || (m.reference||'').toLowerCase().includes(q));
+  }
+  filtered.sort((a,b) => (b.timestamp||'').localeCompare(a.timestamp||''));
+  const recent = filtered.slice(0, 100);
+
+  // Stats
+  const allRMs = db.getAll(db.COLLECTIONS.rawMaterials);
+  const allFGs = db.getAll(db.COLLECTIONS.finishedGoods).filter(l => l.balance > 0);
+  const totalRMValue = db.getAll(db.COLLECTIONS.rmLots).filter(l => l.balance > 0).reduce((s, l) => {
+    let usd = (l.balance||0) * (l.unitCost||0);
+    if (l.costCurrency === 'VES') {
+      const r = currency.getActiveRate();
+      usd = r && r.value ? usd / r.value : 0;
+    }
+    return s + usd;
+  }, 0);
+  const totalFGValue = allFGs.reduce((s,l) => s + ((l.balance||0) * (l.unitCost||0)), 0);
+
+  const warehouses = db.getAll(db.COLLECTIONS.warehouses);
+  const whMap = Object.fromEntries(warehouses.map(w => [w.id, w.name]));
+
+  const movesTable = recent.length ? `<table>
+    <thead><tr><th>Fecha/hora</th><th>Tipo</th><th>Item</th><th>Lote</th><th style="text-align:right;">Cantidad</th><th>Almacén</th><th>Referencia</th><th>Usuario</th></tr></thead>
+    <tbody>${recent.map(m => {
+      const t = inventory.MOVE_TYPES[m.type] || { label: m.type, direction: 'in' };
+      const sign = t.direction === 'in' ? '+' : '−';
+      const color = t.direction === 'in' ? 'var(--success)' : 'var(--danger)';
+      return `<tr>
+        <td><span class="text-muted" style="font-size:12px;">${ui.formatDateTime(m.timestamp)}</span></td>
+        <td><span class="badge badge-plain" style="font-size:10px;">${t.label}</span></td>
+        <td><div class="td-strong">${ui.escape(m.itemName||'—')}</div><div class="text-muted" style="font-size:11px;">${ui.escape(m.itemCode||'')} · ${m.itemKind}</div></td>
+        <td><span class="td-mono">${ui.escape(m.lotCode||'—')}</span></td>
+        <td style="text-align:right;color:${color};font-weight:600;font-family:var(--font-mono);">${sign}${(m.quantity||0).toLocaleString('es-VE',{minimumFractionDigits:2,maximumFractionDigits:3})} <span class="text-muted">${m.unit||''}</span></td>
+        <td><span class="text-muted" style="font-size:12px;">${ui.escape(whMap[m.warehouseId]||'—')}</span></td>
+        <td><span class="text-muted" style="font-size:12px;">${ui.escape(m.reference||'')}</span></td>
+        <td><span class="text-muted" style="font-size:12px;">${ui.escape(m.user||'—')}</span></td>
+      </tr>`;
+    }).join('')}</tbody></table>` : '<div class="empty-state"><div class="empty-state-title">Sin movimientos</div><div class="empty-state-text">Los movimientos de inventario aparecerán aquí automáticamente.</div></div>';
+
+  // Listado de items con stock para abrir kardex
+  const stockItems = [
+    ...allRMs.filter(rm => inventory.getStockForRM(rm.id) > 0).map(rm => ({
+      kind: 'MP', id: rm.id, code: rm.code, name: rm.name, stock: inventory.getStockForRM(rm.id), unit: rm.unit
+    })),
+    ...allFGs.map(fg => ({ kind: 'PT', id: fg.formulaId, code: fg.code, name: fg.formulaName, stock: fg.balance, unit: fg.unit, lotId: fg.id }))
+  ];
+
+  ui.renderLayout({
+    activeModule: 'almacen', pageEyebrow: 'Inventario', pageTitle: 'Almacén',
+    contentHtml: `
+      <div class="action-bar">
+        <div class="action-bar-left"><h2 class="action-bar-title">Almacén general</h2><span class="action-bar-count">Movimientos · Kardex valorizado · Inventario</span></div>
+      </div>
+
+      <div class="grid grid-4 mb-24">
+        <div class="kpi"><div class="kpi-label">Materias primas</div><div class="kpi-value">${allRMs.length}</div><div class="kpi-value-sub">referencias</div></div>
+        <div class="kpi"><div class="kpi-label">Lotes PT activos</div><div class="kpi-value">${allFGs.length}</div><div class="kpi-value-sub">con stock</div></div>
+        <div class="kpi"><div class="kpi-label">Valor MP</div><div class="kpi-value" style="color:var(--accent-ink);">$${totalRMValue.toFixed(2)}</div><div class="kpi-value-sub">en almacén</div></div>
+        <div class="kpi"><div class="kpi-label">Valor PT</div><div class="kpi-value" style="color:var(--accent-ink);">$${totalFGValue.toFixed(2)}</div><div class="kpi-value-sub">a costo</div></div>
+      </div>
+
+      <div class="grid" style="grid-template-columns:2fr 1fr;gap:16px;align-items:flex-start;">
+        <div class="table-wrap">
+          <div class="table-toolbar">
+            <div class="search-box">${ui.icon('search')}<input class="input" type="search" placeholder="Buscar movimientos..." value="${ui.escape(searchTerm)}" oninput="onSearch(this.value)"></div>
+            <select class="select" style="max-width:200px;" onchange="onTypeFilter(this.value)">
+              <option value="">Todos los tipos</option>
+              ${Object.entries(inventory.MOVE_TYPES).map(([k,t])=>`<option value="${k}" ${k===typeFilter?'selected':''}>${t.label}</option>`).join('')}
+            </select>
+          </div>
+          <div style="padding:14px 20px;border-bottom:1px solid var(--border);font-size:12px;color:var(--ink-3);font-weight:600;">Últimos ${recent.length} movimientos · ${moves.length} totales</div>
+          ${movesTable}
+        </div>
+
+        <div class="card" style="padding:0;">
+          <div style="padding:16px 20px;border-bottom:1px solid var(--border);"><div class="card-title" style="font-size:14px;">Items con stock</div><div class="text-muted" style="font-size:11px;margin-top:2px;">Click para ver kardex valorizado</div></div>
+          <div style="max-height:600px;overflow-y:auto;">
+            ${stockItems.length ? stockItems.slice(0, 50).map(it => `
+              <div class="list-row" style="grid-template-columns:auto 1fr auto;cursor:pointer;padding:12px 16px;" onclick="openKardex('${it.kind}','${it.id}','${it.lotId||''}')">
+                <span class="badge ${it.kind==='MP'?'badge-plain':'badge-accent'}" style="font-size:10px;">${it.kind}</span>
+                <div><div class="td-strong" style="font-size:13px;">${ui.escape(it.name)}</div><div class="text-muted" style="font-size:11px;">${ui.escape(it.code)}</div></div>
+                <div style="text-align:right;"><div class="td-mono td-strong" style="font-size:13px;">${it.stock.toFixed(2)}</div><div class="text-muted" style="font-size:11px;">${it.unit}</div></div>
+              </div>
+            `).join('') : '<div style="padding:32px;text-align:center;color:var(--ink-3);font-size:12px;">Sin items con stock</div>'}
+          </div>
+        </div>
+      </div>
+    `
+  });
+}
+
+function onSearch(v) { searchTerm = v; render(); }
+function onTypeFilter(v) { typeFilter = v; render(); }
+
+// ====== KARDEX ======
+
+function openKardex(kind, id, lotId) {
+  kardexItem = { kind, id, lotId: lotId || null };
+  view = 'kardex';
+  render();
+}
+
+function backToOverview() { view = 'overview'; kardexItem = null; render(); }
+
+function renderKardex() {
+  const { kind, id, lotId } = kardexItem;
+  let item, name, code, unit;
+  if (kind === 'MP') {
+    item = db.getById(db.COLLECTIONS.rawMaterials, id);
+    if (!item) { backToOverview(); return; }
+    name = item.name; code = item.code; unit = item.unit;
+  } else {
+    item = db.getById(db.COLLECTIONS.formulas, id);
+    name = item?.name || 'PT'; code = item?.code || '—'; unit = 'kg';
+  }
+
+  // Movimientos del item
+  let moves = inventory.getKardex(kind, id);
+  if (lotId) moves = moves.filter(m => m.lotId === lotId);
+
+  // Calcular saldos corridos
+  let runningQty = 0;
+  let runningValueUSD = 0;
+  const rows = moves.map(m => {
+    const t = inventory.MOVE_TYPES[m.type] || { label: m.type, direction: 'in' };
+    const sign = t.direction === 'in' ? 1 : -1;
+    const qty = (parseFloat(m.quantity) || 0) * sign;
+    let unitUSD = parseFloat(m.unitCost) || 0;
+    if (m.costCurrency === 'VES') {
+      const r = currency.getActiveRate();
+      unitUSD = r && r.value ? unitUSD / r.value : 0;
+    }
+    const value = qty * unitUSD;
+    runningQty += qty;
+    runningValueUSD += value;
+    return { ...m, _label: t.label, _direction: t.direction, _qtySigned: qty, _valueSigned: value, _runQty: runningQty, _runVal: runningValueUSD };
+  });
+
+  const tableHtml = rows.length ? `<table>
+    <thead><tr><th>Fecha</th><th>Movimiento</th><th>Lote</th><th style="text-align:right;">Cantidad</th><th style="text-align:right;">Costo unit.</th><th style="text-align:right;">Valor mov.</th><th style="text-align:right;">Saldo cantidad</th><th style="text-align:right;">Saldo valor</th><th>Referencia</th></tr></thead>
+    <tbody>${rows.map(m => {
+      const sign = m._direction === 'in' ? '+' : '−';
+      const color = m._direction === 'in' ? 'var(--success)' : 'var(--danger)';
+      return `<tr>
+        <td><span class="text-muted" style="font-size:11px;">${ui.formatDateTime(m.timestamp)}</span></td>
+        <td><span class="badge badge-plain" style="font-size:10px;">${m._label}</span></td>
+        <td><span class="td-mono" style="font-size:12px;">${ui.escape(m.lotCode||'—')}</span></td>
+        <td style="text-align:right;color:${color};font-weight:600;font-family:var(--font-mono);">${sign}${(m.quantity||0).toFixed(3)}</td>
+        <td style="text-align:right;"><span class="td-mono">${m.unitCost?'$'+(m.unitCost||0).toFixed(4):'—'}</span></td>
+        <td style="text-align:right;color:${color};font-family:var(--font-mono);">${sign}$${Math.abs(m._valueSigned).toFixed(4)}</td>
+        <td style="text-align:right;"><span class="td-mono td-strong">${m._runQty.toFixed(3)}</span></td>
+        <td style="text-align:right;"><span class="td-mono td-strong">$${m._runVal.toFixed(2)}</span></td>
+        <td><span class="text-muted" style="font-size:11px;">${ui.escape(m.reference||'')}</span></td>
+      </tr>`;
+    }).join('')}</tbody></table>` : '<div class="empty-state"><div class="empty-state-title">Sin movimientos</div></div>';
+
+  const finalQty = rows.length ? rows[rows.length-1]._runQty : 0;
+  const finalVal = rows.length ? rows[rows.length-1]._runVal : 0;
+  const avgCost = finalQty > 0 ? finalVal / finalQty : 0;
+
+  ui.renderLayout({
+    activeModule: 'almacen', pageEyebrow: 'Kardex valorizado', pageTitle: code + ' · ' + name,
+    contentHtml: `
+      <div class="action-bar">
+        <div class="action-bar-left"><button class="btn btn-ghost btn-sm" onclick="backToOverview()">← Volver</button></div>
+      </div>
+      <div class="grid grid-4 mb-24">
+        <div class="kpi"><div class="kpi-label">Movimientos</div><div class="kpi-value">${rows.length}</div><div class="kpi-value-sub">registrados</div></div>
+        <div class="kpi"><div class="kpi-label">Saldo cantidad</div><div class="kpi-value">${finalQty.toFixed(3)}</div><div class="kpi-value-sub">${unit||''}</div></div>
+        <div class="kpi"><div class="kpi-label">Costo promedio</div><div class="kpi-value" style="color:var(--accent-ink);">$${avgCost.toFixed(4)}</div><div class="kpi-value-sub">por ${unit||'unidad'}</div></div>
+        <div class="kpi"><div class="kpi-label">Valor total</div><div class="kpi-value" style="color:var(--accent-ink);">$${finalVal.toFixed(2)}</div><div class="kpi-value-sub">a costo</div></div>
+      </div>
+      <div class="table-wrap">${tableHtml}</div>
+    `
+  });
+}
+
+render();
 </script>
-</body></html>
+</body>
+</html>

@@ -1,7 +1,8 @@
 <!DOCTYPE html>
 <html lang="es">
 <head>
-<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Producto Terminado · altcare</title>
 <link rel="stylesheet" href="../assets/css/styles.css">
 </head>
@@ -10,20 +11,136 @@
 <script src="../assets/js/auth.js"></script>
 <script src="../assets/js/currency.js"></script>
 <script src="../assets/js/tax.js"></script>
+<script src="../assets/js/inventory.js"></script>
+<script src="../assets/js/formulas.js"></script>
 <script src="../assets/js/ui.js"></script>
 <script>
 if (!auth.guard('producto-terminado')) throw new Error('blocked');
-ui.renderLayout({
-  activeModule: 'producto-terminado',
-  pageEyebrow: 'Inventario',
-  pageTitle: 'Producto Terminado',
-  contentHtml: `
-    <div class="card" style="text-align:center;padding:64px 32px;">
-      <div style="font-size:48px;margin-bottom:16px;">📦</div>
-      <h3 style="font-family:var(--font-display);font-style:italic;font-size:24px;margin-bottom:8px;">Próximamente</h3>
-      <p class="text-muted" style="max-width:520px;margin:0 auto;">Inventario de producto terminado por lote, con fecha de fabricación, vencimiento y estado (cuarentena/liberado/rechazado) — Fase 2.</p>
-    </div>
-  `
-});
+
+const PT_STATUS = {
+  CUARENTENA:    { label: 'Cuarentena',    color: 'badge-warning' },
+  LIBERADO:      { label: 'Liberado',      color: 'badge-success' },
+  OBSERVACIONES: { label: 'Con observaciones', color: 'badge-warning' },
+  RECHAZADO:     { label: 'Rechazado',     color: 'badge-danger'  }
+};
+
+let statusFilter = '';
+let searchTerm = '';
+
+function render() {
+  let lots = db.getAll(db.COLLECTIONS.finishedGoods).filter(l => l.active !== false);
+  const all = lots;
+  if (statusFilter) lots = lots.filter(l => l.status === statusFilter);
+  if (searchTerm) {
+    const q = searchTerm.toLowerCase();
+    lots = lots.filter(l => (l.code||'').toLowerCase().includes(q) || (l.formulaName||'').toLowerCase().includes(q));
+  }
+  lots.sort((a,b) => (b.manufactureDate||'').localeCompare(a.manufactureDate||''));
+
+  const warehouses = db.getAll(db.COLLECTIONS.warehouses);
+  const whMap = Object.fromEntries(warehouses.map(w => [w.id, w.name]));
+  const today = new Date().toISOString().slice(0,10);
+
+  // KPIs
+  const counts = {
+    cuarentena: all.filter(l => l.status==='CUARENTENA').length,
+    liberado: all.filter(l => l.status==='LIBERADO').length,
+    rechazado: all.filter(l => l.status==='RECHAZADO').length
+  };
+  const totalAvailable = all.filter(l => l.status==='LIBERADO').reduce((s,l) => s + (l.balance||0), 0);
+  const totalValueUSD = all.filter(l => l.balance>0).reduce((s,l) => s + (l.balance * (l.unitCost||0)), 0);
+
+  const tableHtml = lots.length ? `<table>
+    <thead><tr><th>Lote</th><th>Fórmula</th><th>OF</th><th>Fabricado</th><th>Vence</th><th style="text-align:right;">Cantidad</th><th>Almacén</th><th>Estado</th><th style="text-align:right;">Valor</th><th style="text-align:right;width:120px;">Acciones</th></tr></thead>
+    <tbody>${lots.map(l => {
+      const s = PT_STATUS[l.status] || { label: l.status, color: 'badge-plain' };
+      const days = l.expiryDate ? Math.round((new Date(l.expiryDate) - new Date(today)) / 86400000) : null;
+      const expClass = days !== null && days < 30 ? 'badge-danger' : days !== null && days < 90 ? 'badge-warning' : 'badge-plain';
+      return `<tr>
+        <td><span class="td-mono td-strong">${ui.escape(l.code)}</span></td>
+        <td>${ui.escape(l.formulaName||'—')}</td>
+        <td><span class="td-mono">${ui.escape(l.productionOrderCode||'—')}</span></td>
+        <td><span class="text-muted">${ui.formatDate(l.manufactureDate)}</span></td>
+        <td>${l.expiryDate ? `<span class="badge ${expClass}">${ui.formatDate(l.expiryDate)}${days !== null ? ` · ${days}d` : ''}</span>` : '<span class="td-muted">—</span>'}</td>
+        <td style="text-align:right;"><span class="td-mono td-strong">${(l.balance||0).toLocaleString('es-VE',{minimumFractionDigits:2,maximumFractionDigits:3})}</span> <span class="text-muted">${l.unit}</span></td>
+        <td><span class="text-muted" style="font-size:12px;">${ui.escape(whMap[l.warehouseId]||'—')}</span></td>
+        <td><span class="badge ${s.color}">${s.label}</span></td>
+        <td style="text-align:right;"><span class="td-mono">$${((l.balance||0) * (l.unitCost||0)).toFixed(2)}</span></td>
+        <td class="td-actions">
+          ${l.qcTestId ? `<a class="btn-icon" href="calidad.html" onclick="event.stopPropagation()" title="Ver QC">${ui.icon('flask')}</a>` : ''}
+          <button class="btn-icon" onclick="editLot('${l.id}')" title="Editar">${ui.icon('edit')}</button>
+        </td>
+      </tr>`;
+    }).join('')}</tbody></table>` : (all.length === 0
+      ? `<div class="empty-state"><div class="empty-state-icon">${ui.icon('box')}</div><div class="empty-state-title">Sin producto terminado</div><div class="empty-state-text">Los lotes de PT se crean automáticamente al terminar una orden de fabricación.</div></div>`
+      : `<div class="empty-state"><div class="empty-state-title">Sin resultados</div></div>`);
+
+  ui.renderLayout({
+    activeModule: 'producto-terminado', pageEyebrow: 'Inventario', pageTitle: 'Producto Terminado',
+    contentHtml: `
+      <div class="action-bar">
+        <div class="action-bar-left">
+          <h2 class="action-bar-title">Producto terminado</h2>
+          <span class="action-bar-count">${all.length} lotes · ${counts.cuarentena} en cuarentena · ${counts.liberado} liberados · ${counts.rechazado} rechazados</span>
+        </div>
+      </div>
+
+      <div class="grid grid-4 mb-24">
+        <div class="kpi"><div class="kpi-label">Total liberado</div><div class="kpi-value">${totalAvailable.toLocaleString('es-VE',{minimumFractionDigits:2,maximumFractionDigits:3})}</div><div class="kpi-value-sub">disponible para venta</div></div>
+        <div class="kpi"><div class="kpi-label">Cuarentena</div><div class="kpi-value">${counts.cuarentena}</div><div class="kpi-value-sub">esperando QC</div></div>
+        <div class="kpi"><div class="kpi-label">Rechazados</div><div class="kpi-value" style="color:var(--danger);">${counts.rechazado}</div><div class="kpi-value-sub">no aptos</div></div>
+        <div class="kpi"><div class="kpi-label">Valor inventario</div><div class="kpi-value" style="color:var(--accent-ink);">$${totalValueUSD.toFixed(2)}</div><div class="kpi-value-sub">a costo de fabricación</div></div>
+      </div>
+
+      <div class="table-wrap">
+        <div class="table-toolbar">
+          <div class="search-box">${ui.icon('search')}<input class="input" type="search" placeholder="Buscar por lote o fórmula..." value="${ui.escape(searchTerm)}" oninput="onSearch(this.value)"></div>
+          <select class="select" style="max-width:200px;" onchange="onStatusFilter(this.value)">
+            <option value="">Todos los estados</option>
+            ${Object.entries(PT_STATUS).map(([k,s])=>`<option value="${k}" ${k===statusFilter?'selected':''}>${s.label}</option>`).join('')}
+          </select>
+        </div>
+        ${tableHtml}
+      </div>
+    `
+  });
+}
+
+function onSearch(v) { searchTerm = v; render(); }
+function onStatusFilter(v) { statusFilter = v; render(); }
+
+function editLot(id) {
+  const l = db.getById(db.COLLECTIONS.finishedGoods, id);
+  const warehouses = db.getAll(db.COLLECTIONS.warehouses);
+  ui.openModal({
+    title: `Editar lote ${l.code}`,
+    body: `
+      <form id="edit-form" onsubmit="saveLot(event, '${id}')">
+        <div class="form-grid form-grid-2">
+          <div class="field"><label class="field-label">Lote</label><input class="input" name="code" value="${ui.escape(l.code)}" style="font-family:var(--font-mono);"></div>
+          <div class="field"><label class="field-label">Vencimiento</label><input class="input" type="date" name="expiryDate" value="${l.expiryDate||''}"></div>
+          <div class="field"><label class="field-label">Almacén</label><select class="select" name="warehouseId">${warehouses.map(w => `<option value="${w.id}" ${w.id===l.warehouseId?'selected':''}>${ui.escape(w.name)}</option>`).join('')}</select></div>
+          <div class="field"><label class="field-label">Estado</label><select class="select" name="status">${Object.entries(PT_STATUS).map(([k,s])=>`<option value="${k}" ${k===l.status?'selected':''}>${s.label}</option>`).join('')}</select></div>
+          <div class="field" style="grid-column:1/-1;"><label class="field-label">Notas</label><textarea class="textarea" name="notes">${ui.escape(l.notes||'')}</textarea></div>
+        </div>
+      </form>
+    `,
+    footer: `<button class="btn btn-secondary" onclick="ui.closeModal()">Cancelar</button><button class="btn btn-primary" onclick="document.getElementById('edit-form').requestSubmit()">${ui.icon('check')} Guardar</button>`
+  });
+}
+
+function saveLot(e, id) {
+  e.preventDefault();
+  const data = ui.formData(e.target);
+  const l = db.getById(db.COLLECTIONS.finishedGoods, id);
+  Object.assign(l, data);
+  db.save(db.COLLECTIONS.finishedGoods, l);
+  ui.closeModal();
+  ui.toast('Lote actualizado', 'success');
+  render();
+}
+
+render();
 </script>
-</body></html>
+</body>
+</html>

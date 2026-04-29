@@ -1,7 +1,8 @@
 <!DOCTYPE html>
 <html lang="es">
 <head>
-<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Control de Calidad · altcare</title>
 <link rel="stylesheet" href="../assets/css/styles.css">
 </head>
@@ -10,20 +11,511 @@
 <script src="../assets/js/auth.js"></script>
 <script src="../assets/js/currency.js"></script>
 <script src="../assets/js/tax.js"></script>
+<script src="../assets/js/inventory.js"></script>
+<script src="../assets/js/formulas.js"></script>
 <script src="../assets/js/ui.js"></script>
 <script>
 if (!auth.guard('calidad')) throw new Error('blocked');
-ui.renderLayout({
-  activeModule: 'calidad',
-  pageEyebrow: 'Producción',
-  pageTitle: 'Control de Calidad',
-  contentHtml: `
-    <div class="card" style="text-align:center;padding:64px 32px;">
-      <div style="font-size:48px;margin-bottom:16px;">🧪</div>
-      <h3 style="font-family:var(--font-display);font-style:italic;font-size:24px;margin-bottom:8px;">Próximamente</h3>
-      <p class="text-muted" style="max-width:520px;margin:0 auto;">Pruebas por lote: pH, viscosidad, color, microbiológico. Aprobación o rechazo con firma digital del QC — Fase 2.</p>
+
+const QC_STATUS = {
+  PENDING:     { label: 'Pendiente',                color: 'badge-plain'   },
+  APPROVED:    { label: 'Aprobado',                 color: 'badge-success' },
+  APPROVED_OBS:{ label: 'Aprobado con observaciones', color: 'badge-warning' },
+  REJECTED:    { label: 'Rechazado',                color: 'badge-danger'  }
+};
+
+let view = 'list';
+let selectedTestId = null;
+let creating = null;
+let statusFilter = '';
+
+function render() {
+  if (view === 'detail' && selectedTestId) return renderDetail();
+  if (view === 'create') return renderCreate();
+  return renderList();
+}
+
+function renderList() {
+  // Lotes PT en cuarentena (sin test) + tests existentes
+  const fgInQuarantine = db.query(db.COLLECTIONS.finishedGoods, l => l.status === 'CUARENTENA' && !l.qcTestId);
+  let tests = db.getAll(db.COLLECTIONS.qcTests);
+  if (statusFilter) tests = tests.filter(t => t.status === statusFilter);
+  tests.sort((a,b) => (b.testDate||'').localeCompare(a.testDate||''));
+
+  const pendingHtml = fgInQuarantine.length ? `
+    <div class="card mb-24" style="background:var(--warning-soft);border-color:#e6d4a8;padding:0;">
+      <div style="padding:14px 20px;border-bottom:1px solid #e6d4a8;">
+        <div class="card-title" style="font-size:15px;color:var(--warning);">${fgInQuarantine.length} lote(s) PT esperando QC</div>
+      </div>
+      <table>
+        <thead><tr><th>Lote</th><th>Fórmula</th><th>OF</th><th>Fabricado</th><th style="text-align:right;">Cantidad</th><th style="text-align:right;width:120px;"></th></tr></thead>
+        <tbody>${fgInQuarantine.map(fg => `<tr>
+          <td><span class="td-mono td-strong">${ui.escape(fg.code)}</span></td>
+          <td>${ui.escape(fg.formulaName||'—')}</td>
+          <td><span class="td-mono">${fg.productionOrderCode||'—'}</span></td>
+          <td><span class="text-muted">${ui.formatDate(fg.manufactureDate)}</span></td>
+          <td style="text-align:right;"><span class="td-mono">${fg.quantity} ${fg.unit}</span></td>
+          <td class="td-actions"><button class="btn btn-primary btn-sm" onclick="newTest('${fg.id}')">${ui.icon('flask')} Realizar QC</button></td>
+        </tr>`).join('')}</tbody>
+      </table>
     </div>
-  `
-});
+  ` : '';
+
+  const counts = {
+    APPROVED: db.getAll(db.COLLECTIONS.qcTests).filter(t => t.status === 'APPROVED').length,
+    APPROVED_OBS: db.getAll(db.COLLECTIONS.qcTests).filter(t => t.status === 'APPROVED_OBS').length,
+    REJECTED: db.getAll(db.COLLECTIONS.qcTests).filter(t => t.status === 'REJECTED').length
+  };
+
+  const tableHtml = tests.length ? `<table>
+    <thead><tr><th>Código</th><th>Lote PT</th><th>Fórmula</th><th>Fecha</th><th>Analista</th><th>Resultado</th><th style="text-align:right;width:120px;">Acciones</th></tr></thead>
+    <tbody>${tests.map(t => {
+      const s = QC_STATUS[t.status] || { label: t.status, color: 'badge-plain' };
+      return `<tr style="cursor:pointer;" onclick="openDetail('${t.id}')">
+        <td><span class="td-mono td-strong">${t.code}</span></td>
+        <td><span class="td-mono">${t.fgLotCode||'—'}</span></td>
+        <td>${ui.escape(t.formulaName||'—')}</td>
+        <td><span class="text-muted">${ui.formatDate(t.testDate)}</span></td>
+        <td>${ui.escape(t.analystName||'—')}</td>
+        <td><span class="badge ${s.color}">${s.label}</span></td>
+        <td class="td-actions" onclick="event.stopPropagation()">
+          <button class="btn-icon" onclick="openDetail('${t.id}')" title="Ver">${ui.icon('flask')}</button>
+          <button class="btn-icon" onclick="downloadCOA('${t.id}')" title="Descargar COA">${ui.icon('download')}</button>
+        </td>
+      </tr>`;
+    }).join('')}</tbody></table>` : `<div class="empty-state"><div class="empty-state-title">Sin pruebas registradas</div><div class="empty-state-text">Cuando una OF termine, su lote quedará pendiente de QC aquí.</div></div>`;
+
+  ui.renderLayout({
+    activeModule: 'calidad', pageEyebrow: 'Producción', pageTitle: 'Control de Calidad',
+    contentHtml: `
+      <div class="action-bar">
+        <div class="action-bar-left">
+          <h2 class="action-bar-title">Control de calidad</h2>
+          <span class="action-bar-count">${db.getAll(db.COLLECTIONS.qcTests).length} pruebas · ${counts.APPROVED} aprobadas · ${counts.APPROVED_OBS} con obs · ${counts.REJECTED} rechazadas</span>
+        </div>
+      </div>
+
+      ${pendingHtml}
+
+      <div class="table-wrap">
+        <div class="table-toolbar">
+          <div style="font-size:13px;font-weight:500;color:var(--ink-2);">Histórico de pruebas</div>
+          <select class="select" style="max-width:200px;" onchange="onStatusFilter(this.value)">
+            <option value="">Todos los resultados</option>
+            ${Object.entries(QC_STATUS).filter(([k])=>k!=='PENDING').map(([k,s])=>`<option value="${k}" ${k===statusFilter?'selected':''}>${s.label}</option>`).join('')}
+          </select>
+        </div>
+        ${tableHtml}
+      </div>
+    `
+  });
+}
+
+function onStatusFilter(v) { statusFilter = v; render(); }
+
+// ====== CREAR PRUEBA ======
+
+function newTest(fgLotId) {
+  const fg = db.getById(db.COLLECTIONS.finishedGoods, fgLotId);
+  if (!fg) { ui.toast('Lote no encontrado', 'error'); return; }
+  // Cargar panel QC de la versión de la fórmula usada
+  const of = db.getById(db.COLLECTIONS.productionOrders, fg.productionOrderId);
+  const fv = of ? db.query(db.COLLECTIONS.formulaVersions, v => v.formulaId === of.formulaId && v.version === of.formulaVersion)[0] : null;
+  const qcParams = fv?.qcParams || [];
+
+  if (!qcParams.length) {
+    ui.toast('Esta fórmula no tiene panel de QC configurado. Edítala primero.', 'error', 4000);
+    return;
+  }
+
+  creating = {
+    code: db.nextCode(db.COLLECTIONS.qcTests, 'QC'),
+    fgLotId: fg.id,
+    fgLotCode: fg.code,
+    formulaId: of?.formulaId,
+    formulaName: fg.formulaName,
+    formulaVersion: of?.formulaVersion,
+    productionOrderCode: fg.productionOrderCode,
+    testDate: new Date().toISOString().slice(0,10),
+    analystId: auth.currentUser()?.id,
+    analystName: auth.currentUser()?.fullName || auth.currentUser()?.username,
+    results: qcParams.map(p => ({ ...p, value: '', observation: '' })),
+    notes: '',
+    status: 'PENDING'
+  };
+  view = 'create';
+  render();
+}
+
+function renderCreate() {
+  const c = creating;
+  const fg = db.getById(db.COLLECTIONS.finishedGoods, c.fgLotId);
+  const users = db.getAll(db.COLLECTIONS.users).filter(u => u.active);
+
+  // Evaluar resultados
+  const evaluated = c.results.map(r => {
+    const v = parseFloat(r.value);
+    const min = r.min === '' || r.min === null ? null : parseFloat(r.min);
+    const max = r.max === '' || r.max === null ? null : parseFloat(r.max);
+    let status = 'pending';
+    if (r.value === '' || r.value === null || r.value === undefined) {
+      status = 'pending';
+    } else if (min !== null && max !== null && !isNaN(v)) {
+      status = v >= min && v <= max ? 'ok' : 'fail';
+    } else if (r.value && r.value.toString().trim() !== '') {
+      status = 'ok'; // valor texto
+    }
+    return { ...r, _status: status };
+  });
+
+  const allFilled = evaluated.every(r => r._status !== 'pending');
+  const anyFail = evaluated.some(r => r._status === 'fail');
+  const anyObs = evaluated.some(r => r.observation && r.observation.trim());
+
+  let suggestedStatus = 'APPROVED';
+  if (!allFilled) suggestedStatus = 'PENDING';
+  else if (anyFail) suggestedStatus = 'REJECTED';
+  else if (anyObs) suggestedStatus = 'APPROVED_OBS';
+
+  const resultsHtml = `<div class="card" style="padding:0;">
+    <table>
+      <thead><tr>
+        <th>Parámetro</th>
+        <th>Unidad</th>
+        <th style="text-align:right;">Mín</th>
+        <th style="text-align:right;">Máx</th>
+        <th>Método</th>
+        <th style="text-align:right;width:140px;">Resultado</th>
+        <th style="width:30px;"></th>
+        <th style="width:30%;">Observación</th>
+      </tr></thead>
+      <tbody>${evaluated.map((r, idx) => {
+        const statusIcon = r._status === 'ok' ? '<span style="color:var(--success);font-size:18px;">✓</span>' : r._status === 'fail' ? '<span style="color:var(--danger);font-size:18px;">✗</span>' : '<span class="text-muted">—</span>';
+        return `<tr>
+          <td class="td-strong">${ui.escape(r.name)}</td>
+          <td class="text-muted">${ui.escape(r.unit||'—')}</td>
+          <td style="text-align:right;"><span class="td-mono">${r.min!==''&&r.min!==null?r.min:'—'}</span></td>
+          <td style="text-align:right;"><span class="td-mono">${r.max!==''&&r.max!==null?r.max:'—'}</span></td>
+          <td><span class="text-muted" style="font-size:12px;">${ui.escape(r.method||'—')}</span></td>
+          <td style="text-align:right;">
+            <input class="input" style="text-align:right;font-family:var(--font-mono);${r._status==='fail'?'border-color:var(--danger);':r._status==='ok'?'border-color:var(--success);':''}" value="${r.value??''}" oninput="updateResult(${idx},'value',this.value)" placeholder="—">
+          </td>
+          <td style="text-align:center;">${statusIcon}</td>
+          <td><input class="input" value="${ui.escape(r.observation||'')}" oninput="updateResult(${idx},'observation',this.value)" placeholder="Opcional"></td>
+        </tr>`;
+      }).join('')}</tbody>
+    </table>
+  </div>`;
+
+  const sStatus = QC_STATUS[suggestedStatus] || { label: 'Pendiente', color: 'badge-plain' };
+
+  ui.renderLayout({
+    activeModule: 'calidad', pageEyebrow: 'Nueva prueba', pageTitle: c.code,
+    contentHtml: `
+      <div class="action-bar">
+        <div class="action-bar-left"><button class="btn btn-ghost btn-sm" onclick="cancelCreate()">← Cancelar</button></div>
+        <div class="action-bar-right">
+          <button class="btn btn-secondary" onclick="saveTest('REJECTED')">${ui.icon('x')} Rechazar lote</button>
+          <button class="btn btn-secondary" onclick="saveTest('APPROVED_OBS')" ${!allFilled?'disabled style="opacity:0.5;cursor:not-allowed;"':''}>Aprobar con obs</button>
+          <button class="btn btn-primary" onclick="saveTest('APPROVED')" ${!allFilled||anyFail?'disabled style="opacity:0.5;cursor:not-allowed;"':''}>${ui.icon('check')} Aprobar lote</button>
+        </div>
+      </div>
+
+      <div class="grid grid-4 mb-24">
+        <div class="kpi"><div class="kpi-label">Lote PT</div><div class="kpi-value" style="font-size:20px;">${ui.escape(fg.code)}</div></div>
+        <div class="kpi"><div class="kpi-label">Fórmula</div><div class="kpi-value" style="font-size:18px;">${ui.escape(c.formulaName)}</div><div class="kpi-value-sub">v${c.formulaVersion}</div></div>
+        <div class="kpi"><div class="kpi-label">Cantidad</div><div class="kpi-value">${fg.quantity}</div><div class="kpi-value-sub">${fg.unit}</div></div>
+        <div class="kpi"><div class="kpi-label">Sugerencia</div><div style="margin-top:8px;"><span class="badge ${sStatus.color}" style="font-size:13px;">${sStatus.label}</span></div></div>
+      </div>
+
+      <div class="card mb-24">
+        <div class="card-header"><div class="card-title">Información de la prueba</div></div>
+        <div class="form-grid form-grid-3">
+          <div class="field"><label class="field-label">Fecha *</label><input class="input" type="date" value="${c.testDate}" oninput="creating.testDate=this.value"></div>
+          <div class="field"><label class="field-label">Analista</label><select class="select" onchange="onAnalystChange(this.value)">${users.map(u => `<option value="${u.id}" ${u.id===c.analystId?'selected':''}>${ui.escape(u.fullName||u.username)}</option>`).join('')}</select></div>
+          <div class="field"><label class="field-label">Código de prueba</label><input class="input" value="${c.code}" disabled style="font-family:var(--font-mono);"></div>
+        </div>
+      </div>
+
+      <div class="divider-section"><span class="section-title" style="margin:0;">Resultados</span></div>
+      ${resultsHtml}
+
+      <div class="card mt-24">
+        <div class="card-header"><div class="card-title">Observaciones generales</div></div>
+        <textarea class="textarea" oninput="creating.notes=this.value" placeholder="Comentarios generales del análisis...">${ui.escape(c.notes||'')}</textarea>
+      </div>
+
+      <div style="height:80px;"></div>
+    `
+  });
+}
+
+function updateResult(idx, field, val) {
+  creating.results[idx][field] = val;
+  render();
+}
+function onAnalystChange(uid) {
+  creating.analystId = uid;
+  const u = db.getById(db.COLLECTIONS.users, uid);
+  creating.analystName = u ? (u.fullName || u.username) : '';
+}
+function cancelCreate() { creating = null; view = 'list'; render(); }
+
+function saveTest(forcedStatus) {
+  const c = creating;
+  // Validar que tenga al menos un valor llenado si quiere aprobar
+  if (forcedStatus !== 'REJECTED') {
+    const allFilled = c.results.every(r => r.value !== '' && r.value !== null && r.value !== undefined);
+    if (!allFilled) { ui.toast('Completa todos los resultados antes de aprobar', 'error'); return; }
+  }
+  c.status = forcedStatus;
+  const saved = db.save(db.COLLECTIONS.qcTests, c);
+
+  // Actualizar lote PT
+  const fg = db.getById(db.COLLECTIONS.finishedGoods, c.fgLotId);
+  fg.qcTestId = saved.id;
+  if (forcedStatus === 'APPROVED' || forcedStatus === 'APPROVED_OBS') {
+    fg.status = forcedStatus === 'APPROVED' ? 'LIBERADO' : 'OBSERVACIONES';
+  } else if (forcedStatus === 'REJECTED') {
+    fg.status = 'RECHAZADO';
+  }
+  db.save(db.COLLECTIONS.finishedGoods, fg);
+
+  // Actualizar OF
+  if (fg.productionOrderId) {
+    const of = db.getById(db.COLLECTIONS.productionOrders, fg.productionOrderId);
+    if (of) {
+      of.qcTestId = saved.id;
+      db.save(db.COLLECTIONS.productionOrders, of);
+    }
+  }
+
+  ui.toast(`Lote ${forcedStatus==='APPROVED'?'aprobado':forcedStatus==='APPROVED_OBS'?'aprobado con observaciones':'rechazado'}`, 'success');
+  selectedTestId = saved.id;
+  view = 'detail';
+  creating = null;
+  render();
+}
+
+// ====== DETALLE PRUEBA ======
+
+function openDetail(id) { selectedTestId = id; view = 'detail'; render(); }
+function backToList() { view = 'list'; selectedTestId = null; render(); }
+
+function renderDetail() {
+  const t = db.getById(db.COLLECTIONS.qcTests, selectedTestId);
+  if (!t) { backToList(); return; }
+  const fg = db.getById(db.COLLECTIONS.finishedGoods, t.fgLotId);
+  const s = QC_STATUS[t.status] || { label: t.status, color: 'badge-plain' };
+
+  const resultsHtml = `<div class="card" style="padding:0;">
+    <table>
+      <thead><tr><th>Parámetro</th><th>Unidad</th><th style="text-align:right;">Rango</th><th>Método</th><th style="text-align:right;">Resultado</th><th>Estado</th><th>Observación</th></tr></thead>
+      <tbody>${t.results.map(r => {
+        const v = parseFloat(r.value);
+        const min = r.min === '' || r.min === null ? null : parseFloat(r.min);
+        const max = r.max === '' || r.max === null ? null : parseFloat(r.max);
+        let status = 'ok';
+        if (min !== null && max !== null && !isNaN(v)) status = v >= min && v <= max ? 'ok' : 'fail';
+        const icon = status === 'fail' ? '<span class="badge badge-danger">Fuera</span>' : '<span class="badge badge-success">OK</span>';
+        const range = (min!==null||max!==null) ? `${min??'—'} – ${max??'—'}` : '—';
+        return `<tr>
+          <td class="td-strong">${ui.escape(r.name)}</td>
+          <td class="text-muted">${ui.escape(r.unit||'—')}</td>
+          <td style="text-align:right;"><span class="td-mono">${range}</span></td>
+          <td><span class="text-muted" style="font-size:12px;">${ui.escape(r.method||'—')}</span></td>
+          <td style="text-align:right;"><span class="td-mono td-strong">${ui.escape(r.value||'—')}</span></td>
+          <td>${icon}</td>
+          <td><span class="text-muted" style="font-size:12px;">${ui.escape(r.observation||'')}</span></td>
+        </tr>`;
+      }).join('')}</tbody>
+    </table>
+  </div>`;
+
+  ui.renderLayout({
+    activeModule: 'calidad', pageEyebrow: 'Prueba de QC', pageTitle: t.code,
+    contentHtml: `
+      <div class="action-bar">
+        <div class="action-bar-left">
+          <button class="btn btn-ghost btn-sm" onclick="backToList()">← Volver</button>
+          <span style="margin-left:16px;"><span class="badge ${s.color}" style="font-size:13px;">${s.label}</span></span>
+        </div>
+        <div class="action-bar-right">
+          <button class="btn btn-primary" onclick="downloadCOA('${t.id}')">${ui.icon('download')} Descargar COA</button>
+        </div>
+      </div>
+
+      <div class="grid grid-4 mb-24">
+        <div class="kpi"><div class="kpi-label">Lote PT</div><div class="kpi-value" style="font-size:20px;">${ui.escape(t.fgLotCode||'—')}</div></div>
+        <div class="kpi"><div class="kpi-label">Fórmula</div><div class="kpi-value" style="font-size:18px;">${ui.escape(t.formulaName||'—')}</div><div class="kpi-value-sub">v${t.formulaVersion||'—'}</div></div>
+        <div class="kpi"><div class="kpi-label">Fecha</div><div class="kpi-value" style="font-size:18px;">${ui.formatDate(t.testDate)}</div></div>
+        <div class="kpi"><div class="kpi-label">Analista</div><div class="kpi-value" style="font-size:18px;">${ui.escape(t.analystName||'—')}</div></div>
+      </div>
+
+      <div class="divider-section"><span class="section-title" style="margin:0;">Resultados</span></div>
+      ${resultsHtml}
+
+      ${t.notes ? `<div class="card mt-24"><div class="kpi-label">Observaciones generales</div><div style="margin-top:8px;">${ui.escape(t.notes)}</div></div>` : ''}
+    `
+  });
+}
+
+// ====== COA EN PDF (en realidad: HTML imprimible que el navegador convierte a PDF) ======
+
+function downloadCOA(testId) {
+  const t = db.getById(db.COLLECTIONS.qcTests, testId);
+  if (!t) return;
+  const fg = db.getById(db.COLLECTIONS.finishedGoods, t.fgLotId);
+  const cfg = db.getById(db.COLLECTIONS.config, 'main') || {};
+  const s = QC_STATUS[t.status] || { label: t.status, color: '#666' };
+
+  const html = `<!DOCTYPE html>
+<html><head><meta charset="UTF-8"><title>COA ${t.code}</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500&family=Inter+Tight:wght@400;500;600&display=swap');
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'Inter Tight', sans-serif; font-size: 11pt; color: #1a1a18; padding: 40px 50px; line-height: 1.5; }
+  .header { display: flex; justify-content: space-between; align-items: flex-start; padding-bottom: 24px; border-bottom: 2px solid #1a1a18; margin-bottom: 24px; }
+  .brand { font-family: 'Fraunces', serif; font-size: 28pt; font-style: italic; letter-spacing: -1px; line-height: 1; }
+  .brand span { color: #5b7a5a; }
+  .company-info { text-align: right; font-size: 10pt; color: #4a4a45; line-height: 1.6; }
+  .doc-title { font-family: 'Fraunces', serif; font-size: 22pt; font-style: italic; margin-bottom: 4px; }
+  .doc-sub { font-size: 10pt; letter-spacing: 0.16em; text-transform: uppercase; color: #8a8a82; font-weight: 600; }
+  .info-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 16px 24px; margin: 24px 0; padding: 16px 20px; background: #f4f3ef; border-radius: 8px; }
+  .info-label { font-size: 9pt; letter-spacing: 0.1em; text-transform: uppercase; color: #8a8a82; font-weight: 600; }
+  .info-value { font-weight: 600; margin-top: 2px; }
+  table { width: 100%; border-collapse: collapse; margin: 16px 0; }
+  th { text-align: left; font-size: 9pt; letter-spacing: 0.12em; text-transform: uppercase; color: #8a8a82; font-weight: 600; padding: 10px 12px; border-bottom: 2px solid #1a1a18; }
+  td { padding: 12px; border-bottom: 1px solid #e7e5df; }
+  .num { text-align: right; font-family: 'Inter Tight', monospace; }
+  .ok { color: #2d6a4f; font-weight: 600; }
+  .fail { color: #a83232; font-weight: 600; }
+  .status-bar { padding: 24px; border-radius: 8px; text-align: center; margin: 32px 0; font-size: 14pt; font-weight: 600; }
+  .status-APPROVED { background: #e3efe7; color: #2d6a4f; border: 1px solid #2d6a4f; }
+  .status-APPROVED_OBS { background: #faf2dc; color: #b8860b; border: 1px solid #b8860b; }
+  .status-REJECTED { background: #f7e8e6; color: #a83232; border: 1px solid #a83232; }
+  .signatures { display: grid; grid-template-columns: repeat(2, 1fr); gap: 48px; margin-top: 48px; }
+  .signature { text-align: center; }
+  .signature-line { border-top: 1px solid #1a1a18; padding-top: 8px; }
+  .signature-name { font-weight: 600; }
+  .signature-role { font-size: 9pt; color: #8a8a82; }
+  .footer { margin-top: 48px; padding-top: 16px; border-top: 1px solid #e7e5df; font-size: 8pt; color: #8a8a82; text-align: center; }
+  @media print { body { padding: 20mm; } .no-print { display: none; } @page { margin: 0; size: A4; } }
+  .toolbar { background: #1a1a18; color: white; padding: 12px 20px; margin: -40px -50px 32px -50px; display: flex; justify-content: space-between; align-items: center; }
+  .btn-print { background: #5b7a5a; color: white; padding: 8px 16px; border: none; border-radius: 4px; cursor: pointer; font-family: inherit; font-size: 11pt; font-weight: 500; }
+</style>
+</head><body>
+
+<div class="toolbar no-print">
+  <span>COA ${t.code} · Vista previa</span>
+  <button class="btn-print" onclick="window.print()">Imprimir / Guardar como PDF</button>
+</div>
+
+<div class="header">
+  <div>
+    <div class="brand"><span>alt</span>care</div>
+    <div style="font-size: 9pt; letter-spacing: 0.16em; text-transform: uppercase; color: #8a8a82; font-weight: 600; margin-top: 4px;">Manufacturing OS</div>
+  </div>
+  <div class="company-info">
+    ${cfg.companyName ? `<div style="font-weight:600;color:#1a1a18;">${escapeHtml(cfg.companyName)}</div>` : ''}
+    ${cfg.rif ? `<div>RIF: ${escapeHtml(cfg.rif)}</div>` : ''}
+    ${cfg.address ? `<div>${escapeHtml(cfg.address)}</div>` : ''}
+    ${cfg.phone ? `<div>${escapeHtml(cfg.phone)}</div>` : ''}
+    ${cfg.email ? `<div>${escapeHtml(cfg.email)}</div>` : ''}
+  </div>
+</div>
+
+<div class="doc-sub">Certificado de Análisis</div>
+<h1 class="doc-title">Certificate of Analysis (COA)</h1>
+
+<div class="info-grid">
+  <div><div class="info-label">Producto</div><div class="info-value">${escapeHtml(t.formulaName||'—')}</div></div>
+  <div><div class="info-label">Versión de fórmula</div><div class="info-value">v${t.formulaVersion||'—'}</div></div>
+  <div><div class="info-label">Lote</div><div class="info-value" style="font-family:monospace;">${escapeHtml(t.fgLotCode||'—')}</div></div>
+  <div><div class="info-label">Orden de fabricación</div><div class="info-value" style="font-family:monospace;">${escapeHtml(t.productionOrderCode||'—')}</div></div>
+  <div><div class="info-label">Fecha de fabricación</div><div class="info-value">${fg ? formatDate(fg.manufactureDate) : '—'}</div></div>
+  <div><div class="info-label">Fecha de vencimiento</div><div class="info-value">${fg?.expiryDate ? formatDate(fg.expiryDate) : '—'}</div></div>
+  <div><div class="info-label">Cantidad</div><div class="info-value">${fg ? fg.quantity + ' ' + fg.unit : '—'}</div></div>
+  <div><div class="info-label">Fecha de análisis</div><div class="info-value">${formatDate(t.testDate)}</div></div>
+</div>
+
+<h2 style="font-family:'Fraunces',serif;font-size:16pt;font-style:italic;margin:24px 0 8px 0;">Resultados de análisis</h2>
+<table>
+  <thead><tr><th>Parámetro</th><th>Unidad</th><th>Especificación</th><th>Método</th><th class="num">Resultado</th><th>Cumple</th></tr></thead>
+  <tbody>
+    ${t.results.map(r => {
+      const v = parseFloat(r.value);
+      const min = r.min === '' || r.min === null ? null : parseFloat(r.min);
+      const max = r.max === '' || r.max === null ? null : parseFloat(r.max);
+      let ok = true;
+      if (min !== null && max !== null && !isNaN(v)) ok = v >= min && v <= max;
+      const range = (min!==null||max!==null) ? `${min??'—'} – ${max??'—'}` : 'Visual / cualitativo';
+      return `<tr>
+        <td><strong>${escapeHtml(r.name)}</strong></td>
+        <td>${escapeHtml(r.unit||'—')}</td>
+        <td>${range}</td>
+        <td>${escapeHtml(r.method||'—')}</td>
+        <td class="num"><strong>${escapeHtml(r.value||'—')}</strong></td>
+        <td class="${ok?'ok':'fail'}">${ok?'✓ Cumple':'✗ Fuera'}</td>
+      </tr>`;
+    }).join('')}
+  </tbody>
+</table>
+
+${t.results.some(r => r.observation) ? `
+<h3 style="font-size:11pt;margin:24px 0 8px 0;">Observaciones por parámetro</h3>
+<ul style="padding-left:20px;font-size:10pt;color:#4a4a45;">
+  ${t.results.filter(r => r.observation).map(r => `<li><strong>${escapeHtml(r.name)}:</strong> ${escapeHtml(r.observation)}</li>`).join('')}
+</ul>
+` : ''}
+
+${t.notes ? `<div style="margin-top:24px;padding:16px;background:#f4f3ef;border-radius:8px;font-size:10pt;"><strong>Observaciones generales:</strong><br>${escapeHtml(t.notes)}</div>` : ''}
+
+<div class="status-bar status-${t.status}">
+  Resultado: ${s.label.toUpperCase()}
+</div>
+
+<div class="signatures">
+  <div class="signature">
+    <div class="signature-line">
+      <div class="signature-name">${escapeHtml(t.analystName||'—')}</div>
+      <div class="signature-role">Analista de Calidad</div>
+    </div>
+  </div>
+  <div class="signature">
+    <div class="signature-line">
+      <div class="signature-name">_________________________</div>
+      <div class="signature-role">Supervisor / QC Manager</div>
+    </div>
+  </div>
+</div>
+
+<div class="footer">
+  Documento generado por altcare Manufacturing OS · ${formatDateTime(new Date().toISOString())} · ${escapeHtml(cfg.companyName||'')}
+</div>
+
+</body></html>`;
+
+  // Abrir en nueva ventana
+  const w = window.open('', '_blank');
+  if (!w) { ui.toast('Permite ventanas emergentes para descargar el COA', 'error'); return; }
+  w.document.write(html);
+  w.document.close();
+}
+
+function escapeHtml(s) {
+  return String(s ?? '').replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
+}
+function formatDate(iso) {
+  if (!iso) return '—';
+  return new Date(iso).toLocaleDateString('es-VE', { day: '2-digit', month: 'long', year: 'numeric' });
+}
+function formatDateTime(iso) {
+  if (!iso) return '—';
+  return new Date(iso).toLocaleString('es-VE', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+}
+
+render();
 </script>
-</body></html>
+</body>
+</html>
