@@ -63,6 +63,8 @@
 (function() {
   if (auth.isLoggedIn()) {
     renderDashboard();
+    // Refrescar tasas en background si están vencidas (>6h o nunca)
+    triggerAutoRefresh();
   } else {
     document.getElementById('login-view').classList.remove('hidden');
     document.getElementById('login-form').addEventListener('submit', e => {
@@ -72,12 +74,83 @@
       const r = auth.login(u, p);
       if (r.ok) {
         renderDashboard();
+        triggerAutoRefresh();
       } else {
         ui.toast(r.error, 'error');
       }
     });
   }
 })();
+
+/**
+ * Refresca tasas en background (no bloquea). Si se actualizan, re-renderiza
+ * el dashboard para que se vean los nuevos valores.
+ */
+async function triggerAutoRefresh() {
+  if (!currency.needsRefresh()) return;
+  try {
+    const result = await currency.fetchLiveRates();
+    if (result.ok) {
+      console.log('[altcare] Tasas actualizadas automáticamente:', result.updated);
+      // Re-render para mostrar los nuevos valores
+      if (typeof renderDashboard === 'function') renderDashboard();
+    }
+  } catch (e) {
+    console.warn('[altcare] No se pudo conectar a dolarapi.com:', e.message);
+  }
+}
+
+/**
+ * Banner de tasas actuales en vivo, encabezado del dashboard.
+ * Muestra BCV USD, P2P USD, BCV EUR con timestamp.
+ */
+function renderRatesBanner() {
+  const bcv_usd = currency.getRate('BCV_USD');
+  const p2p_usd = currency.getRate('BINANCE');
+  const bcv_eur = currency.getRate('BCV_EUR');
+
+  // Última actualización (la más reciente entre todas las tasas)
+  let lastUpdate = null, lastSource = null;
+  currency.getRates().forEach(r => {
+    if (r.updatedAt && (!lastUpdate || r.updatedAt > lastUpdate)) {
+      lastUpdate = r.updatedAt;
+      lastSource = r.source;
+    }
+  });
+
+  const fmtRate = r => r && r.value > 0
+    ? `<span style="font-family:var(--font-display);font-size:18px;font-weight:500;letter-spacing:-0.02em;">${r.value.toLocaleString('es-VE',{minimumFractionDigits:2,maximumFractionDigits:2})}</span>`
+    : '<span class="text-muted" style="font-size:14px;">—</span>';
+
+  return `
+    <div class="card mb-24" style="padding:14px 20px;background:linear-gradient(135deg, #f8fafc 0%, #eff6ff 100%);border-color:#dbeafe;">
+      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:16px;">
+        <div style="display:flex;gap:24px;flex-wrap:wrap;align-items:center;">
+          <div>
+            <div style="font-size:10px;letter-spacing:0.14em;text-transform:uppercase;color:#1e3a8a;font-weight:600;">BCV USD</div>
+            ${fmtRate(bcv_usd)}
+          </div>
+          <div style="width:1px;height:32px;background:#cbd5e1;"></div>
+          <div>
+            <div style="font-size:10px;letter-spacing:0.14em;text-transform:uppercase;color:#b8860b;font-weight:600;">P2P USD</div>
+            ${fmtRate(p2p_usd)}
+          </div>
+          <div style="width:1px;height:32px;background:#cbd5e1;"></div>
+          <div>
+            <div style="font-size:10px;letter-spacing:0.14em;text-transform:uppercase;color:#1e3a8a;font-weight:600;">BCV EUR</div>
+            ${fmtRate(bcv_eur)}
+          </div>
+        </div>
+        <div style="text-align:right;">
+          <div class="text-muted" style="font-size:11px;">
+            ${lastUpdate ? (lastSource === 'auto' ? '🌐 ' : '✋ ') + 'Actualizada ' + currency.timeSince(lastUpdate) : 'Sin actualizar'}
+          </div>
+          <a href="modules/tasas-cambio.html" style="font-size:11px;color:#1e3a8a;text-decoration:none;">Ver detalle →</a>
+        </div>
+      </div>
+    </div>
+  `;
+}
 
 function renderDashboard() {
   document.getElementById('login-view')?.classList.add('hidden');
@@ -203,6 +276,8 @@ function renderDashboard() {
   const upcomingCXP = [...cxpPending].sort((a,b) => (a.dueDate||a.issueDate).localeCompare(b.dueDate||b.issueDate)).slice(0, 5);
 
   const content = `
+    ${renderRatesBanner()}
+
     ${alertsHtml}
 
     <!-- KPIs Comerciales -->
