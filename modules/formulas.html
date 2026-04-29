@@ -1,7 +1,8 @@
 <!DOCTYPE html>
 <html lang="es">
 <head>
-<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Fórmulas · altcare</title>
 <link rel="stylesheet" href="../assets/css/styles.css">
 </head>
@@ -10,22 +11,395 @@
 <script src="../assets/js/auth.js"></script>
 <script src="../assets/js/currency.js"></script>
 <script src="../assets/js/tax.js"></script>
+<script src="../assets/js/inventory.js"></script>
+<script src="../assets/js/formulas.js"></script>
 <script src="../assets/js/ui.js"></script>
 <script>
 if (!auth.guard('formulas')) throw new Error('blocked');
-ui.renderLayout({
-  activeModule: 'formulas',
-  pageEyebrow: 'Producción',
-  pageTitle: 'Fórmulas',
-  contentHtml: `
-    <div class="card" style="text-align:center;padding:64px 32px;">
-      <div style="font-size:48px;margin-bottom:16px;">⚗️</div>
-      <h3 style="font-family:var(--font-display);font-style:italic;font-size:24px;margin-bottom:8px;">Próximamente — Fase 2</h3>
-      <p class="text-muted" style="max-width:520px;margin:0 auto;">
-        Aquí gestionarás recetas maestras de shampoos y acondicionadores con fases A/B/C, escalado por tamaño de batch, costo automático en base a materias primas y versiones.
-      </p>
-    </div>
-  `
-});
+
+let view = 'list';
+let selectedFormulaId = null;
+let editingVersion = null;
+let searchTerm = '';
+
+const DEFAULT_PHASES = [
+  { name: 'Fase A — Acuosa', items: [] },
+  { name: 'Fase B — Activos', items: [] },
+  { name: 'Fase C — Conservante/Fragancia', items: [] }
+];
+
+const DEFAULT_QC_PARAMS = [
+  { name: 'pH', unit: '', min: 5.0, max: 7.0, method: 'pHmetro' },
+  { name: 'Viscosidad', unit: 'cP', min: 1000, max: 5000, method: 'Brookfield' },
+  { name: 'Densidad', unit: 'g/mL', min: 1.00, max: 1.05, method: 'Picnómetro' },
+  { name: 'Color', unit: '', min: '', max: '', method: 'Visual' },
+  { name: 'Olor', unit: '', min: '', max: '', method: 'Olfativo' },
+  { name: 'Microbiológico', unit: 'UFC/g', min: 0, max: 100, method: 'Recuento total' }
+];
+
+function render() {
+  if (view === 'detail' && selectedFormulaId) return renderDetail();
+  if (view === 'edit') return renderEdit();
+  return renderList();
+}
+
+function renderList() {
+  let items = db.getAll(db.COLLECTIONS.formulas);
+  const all = items;
+  if (searchTerm) {
+    const q = searchTerm.toLowerCase();
+    items = items.filter(f => (f.name||'').toLowerCase().includes(q) || (f.code||'').toLowerCase().includes(q));
+  }
+  const tableHtml = items.length
+    ? `<table>
+        <thead><tr><th>Código</th><th>Nombre</th><th>Categoría</th><th>Modo</th><th style="text-align:right;">Batch base</th><th>Versión</th><th style="text-align:right;width:120px;">Acciones</th></tr></thead>
+        <tbody>${items.map(f => `<tr style="cursor:pointer;" onclick="openDetail('${f.id}')">
+          <td><span class="td-mono td-strong">${f.code||'—'}</span></td>
+          <td><div class="td-strong">${ui.escape(f.name)}</div>${f.description?`<div class="text-muted" style="font-size:11px;">${ui.escape(f.description)}</div>`:''}</td>
+          <td>${f.category?`<span class="badge badge-plain">${ui.escape(f.category)}</span>`:'<span class="td-muted">—</span>'}</td>
+          <td><span class="badge ${f.mode==='PERCENT'?'badge-accent':'badge-plain'}">${f.mode==='PERCENT'?'%':'Fijo'}</span></td>
+          <td style="text-align:right;"><span class="td-mono">${f.batchSize} ${f.batchUnit||'kg'}</span></td>
+          <td><span class="td-mono">v${f.currentVersion||1}</span></td>
+          <td class="td-actions" onclick="event.stopPropagation()">
+            <button class="btn-icon" onclick="openDetail('${f.id}')" title="Ver">${ui.icon('flask')}</button>
+            <button class="btn-icon" onclick="deleteFormula('${f.id}')" title="Eliminar">${ui.icon('trash')}</button>
+          </td></tr>`).join('')}</tbody></table>`
+    : (all.length === 0
+      ? `<div class="empty-state"><div class="empty-state-icon">${ui.icon('flask')}</div><div class="empty-state-title">Sin fórmulas</div><div class="empty-state-text">Crea tu primera fórmula maestra.</div><button class="btn btn-primary" onclick="newFormula()">${ui.icon('plus')} Nueva fórmula</button></div>`
+      : `<div class="empty-state"><div class="empty-state-title">Sin resultados</div></div>`);
+
+  ui.renderLayout({
+    activeModule: 'formulas', pageEyebrow: 'Producción', pageTitle: 'Fórmulas',
+    contentHtml: `
+      <div class="action-bar">
+        <div class="action-bar-left"><h2 class="action-bar-title">Fórmulas</h2><span class="action-bar-count">${all.length} recetas</span></div>
+        <div class="action-bar-right"><button class="btn btn-primary" onclick="newFormula()">${ui.icon('plus')} Nueva fórmula</button></div>
+      </div>
+      <div class="table-wrap">
+        <div class="table-toolbar"><div class="search-box">${ui.icon('search')}<input class="input" type="search" placeholder="Buscar..." value="${ui.escape(searchTerm)}" oninput="onSearch(this.value)"></div></div>
+        ${tableHtml}
+      </div>`
+  });
+}
+function onSearch(v) { searchTerm = v; render(); }
+
+function openDetail(id) { selectedFormulaId = id; view = 'detail'; render(); }
+function backToList() { view = 'list'; selectedFormulaId = null; editingVersion = null; render(); }
+
+function renderDetail() {
+  const f = db.getById(db.COLLECTIONS.formulas, selectedFormulaId);
+  if (!f) { backToList(); return; }
+  const versions = formulas.getAllVersions(f.id);
+  const currentV = formulas.getVersion(f.id, f.currentVersion);
+  if (!currentV) { backToList(); return; }
+  const totalItems = currentV.phases.reduce((s, p) => s + (p.items||[]).length, 0);
+  const totalAmount = currentV.phases.reduce((s, p) => s + (p.items||[]).reduce((s2, i) => s2 + (parseFloat(i.amount)||0), 0), 0);
+  const cost = formulas.computeCost(currentV, currentV.batchSize);
+
+  const phasesHtml = currentV.phases.map((phase) => {
+    const items = phase.items || [];
+    const phaseTotal = items.reduce((s, i) => s + (parseFloat(i.amount)||0), 0);
+    if (!items.length) return `<div class="card mb-16" style="padding:16px;"><div class="card-title" style="font-size:15px;">${ui.escape(phase.name)}</div><div class="text-muted" style="font-size:12px;margin-top:8px;">Sin ingredientes</div></div>`;
+    return `<div class="card mb-16" style="padding:0;">
+      <div style="padding:14px 20px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center;">
+        <div class="card-title" style="font-size:15px;">${ui.escape(phase.name)}</div>
+        <span class="text-mono text-muted" style="font-size:12px;">${currentV.mode==='PERCENT' ? phaseTotal.toFixed(2)+'%' : phaseTotal.toFixed(3)+' '+currentV.batchUnit}</span>
+      </div>
+      <table>
+        <thead><tr><th>Código</th><th>Ingrediente</th><th style="text-align:right;">${currentV.mode==='PERCENT'?'%':'Cantidad'}</th><th style="text-align:right;">Costo línea</th><th>Notas</th></tr></thead>
+        <tbody>${items.map(it => {
+          const rm = db.getById(db.COLLECTIONS.rawMaterials, it.rawMaterialId);
+          const lineCost = cost.breakdown.find(b => b.rmId === it.rawMaterialId && b.phase === phase.name);
+          return `<tr>
+            <td><span class="td-mono">${rm?.code||'—'}</span></td>
+            <td>${rm ? ui.escape(rm.name) : '<span class="text-muted">MP eliminada</span>'}</td>
+            <td style="text-align:right;"><span class="td-mono td-strong">${(parseFloat(it.amount)||0).toFixed(3)}</span> <span class="text-muted">${currentV.mode==='PERCENT'?'%':rm?.unit||''}</span></td>
+            <td style="text-align:right;">${lineCost ? `<span class="td-mono">$${lineCost.lineCostUSD.toFixed(4)}</span>` : '<span class="td-muted">—</span>'}</td>
+            <td><span class="text-muted" style="font-size:12px;">${ui.escape(it.notes||'')}</span></td>
+          </tr>`;
+        }).join('')}</tbody>
+      </table></div>`;
+  }).join('');
+
+  ui.renderLayout({
+    activeModule: 'formulas', pageEyebrow: 'Fórmula', pageTitle: f.code + ' · ' + f.name,
+    contentHtml: `
+      <div class="action-bar">
+        <div class="action-bar-left"><button class="btn btn-ghost btn-sm" onclick="backToList()">← Volver</button></div>
+        <div class="action-bar-right">
+          <button class="btn btn-secondary" onclick="showScaler('${f.id}')">${ui.icon('refresh')} Escalar</button>
+          <button class="btn btn-secondary" onclick="showVersions('${f.id}')">${ui.icon('activity')} Versiones (${versions.length})</button>
+          <button class="btn btn-primary" onclick="editFormula('${f.id}')">${ui.icon('edit')} Nueva versión</button>
+        </div>
+      </div>
+      <div class="grid grid-4 mb-24">
+        <div class="kpi"><div class="kpi-label">Versión actual</div><div class="kpi-value">v${f.currentVersion}</div><div class="kpi-value-sub">${versions.length} versión${versions.length!==1?'es':''}</div></div>
+        <div class="kpi"><div class="kpi-label">Modo</div><div class="kpi-value" style="font-size:24px;">${f.mode==='PERCENT'?'%':'Fijo'}</div></div>
+        <div class="kpi"><div class="kpi-label">Batch base</div><div class="kpi-value">${f.batchSize}</div><div class="kpi-value-sub">${f.batchUnit}</div></div>
+        <div class="kpi"><div class="kpi-label">Costo / ${f.batchUnit} (USD)</div><div class="kpi-value" style="color:var(--accent-ink);">$${cost.perKgUSD.toFixed(4)}</div><div class="kpi-value-sub">total: $${cost.totalUSD.toFixed(2)}</div></div>
+      </div>
+      ${currentV.changeNote ? `<div class="card mb-24" style="padding:16px;background:var(--accent-soft);border-color:#cdd9c8;"><div style="font-size:11px;letter-spacing:0.14em;text-transform:uppercase;color:var(--accent-ink);font-weight:600;margin-bottom:6px;">Nota de versión</div><div style="font-size:13px;">${ui.escape(currentV.changeNote)}</div></div>` : ''}
+      <div class="divider-section"><span class="section-title" style="margin:0;">Composición · ${totalItems} ingredientes${currentV.mode==='PERCENT'?' · total '+totalAmount.toFixed(2)+'%':''}</span></div>
+      ${phasesHtml || '<div class="empty-state"><div class="empty-state-title">Sin fases</div></div>'}
+      <div class="divider-section"><span class="section-title" style="margin:0;">Panel de control de calidad</span></div>
+      ${currentV.qcParams && currentV.qcParams.length
+        ? `<div class="card" style="padding:0;"><table>
+          <thead><tr><th>Parámetro</th><th>Unidad</th><th style="text-align:right;">Mínimo</th><th style="text-align:right;">Máximo</th><th>Método</th></tr></thead>
+          <tbody>${currentV.qcParams.map(p => `<tr>
+            <td class="td-strong">${ui.escape(p.name)}</td>
+            <td class="text-muted">${ui.escape(p.unit||'—')}</td>
+            <td style="text-align:right;"><span class="td-mono">${p.min!==''&&p.min!==null?p.min:'—'}</span></td>
+            <td style="text-align:right;"><span class="td-mono">${p.max!==''&&p.max!==null?p.max:'—'}</span></td>
+            <td>${ui.escape(p.method||'—')}</td>
+          </tr>`).join('')}</tbody></table></div>`
+        : `<div class="card" style="padding:24px;text-align:center;background:var(--surface-2);"><div class="text-muted">No hay parámetros de QC.</div></div>`}
+    `
+  });
+}
+
+function showVersions(fId) {
+  const versions = formulas.getAllVersions(fId);
+  ui.openModal({
+    title: 'Historial de versiones',
+    body: versions.length ? `<div style="display:flex;flex-direction:column;gap:0;">${versions.map(v => {
+      const isCurrent = db.getById(db.COLLECTIONS.formulas, fId).currentVersion === v.version;
+      return `<div class="list-row" style="grid-template-columns:auto 1fr auto;border:1px solid var(--border);border-radius:var(--r-md);margin-bottom:8px;padding:14px 16px;">
+        <div><span class="badge ${isCurrent?'badge-accent':'badge-plain'}">v${v.version}</span></div>
+        <div><div class="td-strong">${ui.escape(v.changeNote || 'Sin nota')}</div><div class="text-muted" style="font-size:11px;margin-top:2px;">${ui.formatDateTime(v.createdAt)} · ${ui.escape(v.createdBy||'—')}</div></div>
+        <div>${!isCurrent ? `<button class="btn btn-secondary btn-sm" onclick="setActiveVersion('${fId}',${v.version})">Activar</button>` : '<span class="text-muted" style="font-size:12px;">Activa</span>'}</div>
+      </div>`;
+    }).join('')}</div>` : '<p class="text-muted">Sin versiones.</p>',
+    footer: `<button class="btn btn-secondary" onclick="ui.closeModal()">Cerrar</button>`
+  });
+}
+
+function setActiveVersion(fId, vNum) {
+  const f = db.getById(db.COLLECTIONS.formulas, fId);
+  const v = db.query(db.COLLECTIONS.formulaVersions, x => x.formulaId === fId && x.version === vNum)[0];
+  if (!f || !v) return;
+  ui.confirm(`¿Activar v${vNum} como la versión actual?`, () => {
+    f.currentVersion = vNum;
+    f.mode = v.mode; f.batchSize = v.batchSize; f.batchUnit = v.batchUnit;
+    db.save(db.COLLECTIONS.formulas, f);
+    ui.closeModal();
+    ui.toast(`v${vNum} activada`, 'success');
+    render();
+  }, { confirmLabel: 'Activar' });
+}
+
+function showScaler(fId) {
+  const f = db.getById(db.COLLECTIONS.formulas, fId);
+  ui.openModal({
+    size: 'lg',
+    title: 'Escalar fórmula',
+    subtitle: 'Calculá cantidades para cualquier tamaño',
+    body: `
+      <div class="form-grid form-grid-2 mb-16">
+        <div class="field"><label class="field-label">Tamaño objetivo</label><input class="input" type="number" step="0.001" id="scale-size" value="${f.batchSize}" oninput="updateScale('${fId}')"></div>
+        <div class="field"><label class="field-label">Unidad</label><input class="input" value="${f.batchUnit}" disabled></div>
+      </div>
+      <div id="scale-result"></div>`,
+    footer: `<button class="btn btn-secondary" onclick="ui.closeModal()">Cerrar</button>`
+  });
+  setTimeout(() => updateScale(fId), 50);
+}
+
+function updateScale(fId) {
+  const f = db.getById(db.COLLECTIONS.formulas, fId);
+  const v = formulas.getVersion(fId);
+  const target = parseFloat(document.getElementById('scale-size').value) || f.batchSize;
+  const scaled = formulas.scaleVersion(v, target);
+  const cost = formulas.computeCost(v, target);
+  const html = scaled.phases.map(p => `<div class="card mb-16" style="padding:0;">
+    <div style="padding:12px 16px;border-bottom:1px solid var(--border);font-weight:600;font-size:13px;">${ui.escape(p.name)}</div>
+    <table><thead><tr><th>Ingrediente</th><th style="text-align:right;">Original</th><th style="text-align:right;">Escalado</th></tr></thead>
+    <tbody>${(p.items||[]).map(i => {
+      const rm = db.getById(db.COLLECTIONS.rawMaterials, i.rawMaterialId);
+      return `<tr><td>${rm?ui.escape(rm.name):'—'}</td>
+        <td style="text-align:right;"><span class="td-mono text-muted">${(parseFloat(i.amount)||0).toFixed(3)}${v.mode==='PERCENT'?'%':''}</span></td>
+        <td style="text-align:right;"><span class="td-mono td-strong">${i.scaledAmount.toFixed(3)}</span> <span class="text-muted">${rm?.unit||''}</span></td>
+      </tr>`;
+    }).join('')}</tbody></table></div>`).join('');
+  document.getElementById('scale-result').innerHTML = `
+    <div class="card mb-16" style="padding:16px;background:var(--accent-soft);border-color:#cdd9c8;">
+      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:16px;">
+        <div><div class="kpi-label">Total escalado</div><div style="font-family:var(--font-display);font-size:22px;letter-spacing:-0.02em;">${scaled.totalScaled.toFixed(3)} <span style="font-size:13px;color:var(--ink-3);">${v.batchUnit}</span></div></div>
+        <div><div class="kpi-label">Costo total</div><div style="font-family:var(--font-display);font-size:22px;letter-spacing:-0.02em;">$${cost.totalUSD.toFixed(2)}</div></div>
+        <div><div class="kpi-label">Costo/${v.batchUnit}</div><div style="font-family:var(--font-display);font-size:22px;letter-spacing:-0.02em;">$${cost.perKgUSD.toFixed(4)}</div></div>
+      </div></div>${html}`;
+}
+
+function newFormula() {
+  editingVersion = {
+    isNew: true, code: db.nextCode(db.COLLECTIONS.formulas, 'F'),
+    name: '', description: '', category: '',
+    mode: 'PERCENT', batchSize: 100, batchUnit: 'kg',
+    phases: JSON.parse(JSON.stringify(DEFAULT_PHASES)),
+    qcParams: JSON.parse(JSON.stringify(DEFAULT_QC_PARAMS)),
+    changeNote: 'Versión inicial'
+  };
+  view = 'edit'; render();
+}
+
+function editFormula(fId) {
+  const f = db.getById(db.COLLECTIONS.formulas, fId);
+  const v = formulas.getVersion(fId);
+  editingVersion = {
+    isNew: false, formulaId: fId,
+    code: f.code, name: f.name, description: f.description, category: f.category,
+    mode: v.mode, batchSize: v.batchSize, batchUnit: v.batchUnit,
+    phases: JSON.parse(JSON.stringify(v.phases || DEFAULT_PHASES)),
+    qcParams: JSON.parse(JSON.stringify(v.qcParams || DEFAULT_QC_PARAMS)),
+    changeNote: ''
+  };
+  view = 'edit'; render();
+}
+
+function renderEdit() {
+  if (!editingVersion) { backToList(); return; }
+  const e = editingVersion;
+  const rms = db.getAll(db.COLLECTIONS.rawMaterials);
+  const totalAmount = e.phases.reduce((s, p) => s + (p.items||[]).reduce((s2, i) => s2 + (parseFloat(i.amount)||0), 0), 0);
+  const totalOK = e.mode==='PERCENT' ? Math.abs(totalAmount - 100) < 0.01 : true;
+
+  const phasesHtml = e.phases.map((phase, pIdx) => `
+    <div class="card mb-16" style="padding:0;">
+      <div style="padding:12px 16px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:8px;">
+        <input class="input" style="flex:1;font-weight:600;" value="${ui.escape(phase.name)}" oninput="updatePhaseName(${pIdx}, this.value)">
+        <button class="btn btn-ghost btn-sm" onclick="addItem(${pIdx})">${ui.icon('plus')} Ingrediente</button>
+        <button class="btn-icon" onclick="removePhase(${pIdx})">${ui.icon('trash')}</button>
+      </div>
+      ${(phase.items||[]).length ? `<table>
+        <thead><tr><th style="width:40%;">Materia prima</th><th style="text-align:right;width:140px;">${e.mode==='PERCENT'?'%':'Cantidad'}</th><th>Notas</th><th style="width:40px;"></th></tr></thead>
+        <tbody>${phase.items.map((it, iIdx) => `<tr>
+          <td><select class="select" onchange="updateItem(${pIdx},${iIdx},'rawMaterialId',this.value)"><option value="">— Selecciona MP —</option>${rms.map(rm => `<option value="${rm.id}" ${rm.id===it.rawMaterialId?'selected':''}>${ui.escape(rm.code)} · ${ui.escape(rm.name)}</option>`).join('')}</select></td>
+          <td style="text-align:right;"><input class="input" type="number" step="0.001" value="${it.amount||''}" style="text-align:right;font-family:var(--font-mono);" oninput="updateItem(${pIdx},${iIdx},'amount',this.value)"></td>
+          <td><input class="input" value="${ui.escape(it.notes||'')}" placeholder="Nota" oninput="updateItem(${pIdx},${iIdx},'notes',this.value)"></td>
+          <td><button class="btn-icon" onclick="removeItem(${pIdx},${iIdx})">${ui.icon('trash')}</button></td>
+        </tr>`).join('')}</tbody></table>` : '<div style="padding:16px;text-align:center;color:var(--ink-3);font-size:12px;">Sin ingredientes</div>'}
+    </div>`).join('');
+
+  const qcHtml = e.qcParams.map((p, idx) => `<tr>
+    <td><input class="input" value="${ui.escape(p.name)}" oninput="updateQC(${idx},'name',this.value)"></td>
+    <td><input class="input" value="${ui.escape(p.unit||'')}" oninput="updateQC(${idx},'unit',this.value)"></td>
+    <td><input class="input" type="number" step="0.01" value="${p.min===null||p.min===undefined?'':p.min}" oninput="updateQC(${idx},'min',this.value)"></td>
+    <td><input class="input" type="number" step="0.01" value="${p.max===null||p.max===undefined?'':p.max}" oninput="updateQC(${idx},'max',this.value)"></td>
+    <td><input class="input" value="${ui.escape(p.method||'')}" oninput="updateQC(${idx},'method',this.value)"></td>
+    <td><button class="btn-icon" onclick="removeQC(${idx})">${ui.icon('trash')}</button></td>
+  </tr>`).join('');
+
+  ui.renderLayout({
+    activeModule: 'formulas', pageEyebrow: e.isNew ? 'Nueva fórmula' : 'Editar', pageTitle: e.isNew ? 'Crear fórmula' : `${e.code} · Nueva versión`,
+    contentHtml: `
+      <div class="action-bar">
+        <div class="action-bar-left"><button class="btn btn-ghost btn-sm" onclick="cancelEdit()">← Cancelar</button></div>
+        <div class="action-bar-right"><button class="btn btn-primary" onclick="saveFormula()">${ui.icon('check')} ${e.isNew?'Crear fórmula':'Guardar versión'}</button></div>
+      </div>
+      <div class="card mb-24">
+        <div class="card-header"><div class="card-title">Información general</div></div>
+        <div class="form-grid form-grid-2">
+          <div class="field"><label class="field-label">Código</label><input class="input" value="${e.code}" disabled style="font-family:var(--font-mono);"></div>
+          <div class="field"><label class="field-label">Nombre *</label><input class="input" value="${ui.escape(e.name)}" oninput="editingVersion.name=this.value" placeholder="Shampoo Care Reparador"></div>
+          <div class="field" style="grid-column:1/-1;"><label class="field-label">Descripción</label><input class="input" value="${ui.escape(e.description||'')}" oninput="editingVersion.description=this.value"></div>
+          <div class="field"><label class="field-label">Categoría</label><input class="input" value="${ui.escape(e.category||'')}" oninput="editingVersion.category=this.value" placeholder="Shampoo, Acondicionador..."></div>
+          <div class="field"><label class="field-label">Modo</label><select class="select" onchange="changeMode(this.value)"><option value="PERCENT" ${e.mode==='PERCENT'?'selected':''}>Por porcentaje</option><option value="FIXED" ${e.mode==='FIXED'?'selected':''}>Cantidad fija</option></select></div>
+          <div class="field"><label class="field-label">Batch base</label><input class="input" type="number" step="0.001" value="${e.batchSize}" oninput="editingVersion.batchSize=parseFloat(this.value)||0"></div>
+          <div class="field"><label class="field-label">Unidad</label><select class="select" onchange="editingVersion.batchUnit=this.value">${['kg','g','L','mL'].map(u => `<option ${u===e.batchUnit?'selected':''}>${u}</option>`).join('')}</select></div>
+          ${!e.isNew ? `<div class="field" style="grid-column:1/-1;"><label class="field-label">Nota de esta versión *</label><input class="input" value="${ui.escape(e.changeNote||'')}" oninput="editingVersion.changeNote=this.value" placeholder="¿Qué cambia?"></div>` : ''}
+        </div>
+      </div>
+      <div class="action-bar">
+        <div class="action-bar-left"><h3>Composición · ${e.mode==='PERCENT'?'Total: '+totalAmount.toFixed(2)+'% '+(totalOK?'✓':' (debe sumar 100%)'):'Modo cantidad fija'}</h3></div>
+        <div class="action-bar-right"><button class="btn btn-secondary btn-sm" onclick="addPhase()">${ui.icon('plus')} Agregar fase</button></div>
+      </div>
+      ${phasesHtml}
+      <div class="action-bar mt-24">
+        <div class="action-bar-left"><h3>Panel de control de calidad</h3></div>
+        <div class="action-bar-right"><button class="btn btn-secondary btn-sm" onclick="addQC()">${ui.icon('plus')} Agregar parámetro</button></div>
+      </div>
+      <div class="card" style="padding:0;">
+        ${e.qcParams.length ? `<table><thead><tr><th>Parámetro</th><th>Unidad</th><th>Mínimo</th><th>Máximo</th><th>Método</th><th style="width:40px;"></th></tr></thead><tbody>${qcHtml}</tbody></table>` : '<div style="padding:32px;text-align:center;color:var(--ink-3);">Sin parámetros</div>'}
+      </div>
+      <div style="height:80px;"></div>`
+  });
+}
+
+function changeMode(m) { editingVersion.mode = m; render(); }
+function updatePhaseName(idx, val) { editingVersion.phases[idx].name = val; }
+function addPhase() { editingVersion.phases.push({ name: 'Fase nueva', items: [] }); render(); }
+function removePhase(idx) {
+  ui.confirm('¿Eliminar fase?', () => { editingVersion.phases.splice(idx, 1); render(); }, { danger: true, confirmLabel: 'Eliminar' });
+}
+function addItem(pIdx) {
+  if (!editingVersion.phases[pIdx].items) editingVersion.phases[pIdx].items = [];
+  editingVersion.phases[pIdx].items.push({ rawMaterialId: '', amount: 0, notes: '' });
+  render();
+}
+function updateItem(pIdx, iIdx, field, val) {
+  if (field === 'amount') val = parseFloat(val) || 0;
+  editingVersion.phases[pIdx].items[iIdx][field] = val;
+}
+function removeItem(pIdx, iIdx) { editingVersion.phases[pIdx].items.splice(iIdx, 1); render(); }
+function addQC() { editingVersion.qcParams.push({ name: '', unit: '', min: '', max: '', method: '' }); render(); }
+function updateQC(idx, field, val) {
+  if (field === 'min' || field === 'max') val = val === '' ? '' : parseFloat(val);
+  editingVersion.qcParams[idx][field] = val;
+}
+function removeQC(idx) { editingVersion.qcParams.splice(idx, 1); render(); }
+
+function saveFormula() {
+  const e = editingVersion;
+  if (!e.name) { ui.toast('El nombre es obligatorio', 'error'); return; }
+  if (e.batchSize <= 0) { ui.toast('Tamaño de batch inválido', 'error'); return; }
+  let totalAmount = 0;
+  for (const phase of e.phases) {
+    for (const item of (phase.items || [])) {
+      if (!item.rawMaterialId) { ui.toast('Ingredientes sin MP seleccionada', 'error'); return; }
+      if (!item.amount || item.amount <= 0) { ui.toast('Ingredientes sin cantidad', 'error'); return; }
+      totalAmount += parseFloat(item.amount) || 0;
+    }
+  }
+  if (e.mode === 'PERCENT' && Math.abs(totalAmount - 100) > 0.5) {
+    if (!confirm(`El total es ${totalAmount.toFixed(2)}%, no 100%. ¿Guardar igual?`)) return;
+  }
+  if (!e.isNew && !e.changeNote) { ui.toast('Describí el cambio', 'error'); return; }
+
+  if (e.isNew) {
+    const f = formulas.create({ code: e.code, name: e.name, description: e.description, category: e.category, mode: e.mode, batchSize: e.batchSize, batchUnit: e.batchUnit, phases: e.phases });
+    const v = formulas.getVersion(f.id, 1);
+    v.qcParams = e.qcParams;
+    db.save(db.COLLECTIONS.formulaVersions, v);
+    ui.toast('Fórmula creada', 'success');
+    selectedFormulaId = f.id; view = 'detail';
+  } else {
+    formulas.createVersion(e.formulaId, { mode: e.mode, batchSize: e.batchSize, batchUnit: e.batchUnit, phases: e.phases, qcParams: e.qcParams, changeNote: e.changeNote });
+    ui.toast('Nueva versión guardada', 'success');
+    selectedFormulaId = e.formulaId; view = 'detail';
+  }
+  editingVersion = null;
+  render();
+}
+
+function cancelEdit() {
+  if (editingVersion && editingVersion.formulaId) { selectedFormulaId = editingVersion.formulaId; view = 'detail'; }
+  else { view = 'list'; selectedFormulaId = null; }
+  editingVersion = null;
+  render();
+}
+
+function deleteFormula(id) {
+  const f = db.getById(db.COLLECTIONS.formulas, id);
+  const ofs = db.query(db.COLLECTIONS.productionOrders, o => o.formulaId === id);
+  if (ofs.length) { ui.toast(`Tiene ${ofs.length} OFs asociadas`, 'error', 4000); return; }
+  ui.confirm(`¿Eliminar "${f.name}" y todas sus versiones?`, () => {
+    db.query(db.COLLECTIONS.formulaVersions, v => v.formulaId === id).forEach(v => db.remove(db.COLLECTIONS.formulaVersions, v.id));
+    db.remove(db.COLLECTIONS.formulas, id);
+    ui.toast('Fórmula eliminada', 'success');
+    render();
+  }, { danger: true, confirmLabel: 'Eliminar' });
+}
+
+render();
 </script>
-</body></html>
+</body>
+</html>

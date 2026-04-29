@@ -1,7 +1,8 @@
 <!DOCTYPE html>
 <html lang="es">
 <head>
-<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Órdenes de Fabricación · altcare</title>
 <link rel="stylesheet" href="../assets/css/styles.css">
 </head>
@@ -10,20 +11,550 @@
 <script src="../assets/js/auth.js"></script>
 <script src="../assets/js/currency.js"></script>
 <script src="../assets/js/tax.js"></script>
+<script src="../assets/js/inventory.js"></script>
+<script src="../assets/js/formulas.js"></script>
 <script src="../assets/js/ui.js"></script>
 <script>
 if (!auth.guard('produccion')) throw new Error('blocked');
-ui.renderLayout({
-  activeModule: 'produccion',
-  pageEyebrow: 'Producción',
-  pageTitle: 'Órdenes de Fabricación',
-  contentHtml: `
-    <div class="card" style="text-align:center;padding:64px 32px;">
-      <div style="font-size:48px;margin-bottom:16px;">🏭</div>
-      <h3 style="font-family:var(--font-display);font-style:italic;font-size:24px;margin-bottom:8px;">Próximamente</h3>
-      <p class="text-muted" style="max-width:520px;margin:0 auto;">Crea órdenes de fabricación, descuenta materias primas automáticamente del inventario y registra rendimiento real vs teórico — Fase 2.</p>
-    </div>
-  `
-});
+
+const STATES = {
+  PLANNED:   { label: 'Planificada', color: 'badge-plain'   },
+  IN_PROCESS:{ label: 'En proceso',  color: 'badge-warning' },
+  COMPLETED: { label: 'Terminada',   color: 'badge-success' },
+  CANCELLED: { label: 'Cancelada',   color: 'badge-danger'  }
+};
+
+let view = 'list';
+let selectedOFId = null;
+let creating = null;
+let stateFilter = '';
+let searchTerm = '';
+
+function render() {
+  if (view === 'detail' && selectedOFId) return renderDetail();
+  if (view === 'create') return renderCreate();
+  return renderList();
+}
+
+function renderList() {
+  let items = db.getAll(db.COLLECTIONS.productionOrders);
+  const all = items;
+  if (stateFilter) items = items.filter(o => o.status === stateFilter);
+  if (searchTerm) {
+    const q = searchTerm.toLowerCase();
+    items = items.filter(o => (o.code||'').toLowerCase().includes(q) || (o.formulaName||'').toLowerCase().includes(q) || (o.lotNumber||'').toLowerCase().includes(q));
+  }
+  items.sort((a,b) => (b.createdAt||'').localeCompare(a.createdAt||''));
+
+  const counts = {
+    PLANNED: all.filter(o => o.status === 'PLANNED').length,
+    IN_PROCESS: all.filter(o => o.status === 'IN_PROCESS').length,
+    COMPLETED: all.filter(o => o.status === 'COMPLETED').length
+  };
+
+  const tableHtml = items.length ? `<table>
+    <thead><tr><th>Código OF</th><th>Lote PT</th><th>Fórmula</th><th>Versión</th><th style="text-align:right;">Tamaño</th><th>Programado</th><th>Estado</th><th style="text-align:right;width:100px;">Acciones</th></tr></thead>
+    <tbody>${items.map(o => {
+      const state = STATES[o.status] || { label: o.status, color: 'badge-plain' };
+      return `<tr style="cursor:pointer;" onclick="openDetail('${o.id}')">
+        <td><span class="td-mono td-strong">${o.code}</span></td>
+        <td><span class="td-mono">${o.lotNumber||'—'}</span></td>
+        <td>${ui.escape(o.formulaName||'—')}</td>
+        <td><span class="td-mono">v${o.formulaVersion}</span></td>
+        <td style="text-align:right;"><span class="td-mono">${o.batchSize} ${o.batchUnit}</span></td>
+        <td><span class="text-muted">${ui.formatDate(o.scheduledDate)}</span></td>
+        <td><span class="badge ${state.color}">${state.label}</span></td>
+        <td class="td-actions" onclick="event.stopPropagation()">
+          <button class="btn-icon" onclick="openDetail('${o.id}')">${ui.icon('flask')}</button>
+        </td>
+      </tr>`;
+    }).join('')}</tbody></table>` : (all.length === 0
+      ? `<div class="empty-state"><div class="empty-state-icon">${ui.icon('flask')}</div><div class="empty-state-title">Sin órdenes de fabricación</div><div class="empty-state-text">Crea la primera orden seleccionando una fórmula.</div><button class="btn btn-primary" onclick="newOF()">${ui.icon('plus')} Nueva orden</button></div>`
+      : `<div class="empty-state"><div class="empty-state-title">Sin resultados</div></div>`);
+
+  ui.renderLayout({
+    activeModule: 'produccion', pageEyebrow: 'Producción', pageTitle: 'Órdenes de Fabricación',
+    contentHtml: `
+      <div class="action-bar">
+        <div class="action-bar-left">
+          <h2 class="action-bar-title">Órdenes de fabricación</h2>
+          <span class="action-bar-count">${all.length} totales · ${counts.PLANNED} planificadas · ${counts.IN_PROCESS} en proceso · ${counts.COMPLETED} terminadas</span>
+        </div>
+        <div class="action-bar-right"><button class="btn btn-primary" onclick="newOF()">${ui.icon('plus')} Nueva orden</button></div>
+      </div>
+      <div class="table-wrap">
+        <div class="table-toolbar">
+          <div class="search-box">${ui.icon('search')}<input class="input" type="search" placeholder="Buscar por código, fórmula o lote..." value="${ui.escape(searchTerm)}" oninput="onSearch(this.value)"></div>
+          <select class="select" style="max-width:200px;" onchange="onStateFilter(this.value)">
+            <option value="">Todos los estados</option>
+            ${Object.entries(STATES).map(([k,s])=>`<option value="${k}" ${k===stateFilter?'selected':''}>${s.label}</option>`).join('')}
+          </select>
+        </div>
+        ${tableHtml}
+      </div>
+    `
+  });
+}
+function onSearch(v) { searchTerm = v; render(); }
+function onStateFilter(v) { stateFilter = v; render(); }
+
+// ====== CREAR OF ======
+
+function newOF() {
+  const fs = db.getAll(db.COLLECTIONS.formulas);
+  if (!fs.length) { ui.toast('Primero crea una fórmula', 'error'); return; }
+  creating = {
+    code: db.nextCode(db.COLLECTIONS.productionOrders, 'OF'),
+    formulaId: '', formulaVersion: null, formulaName: '',
+    batchSize: 0, batchUnit: 'kg',
+    scheduledDate: new Date().toISOString().slice(0,10),
+    operatorId: '', operatorName: '',
+    notes: '',
+    items: []     // items con materia prima + lote elegido + cantidad requerida
+  };
+  view = 'create'; render();
+}
+
+function renderCreate() {
+  const fs = db.getAll(db.COLLECTIONS.formulas);
+  const users = db.getAll(db.COLLECTIONS.users).filter(u => u.active);
+  const c = creating;
+
+  // Si ya seleccionó fórmula, mostrar items con selección de lotes
+  let itemsHtml = '';
+  if (c.formulaId && c.items.length) {
+    itemsHtml = `
+      <div class="card mb-24" style="padding:0;">
+        <div style="padding:14px 20px;border-bottom:1px solid var(--border);">
+          <div class="card-title" style="font-size:15px;">Materias primas requeridas</div>
+          <div class="text-muted" style="font-size:12px;margin-top:2px;">Asigná un lote específico para cada ingrediente. Al crear la OF se reservará el material.</div>
+        </div>
+        <table>
+          <thead><tr><th>Fase</th><th>Ingrediente</th><th style="text-align:right;">Requerido</th><th>Lote a usar *</th><th style="text-align:right;">Disponible</th></tr></thead>
+          <tbody>${c.items.map((it, idx) => {
+            const rm = db.getById(db.COLLECTIONS.rawMaterials, it.rawMaterialId);
+            const availableLots = inventory.getLotsFEFO(it.rawMaterialId);
+            const totalAvailable = availableLots.reduce((s,l)=>s+(l.balance-(l.reserved||0)),0);
+            const insufficient = totalAvailable < it.required;
+            const selectedLot = it.lotId ? db.getById(db.COLLECTIONS.rmLots, it.lotId) : null;
+            const lotAvail = selectedLot ? (selectedLot.balance - (selectedLot.reserved||0)) : 0;
+            const lotInsufficient = selectedLot && lotAvail < it.required;
+            return `<tr>
+              <td><span class="badge badge-plain">${ui.escape(it.phase)}</span></td>
+              <td><div class="td-strong">${rm?ui.escape(rm.name):'—'}</div><div class="text-muted" style="font-size:11px;">${rm?.code||''}</div></td>
+              <td style="text-align:right;"><span class="td-mono td-strong">${it.required.toFixed(3)}</span> <span class="text-muted">${rm?.unit||''}</span></td>
+              <td>
+                <select class="select" onchange="updateItemLot(${idx}, this.value)">
+                  <option value="">— Selecciona lote (FEFO sugerido) —</option>
+                  ${availableLots.map(l => {
+                    const av = l.balance - (l.reserved||0);
+                    return `<option value="${l.id}" ${l.id===it.lotId?'selected':''}>${l.code} · vence ${l.expiryDate||'—'} · disp: ${av.toFixed(3)} ${l.unit}</option>`;
+                  }).join('')}
+                </select>
+                ${lotInsufficient ? `<div class="text-muted" style="color:var(--danger);font-size:11px;margin-top:4px;">Lote tiene solo ${lotAvail.toFixed(3)} (faltan ${(it.required-lotAvail).toFixed(3)})</div>` : ''}
+              </td>
+              <td style="text-align:right;">
+                <span class="td-mono ${insufficient?'':'td-muted'}" ${insufficient?'style="color:var(--danger);"':''}>${totalAvailable.toFixed(3)}</span>
+                ${insufficient ? '<div><span class="badge badge-danger" style="margin-top:4px;">Stock insuficiente</span></div>' : ''}
+              </td>
+            </tr>`;
+          }).join('')}</tbody>
+        </table>
+      </div>
+    `;
+  }
+
+  ui.renderLayout({
+    activeModule: 'produccion', pageEyebrow: 'Nueva orden', pageTitle: c.code,
+    contentHtml: `
+      <div class="action-bar">
+        <div class="action-bar-left"><button class="btn btn-ghost btn-sm" onclick="cancelCreate()">← Cancelar</button></div>
+        <div class="action-bar-right"><button class="btn btn-primary" onclick="saveOF()">${ui.icon('check')} Crear orden</button></div>
+      </div>
+
+      <div class="card mb-24">
+        <div class="card-header"><div class="card-title">Información de la orden</div></div>
+        <div class="form-grid form-grid-2">
+          <div class="field"><label class="field-label">Código</label><input class="input" value="${c.code}" disabled style="font-family:var(--font-mono);"></div>
+          <div class="field">
+            <label class="field-label">Fórmula *</label>
+            <select class="select" onchange="onFormulaChange(this.value)">
+              <option value="">— Selecciona —</option>
+              ${fs.map(f => `<option value="${f.id}" ${f.id===c.formulaId?'selected':''}>${ui.escape(f.code)} · ${ui.escape(f.name)} (v${f.currentVersion})</option>`).join('')}
+            </select>
+          </div>
+          <div class="field"><label class="field-label">Tamaño de batch *</label><input class="input" type="number" step="0.001" value="${c.batchSize}" oninput="onBatchSizeChange(this.value)"></div>
+          <div class="field"><label class="field-label">Unidad</label><input class="input" value="${c.batchUnit}" disabled></div>
+          <div class="field"><label class="field-label">Fecha programada</label><input class="input" type="date" value="${c.scheduledDate}" oninput="creating.scheduledDate=this.value"></div>
+          <div class="field"><label class="field-label">Operario</label><select class="select" onchange="onOperatorChange(this.value)"><option value="">—</option>${users.map(u => `<option value="${u.id}" ${u.id===c.operatorId?'selected':''}>${ui.escape(u.fullName||u.username)}</option>`).join('')}</select></div>
+          <div class="field" style="grid-column:1/-1;"><label class="field-label">Notas</label><textarea class="textarea" oninput="creating.notes=this.value">${ui.escape(c.notes||'')}</textarea></div>
+        </div>
+      </div>
+
+      ${itemsHtml}
+    `
+  });
+}
+
+function onFormulaChange(fId) {
+  if (!fId) { creating.formulaId=''; creating.items=[]; render(); return; }
+  const f = db.getById(db.COLLECTIONS.formulas, fId);
+  const v = formulas.getVersion(fId);
+  creating.formulaId = fId;
+  creating.formulaVersion = v.version;
+  creating.formulaName = f.name;
+  creating.batchSize = f.batchSize;
+  creating.batchUnit = f.batchUnit;
+  rebuildItems();
+  render();
+}
+
+function onBatchSizeChange(val) {
+  creating.batchSize = parseFloat(val) || 0;
+  rebuildItems();
+  render();
+}
+
+function onOperatorChange(uid) {
+  creating.operatorId = uid;
+  const u = db.getById(db.COLLECTIONS.users, uid);
+  creating.operatorName = u ? (u.fullName || u.username) : '';
+}
+
+function rebuildItems() {
+  if (!creating.formulaId) { creating.items = []; return; }
+  const v = formulas.getVersion(creating.formulaId);
+  const scaled = formulas.scaleVersion(v, creating.batchSize);
+  const items = [];
+  scaled.phases.forEach(phase => {
+    (phase.items||[]).forEach(i => {
+      items.push({
+        phase: phase.name,
+        rawMaterialId: i.rawMaterialId,
+        required: i.scaledAmount,
+        lotId: '',
+        notes: i.notes || ''
+      });
+    });
+  });
+  // Auto-asignar primer lote FEFO si solo hay uno o si el stock alcanza
+  items.forEach(it => {
+    const lots = inventory.getLotsFEFO(it.rawMaterialId);
+    if (lots.length) {
+      // Buscar el primer lote que tenga stock suficiente
+      const ok = lots.find(l => (l.balance - (l.reserved||0)) >= it.required);
+      if (ok) it.lotId = ok.id;
+      else it.lotId = lots[0].id; // que muestre el alerta de insuficiente
+    }
+  });
+  creating.items = items;
+}
+
+function updateItemLot(idx, lotId) {
+  creating.items[idx].lotId = lotId;
+  render();
+}
+
+function cancelCreate() { creating = null; view = 'list'; render(); }
+
+function saveOF() {
+  const c = creating;
+  if (!c.formulaId) { ui.toast('Selecciona una fórmula', 'error'); return; }
+  if (c.batchSize <= 0) { ui.toast('Tamaño de batch inválido', 'error'); return; }
+  if (!c.items.length) { ui.toast('La fórmula no tiene ingredientes', 'error'); return; }
+  // Validar que todos los items tengan lote y stock disponible
+  for (const it of c.items) {
+    if (!it.lotId) { ui.toast(`Asigna un lote a todos los ingredientes`, 'error'); return; }
+    const lot = db.getById(db.COLLECTIONS.rmLots, it.lotId);
+    const av = (lot.balance||0) - (lot.reserved||0);
+    if (av < it.required) {
+      const rm = db.getById(db.COLLECTIONS.rawMaterials, it.rawMaterialId);
+      ui.toast(`Lote ${lot.code} de ${rm.name} no tiene suficiente: ${av.toFixed(3)} disponible, ${it.required.toFixed(3)} requerido`, 'error', 5000);
+      return;
+    }
+  }
+
+  // Crear OF
+  const ofData = {
+    code: c.code,
+    formulaId: c.formulaId,
+    formulaVersion: c.formulaVersion,
+    formulaName: c.formulaName,
+    batchSize: c.batchSize,
+    batchUnit: c.batchUnit,
+    scheduledDate: c.scheduledDate,
+    operatorId: c.operatorId,
+    operatorName: c.operatorName,
+    notes: c.notes,
+    items: c.items,
+    status: 'PLANNED',
+    actualYield: null,
+    yieldVariance: null,
+    lotNumber: null,        // se asigna al terminar
+    fgLotId: null,
+    qcTestId: null,
+    startedAt: null,
+    completedAt: null
+  };
+  const saved = db.save(db.COLLECTIONS.productionOrders, ofData);
+  // Reservar lotes
+  c.items.forEach(it => {
+    inventory.reserveFromLot(it.lotId, it.required, `OF ${saved.code}`);
+  });
+  ui.toast('Orden creada y materiales reservados', 'success');
+  selectedOFId = saved.id;
+  view = 'detail';
+  creating = null;
+  render();
+}
+
+// ====== DETALLE OF ======
+
+function openDetail(id) { selectedOFId = id; view = 'detail'; render(); }
+function backToList() { view = 'list'; selectedOFId = null; render(); }
+
+function renderDetail() {
+  const o = db.getById(db.COLLECTIONS.productionOrders, selectedOFId);
+  if (!o) { backToList(); return; }
+  const state = STATES[o.status] || { label: o.status, color: 'badge-plain' };
+
+  // Calcular costo teórico
+  let totalCostUSD = 0;
+  o.items.forEach(it => {
+    const lot = db.getById(db.COLLECTIONS.rmLots, it.lotId);
+    if (!lot) return;
+    let lineUSD = it.required * (lot.unitCost||0);
+    if (lot.costCurrency === 'VES') {
+      const r = currency.getActiveRate();
+      lineUSD = r && r.value ? lineUSD / r.value : 0;
+    }
+    totalCostUSD += lineUSD;
+  });
+
+  const itemsTable = `<table>
+    <thead><tr><th>Fase</th><th>Ingrediente</th><th>Lote MP</th><th style="text-align:right;">Requerido</th><th style="text-align:right;">Costo línea</th></tr></thead>
+    <tbody>${o.items.map(it => {
+      const rm = db.getById(db.COLLECTIONS.rawMaterials, it.rawMaterialId);
+      const lot = db.getById(db.COLLECTIONS.rmLots, it.lotId);
+      let lineUSD = lot ? it.required * (lot.unitCost||0) : 0;
+      if (lot?.costCurrency === 'VES') {
+        const r = currency.getActiveRate();
+        lineUSD = r && r.value ? lineUSD / r.value : 0;
+      }
+      return `<tr>
+        <td><span class="badge badge-plain">${ui.escape(it.phase)}</span></td>
+        <td><div class="td-strong">${rm?ui.escape(rm.name):'—'}</div><div class="text-muted" style="font-size:11px;">${rm?.code||''}</div></td>
+        <td><span class="td-mono">${lot?.code || '—'}</span></td>
+        <td style="text-align:right;"><span class="td-mono td-strong">${it.required.toFixed(3)}</span> <span class="text-muted">${rm?.unit||''}</span></td>
+        <td style="text-align:right;"><span class="td-mono">$${lineUSD.toFixed(4)}</span></td>
+      </tr>`;
+    }).join('')}</tbody></table>`;
+
+  // Acciones según estado
+  let actions = '';
+  if (o.status === 'PLANNED') {
+    actions = `
+      <button class="btn btn-secondary" onclick="cancelOF('${o.id}')">${ui.icon('x')} Cancelar OF</button>
+      <button class="btn btn-primary" onclick="startOF('${o.id}')">${ui.icon('activity')} Iniciar fabricación</button>
+    `;
+  } else if (o.status === 'IN_PROCESS') {
+    actions = `
+      <button class="btn btn-secondary" onclick="cancelOF('${o.id}')">${ui.icon('x')} Cancelar</button>
+      <button class="btn btn-primary" onclick="completeOF('${o.id}')">${ui.icon('check')} Terminar OF</button>
+    `;
+  }
+
+  // Si está terminada, mostrar info del lote PT
+  let fgInfo = '';
+  if (o.status === 'COMPLETED') {
+    const fg = o.fgLotId ? db.getById(db.COLLECTIONS.finishedGoods, o.fgLotId) : null;
+    fgInfo = `
+      <div class="card mb-24" style="background:var(--success-soft);border-color:#bdd6c5;">
+        <div class="card-header" style="border-color:#bdd6c5;">
+          <div class="card-title">Lote de producto terminado generado</div>
+        </div>
+        <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:16px;">
+          <div><div class="kpi-label">Lote</div><div class="td-strong td-mono" style="font-size:18px;">${fg?.code || o.lotNumber}</div></div>
+          <div><div class="kpi-label">Cantidad</div><div class="td-strong" style="font-size:18px;">${o.actualYield||o.batchSize} ${o.batchUnit}</div></div>
+          <div><div class="kpi-label">Rendimiento</div><div class="td-strong" style="font-size:18px;color:${o.yieldVariance<0?'var(--danger)':'var(--success)'};">${o.yieldVariance!==null?(o.yieldVariance>=0?'+':'')+o.yieldVariance.toFixed(2)+'%':'—'}</div></div>
+          <div><div class="kpi-label">Estado QC</div><div>${fg?.status==='LIBERADO'?'<span class="badge badge-success">Liberado</span>':fg?.status==='RECHAZADO'?'<span class="badge badge-danger">Rechazado</span>':'<span class="badge badge-warning">Cuarentena</span>'}</div></div>
+        </div>
+      </div>
+    `;
+  }
+
+  ui.renderLayout({
+    activeModule: 'produccion', pageEyebrow: 'Orden de Fabricación', pageTitle: o.code,
+    contentHtml: `
+      <div class="action-bar">
+        <div class="action-bar-left">
+          <button class="btn btn-ghost btn-sm" onclick="backToList()">← Volver</button>
+          <span style="margin-left:16px;"><span class="badge ${state.color}">${state.label}</span></span>
+        </div>
+        <div class="action-bar-right">${actions}</div>
+      </div>
+
+      ${fgInfo}
+
+      <div class="grid grid-4 mb-24">
+        <div class="kpi"><div class="kpi-label">Fórmula</div><div class="kpi-value" style="font-size:20px;">${ui.escape(o.formulaName)}</div><div class="kpi-value-sub">v${o.formulaVersion}</div></div>
+        <div class="kpi"><div class="kpi-label">Batch</div><div class="kpi-value">${o.batchSize}</div><div class="kpi-value-sub">${o.batchUnit}</div></div>
+        <div class="kpi"><div class="kpi-label">Programado</div><div class="kpi-value" style="font-size:20px;">${ui.formatDate(o.scheduledDate)}</div></div>
+        <div class="kpi"><div class="kpi-label">Costo teórico</div><div class="kpi-value" style="color:var(--accent-ink);">$${totalCostUSD.toFixed(2)}</div><div class="kpi-value-sub">$${(totalCostUSD/o.batchSize).toFixed(4)} / ${o.batchUnit}</div></div>
+      </div>
+
+      ${o.notes ? `<div class="card mb-24" style="padding:16px;"><div class="kpi-label">Notas</div><div style="margin-top:6px;">${ui.escape(o.notes)}</div></div>` : ''}
+
+      <div class="card" style="padding:0;">
+        <div style="padding:14px 20px;border-bottom:1px solid var(--border);"><div class="card-title" style="font-size:15px;">Materiales reservados</div></div>
+        ${itemsTable}
+      </div>
+
+      ${o.operatorName ? `<div class="text-muted" style="font-size:12px;margin-top:16px;">Operario: <strong>${ui.escape(o.operatorName)}</strong></div>` : ''}
+      ${o.startedAt ? `<div class="text-muted" style="font-size:12px;margin-top:4px;">Iniciada: ${ui.formatDateTime(o.startedAt)}</div>` : ''}
+      ${o.completedAt ? `<div class="text-muted" style="font-size:12px;margin-top:4px;">Terminada: ${ui.formatDateTime(o.completedAt)}</div>` : ''}
+    `
+  });
+}
+
+function startOF(id) {
+  ui.confirm('¿Iniciar la fabricación de esta OF? El estado pasará a "En proceso".', () => {
+    const o = db.getById(db.COLLECTIONS.productionOrders, id);
+    o.status = 'IN_PROCESS';
+    o.startedAt = new Date().toISOString();
+    db.save(db.COLLECTIONS.productionOrders, o);
+    ui.toast('OF en proceso', 'success');
+    render();
+  }, { confirmLabel: 'Iniciar' });
+}
+
+function completeOF(id) {
+  const o = db.getById(db.COLLECTIONS.productionOrders, id);
+  const suggestedLot = inventory.nextLotNumber(o.formulaName);
+  const warehouses = db.getAll(db.COLLECTIONS.warehouses);
+  ui.openModal({
+    size: 'lg',
+    title: 'Terminar orden de fabricación',
+    subtitle: 'Registrar producción real y crear lote de producto terminado',
+    body: `
+      <form id="complete-form" onsubmit="saveComplete(event, '${id}')">
+        <div class="form-grid form-grid-2 mb-24">
+          <div class="field">
+            <label class="field-label">Cantidad real producida *</label>
+            <input class="input" type="number" step="0.001" name="actualYield" required value="${o.batchSize}">
+            <div class="field-hint">Teórico: ${o.batchSize} ${o.batchUnit}</div>
+          </div>
+          <div class="field">
+            <label class="field-label">Unidad</label>
+            <input class="input" value="${o.batchUnit}" disabled>
+          </div>
+          <div class="field">
+            <label class="field-label">Número de lote PT *</label>
+            <input class="input" name="lotNumber" required value="${suggestedLot}" style="font-family:var(--font-mono);">
+            <div class="field-hint">Editable. Sugerido por sistema.</div>
+          </div>
+          <div class="field">
+            <label class="field-label">Fecha de fabricación</label>
+            <input class="input" type="date" name="manufactureDate" value="${new Date().toISOString().slice(0,10)}">
+          </div>
+          <div class="field">
+            <label class="field-label">Vencimiento</label>
+            <input class="input" type="date" name="expiryDate">
+            <div class="field-hint">Opcional. Lo podés definir luego.</div>
+          </div>
+          <div class="field">
+            <label class="field-label">Almacén destino</label>
+            <select class="select" name="warehouseId">
+              ${warehouses.map(w => `<option value="${w.id}" ${w.isDefault?'selected':''}>${ui.escape(w.name)}</option>`).join('')}
+            </select>
+          </div>
+          <div class="field" style="grid-column:1/-1;">
+            <label class="field-label">Notas de cierre</label>
+            <textarea class="textarea" name="closingNotes" placeholder="Observaciones de la fabricación..."></textarea>
+          </div>
+        </div>
+        <div style="padding:12px;background:var(--accent-soft);border-radius:var(--r-md);font-size:12.5px;color:var(--accent-ink);">
+          Al cerrar se: consume el material reservado · crea lote de PT en estado "Cuarentena" · queda pendiente de aprobación de QC para liberarlo a venta.
+        </div>
+      </form>`,
+    footer: `<button class="btn btn-secondary" onclick="ui.closeModal()">Cancelar</button><button class="btn btn-primary" onclick="document.getElementById('complete-form').requestSubmit()">${ui.icon('check')} Terminar OF</button>`
+  });
+}
+
+function saveComplete(e, ofId) {
+  e.preventDefault();
+  const data = ui.formData(e.target);
+  const o = db.getById(db.COLLECTIONS.productionOrders, ofId);
+
+  // Consumir reservas (descuenta de balance y libera reserved)
+  o.items.forEach(it => {
+    inventory.consumeFromLot(it.lotId, it.required, `OF ${o.code} terminada`);
+  });
+
+  // Calcular costo unitario PT
+  let totalCostUSD = 0;
+  o.items.forEach(it => {
+    const lot = db.getById(db.COLLECTIONS.rmLots, it.lotId);
+    if (!lot) return;
+    let lineUSD = it.required * (lot.unitCost||0);
+    if (lot.costCurrency === 'VES') {
+      const r = currency.getActiveRate();
+      lineUSD = r && r.value ? lineUSD / r.value : 0;
+    }
+    totalCostUSD += lineUSD;
+  });
+  const unitCost = data.actualYield > 0 ? totalCostUSD / data.actualYield : 0;
+
+  // Crear lote PT
+  const fg = inventory.createFGLot({
+    formulaId: o.formulaId,
+    formulaName: o.formulaName,
+    productionOrderId: o.id,
+    productionOrderCode: o.code,
+    lotNumber: data.lotNumber,
+    quantity: data.actualYield,
+    unit: o.batchUnit,
+    manufactureDate: data.manufactureDate,
+    expiryDate: data.expiryDate || null,
+    warehouseId: data.warehouseId,
+    status: 'CUARENTENA',
+    unitCost,
+    costCurrency: 'USD',
+    notes: data.closingNotes
+  });
+
+  // Actualizar OF
+  o.status = 'COMPLETED';
+  o.completedAt = new Date().toISOString();
+  o.lotNumber = data.lotNumber;
+  o.fgLotId = fg.id;
+  o.actualYield = parseFloat(data.actualYield);
+  o.yieldVariance = ((o.actualYield - o.batchSize) / o.batchSize) * 100;
+  o.closingNotes = data.closingNotes;
+  db.save(db.COLLECTIONS.productionOrders, o);
+
+  ui.closeModal();
+  ui.toast('OF terminada · Lote PT creado en cuarentena', 'success');
+  render();
+}
+
+function cancelOF(id) {
+  ui.confirm('¿Cancelar esta OF? Se liberarán los materiales reservados.', () => {
+    const o = db.getById(db.COLLECTIONS.productionOrders, id);
+    if (o.status === 'PLANNED' || o.status === 'IN_PROCESS') {
+      o.items.forEach(it => {
+        inventory.unreserveFromLot(it.lotId, it.required, `Cancelación OF ${o.code}`);
+      });
+    }
+    o.status = 'CANCELLED';
+    o.completedAt = new Date().toISOString();
+    db.save(db.COLLECTIONS.productionOrders, o);
+    ui.toast('OF cancelada', 'success');
+    render();
+  }, { danger: true, confirmLabel: 'Cancelar OF' });
+}
+
+render();
 </script>
-</body></html>
+</body>
+</html>
