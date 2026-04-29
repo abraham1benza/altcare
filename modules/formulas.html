@@ -153,8 +153,216 @@ function renderDetail() {
             <td>${ui.escape(p.method||'—')}</td>
           </tr>`).join('')}</tbody></table></div>`
         : `<div class="card" style="padding:24px;text-align:center;background:var(--surface-2);"><div class="text-muted">No hay parámetros de QC.</div></div>`}
+
+      ${renderPresentationsSection(f)}
     `
   });
+}
+
+/** Sección de presentaciones (SKUs envasados) de una fórmula */
+function renderPresentationsSection(f) {
+  const presentations = db.query(db.COLLECTIONS.presentations, p => p.formulaId === f.id && p.active !== false);
+
+  return `
+    <div class="divider-section" style="margin-top:32px;">
+      <span class="section-title" style="margin:0;">Presentaciones (SKUs) · ${presentations.length}</span>
+    </div>
+    <p class="text-muted mb-16" style="font-size:13px;">
+      Las presentaciones son las unidades vendibles. Definí cómo se envasa este granel: en qué tamaño y con qué envases (botella + tapa + etiqueta).
+    </p>
+
+    ${presentations.length ? `<div class="card" style="padding:0;">
+      <table>
+        <thead><tr>
+          <th>SKU</th><th>Nombre</th><th style="text-align:right;">Tamaño</th><th>Componentes</th><th style="text-align:right;">Costo envasado</th><th style="text-align:right;width:100px;">Acciones</th>
+        </tr></thead>
+        <tbody>${presentations.map(p => {
+          const componentsHtml = (p.components || []).map(c => {
+            const rm = db.getById(db.COLLECTIONS.rawMaterials, c.rawMaterialId);
+            return `<div style="font-size:11px;">${rm?ui.escape(rm.name):'—'} <span class="text-muted">×${c.quantity}</span></div>`;
+          }).join('') || '<span class="text-muted" style="font-size:11px;">Sin componentes</span>';
+          // Costo envasado: granel (tamaño en kg/L × costo por unidad de fórmula) + componentes
+          const grBatchUnit = f.batchUnit || 'kg';
+          const sizeInBatchUnit = (p.size || 0) / (grBatchUnit==='kg'?1000:grBatchUnit==='L'?1000:1); // mL → kg/L
+          const grCost = sizeInBatchUnit * (formulas.calculateCost(f.id).perKgUSD || 0);
+          let compCost = 0;
+          (p.components||[]).forEach(c => {
+            const rm = db.getById(db.COLLECTIONS.rawMaterials, c.rawMaterialId);
+            if (rm && rm.lastCost) {
+              let usd = c.quantity * rm.lastCost;
+              if (rm.lastCostCurrency === 'VES') {
+                const r = currency.getActiveRate();
+                usd = r && r.value ? usd / r.value : 0;
+              }
+              compCost += usd;
+            }
+          });
+          const totalCost = grCost + compCost;
+          return `<tr>
+            <td><span class="td-mono td-strong">${ui.escape(p.sku||'—')}</span></td>
+            <td>${ui.escape(p.name)}</td>
+            <td style="text-align:right;"><span class="td-mono">${p.size} ${p.sizeUnit}</span></td>
+            <td>${componentsHtml}</td>
+            <td style="text-align:right;"><span class="td-mono">$${totalCost.toFixed(4)}</span><div class="text-muted" style="font-size:10px;">por unidad</div></td>
+            <td class="td-actions">
+              <button class="btn-icon" onclick="editPresentation('${p.id}')" title="Editar">${ui.icon('edit')}</button>
+              <button class="btn-icon" onclick="deletePresentation('${p.id}')" title="Eliminar">${ui.icon('trash')}</button>
+            </td>
+          </tr>`;
+        }).join('')}</tbody>
+      </table>
+    </div>` : `<div class="card" style="padding:24px;text-align:center;background:var(--surface-2);">
+      <div class="text-muted" style="margin-bottom:12px;">Esta fórmula aún no tiene presentaciones.</div>
+      <div class="text-muted" style="font-size:12px;">Ej: Shampoo X · 250mL, Shampoo X · 500mL, Shampoo X · 1L</div>
+    </div>`}
+
+    <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:16px;">
+      <button class="btn btn-secondary" onclick="newPresentation('${f.id}')">${ui.icon('plus')} Nueva presentación</button>
+    </div>
+  `;
+}
+
+// ====== CRUD PRESENTACIONES ======
+
+function newPresentation(formulaId) {
+  const f = db.getById(db.COLLECTIONS.formulas, formulaId);
+  openPresentationForm({
+    formulaId,
+    formulaName: f.name,
+    sku: '',
+    name: '',
+    size: 0,
+    sizeUnit: 'mL',
+    components: [],
+    active: true
+  });
+}
+
+function editPresentation(id) {
+  const p = db.getById(db.COLLECTIONS.presentations, id);
+  if (p) openPresentationForm(p);
+}
+
+function openPresentationForm(item) {
+  const isNew = !item.id;
+  const f = db.getById(db.COLLECTIONS.formulas, item.formulaId);
+  // Solo MPs de tipo envase/tapa/etiqueta/caja como componentes
+  const packagingMPs = db.getAll(db.COLLECTIONS.rawMaterials).filter(rm => ['PACKAGING','CAP','LABEL','BOX','OTHER'].includes(rm.kind || ''));
+
+  ui.openModal({
+    size: 'lg',
+    title: isNew ? 'Nueva presentación' : 'Editar presentación',
+    subtitle: `Fórmula: ${f.name}`,
+    body: `
+      <form id="pres-form" onsubmit="savePresentation(event, '${item.id||''}', '${item.formulaId}')">
+        <div class="section-title">Identificación</div>
+        <div class="form-grid form-grid-2 mb-24">
+          <div class="field"><label class="field-label">SKU *</label><input class="input" name="sku" required value="${ui.escape(item.sku||'')}" placeholder="Ej: SHX-250" style="font-family:var(--font-mono);"><div class="field-hint">Código único del producto envasado</div></div>
+          <div class="field"><label class="field-label">Nombre comercial *</label><input class="input" name="name" required value="${ui.escape(item.name||'')}" placeholder="Ej: Shampoo X · 250mL"></div>
+          <div class="field"><label class="field-label">Tamaño *</label><input class="input" type="number" step="0.1" name="size" required value="${item.size||''}" placeholder="250"></div>
+          <div class="field"><label class="field-label">Unidad del tamaño *</label><select class="select" name="sizeUnit" required>
+            <option value="mL" ${item.sizeUnit==='mL'?'selected':''}>mL</option>
+            <option value="L" ${item.sizeUnit==='L'?'selected':''}>L</option>
+            <option value="g" ${item.sizeUnit==='g'?'selected':''}>g</option>
+            <option value="kg" ${item.sizeUnit==='kg'?'selected':''}>kg</option>
+          </select></div>
+        </div>
+
+        <div class="section-title">Componentes de envasado</div>
+        <p class="text-muted mb-16" style="font-size:12px;">Indicá cuántas unidades de cada envase/tapa/etiqueta se usan por unidad de producto envasado. Ej: 1 botella + 1 tapa + 1 etiqueta frontal + 1 etiqueta trasera.</p>
+
+        <div id="components-list" style="display:flex;flex-direction:column;gap:8px;margin-bottom:16px;">
+          ${(item.components||[]).map((c, idx) => renderComponentRow(c, idx, packagingMPs)).join('')}
+        </div>
+        <button type="button" class="btn btn-secondary btn-sm" onclick="addComponentRow()">${ui.icon('plus')} Agregar componente</button>
+
+        <input type="hidden" id="components-data" name="_components" value="${ui.escape(JSON.stringify(item.components||[]))}">
+      </form>
+    `,
+    footer: `<button class="btn btn-secondary" onclick="ui.closeModal()">Cancelar</button><button class="btn btn-primary" onclick="document.getElementById('pres-form').requestSubmit()">${ui.icon('check')} Guardar</button>`
+  });
+
+  // Hacer disponible packagingMPs para las funciones de los inputs
+  window._presPackagingMPs = packagingMPs;
+}
+
+function renderComponentRow(c, idx, packagingMPs) {
+  return `<div class="component-row" data-idx="${idx}" style="display:grid;grid-template-columns:1fr 120px 40px;gap:8px;align-items:end;">
+    <div class="field" style="margin:0;"><label class="field-label">Componente</label><select class="select" data-field="rawMaterialId" onchange="updateComponentField(${idx}, 'rawMaterialId', this.value)">
+      <option value="">— Selecciona —</option>
+      ${packagingMPs.map(rm => {
+        const k = rm.kind === 'PACKAGING' ? 'Envase' : rm.kind === 'CAP' ? 'Tapa' : rm.kind === 'LABEL' ? 'Etiqueta' : rm.kind === 'BOX' ? 'Caja' : 'Otro';
+        return `<option value="${rm.id}" ${rm.id===c.rawMaterialId?'selected':''}>${ui.escape(rm.code||'')} · ${ui.escape(rm.name)} (${k})</option>`;
+      }).join('')}
+    </select></div>
+    <div class="field" style="margin:0;"><label class="field-label">Cantidad</label><input class="input" type="number" step="0.001" data-field="quantity" value="${c.quantity||1}" oninput="updateComponentField(${idx}, 'quantity', this.value)" style="font-family:var(--font-mono);text-align:right;"></div>
+    <div style="display:flex;align-items:end;height:100%;"><button type="button" class="btn-icon" onclick="removeComponentRow(${idx})">${ui.icon('trash')}</button></div>
+  </div>`;
+}
+
+function addComponentRow() {
+  const list = document.getElementById('components-list');
+  const data = JSON.parse(document.getElementById('components-data').value || '[]');
+  data.push({ rawMaterialId: '', quantity: 1 });
+  document.getElementById('components-data').value = JSON.stringify(data);
+  list.insertAdjacentHTML('beforeend', renderComponentRow(data[data.length-1], data.length-1, window._presPackagingMPs));
+}
+
+function updateComponentField(idx, field, val) {
+  const data = JSON.parse(document.getElementById('components-data').value || '[]');
+  if (data[idx]) {
+    data[idx][field] = field === 'quantity' ? parseFloat(val)||0 : val;
+    document.getElementById('components-data').value = JSON.stringify(data);
+  }
+}
+
+function removeComponentRow(idx) {
+  const data = JSON.parse(document.getElementById('components-data').value || '[]');
+  data.splice(idx, 1);
+  document.getElementById('components-data').value = JSON.stringify(data);
+  // Re-render entera de la lista para mantener índices correctos
+  const list = document.getElementById('components-list');
+  list.innerHTML = data.map((c, i) => renderComponentRow(c, i, window._presPackagingMPs)).join('');
+}
+
+function savePresentation(e, id, formulaId) {
+  e.preventDefault();
+  const fd = new FormData(e.target);
+  const components = JSON.parse(fd.get('_components') || '[]');
+  // Validar componentes
+  const validComponents = components.filter(c => c.rawMaterialId && c.quantity > 0);
+
+  const data = {
+    formulaId,
+    formulaName: db.getById(db.COLLECTIONS.formulas, formulaId).name,
+    sku: fd.get('sku').trim(),
+    name: fd.get('name').trim(),
+    size: parseFloat(fd.get('size')),
+    sizeUnit: fd.get('sizeUnit'),
+    components: validComponents,
+    active: true
+  };
+
+  if (!data.sku || !data.name || !data.size) { ui.toast('Completa los campos obligatorios', 'error'); return; }
+
+  // Validar SKU único
+  const existing = db.query(db.COLLECTIONS.presentations, p => p.sku === data.sku && p.id !== id);
+  if (existing.length) { ui.toast('Ese SKU ya está en uso', 'error'); return; }
+
+  if (id) data.id = id;
+  db.save(db.COLLECTIONS.presentations, data);
+  ui.closeModal();
+  ui.toast(id ? 'Presentación actualizada' : 'Presentación creada', 'success');
+  render();
+}
+
+function deletePresentation(id) {
+  const p = db.getById(db.COLLECTIONS.presentations, id);
+  ui.confirm(`¿Eliminar presentación "${p.name}"?`, () => {
+    db.remove(db.COLLECTIONS.presentations, id);
+    ui.toast('Presentación eliminada', 'success');
+    render();
+  }, { danger: true, confirmLabel: 'Eliminar' });
 }
 
 function showVersions(fId) {

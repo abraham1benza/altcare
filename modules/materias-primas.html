@@ -17,13 +17,33 @@
 <script>
 if (!auth.guard('materias-primas')) throw new Error('blocked');
 
-const CATEGORIES = ['Tensoactivo aniónico','Tensoactivo no iónico','Tensoactivo anfótero','Acondicionador catiónico','Espesante','Emoliente','Humectante','Conservante','Quelante','Regulador de pH','Fragancia','Colorante','Activo capilar','Solvente','Otro'];
+const KINDS = {
+  INGREDIENT: { label: 'Ingrediente', color: 'badge-plain' },
+  PACKAGING:  { label: 'Envase',      color: 'badge-accent' },
+  CAP:        { label: 'Tapa',        color: 'badge-accent' },
+  LABEL:      { label: 'Etiqueta',    color: 'badge-accent' },
+  BOX:        { label: 'Caja',        color: 'badge-warning' },
+  OTHER:      { label: 'Otro',        color: 'badge-plain' }
+};
+
+const CATEGORIES_BY_KIND = {
+  INGREDIENT: ['Tensoactivo aniónico','Tensoactivo no iónico','Tensoactivo anfótero','Acondicionador catiónico','Espesante','Emoliente','Humectante','Conservante','Quelante','Regulador de pH','Fragancia','Colorante','Activo capilar','Solvente','Otro'],
+  PACKAGING:  ['Botella PET','Botella vidrio','Pote','Tubo','Sachet','Bolsa','Otro'],
+  CAP:        ['Tapa rosca','Tapa flip-top','Tapa dispensador','Tapa spray','Tapón','Otro'],
+  LABEL:      ['Etiqueta frente','Etiqueta trasera','Etiqueta de seguridad','Etiqueta de lote','Otro'],
+  BOX:        ['Caja individual','Caja master','Display','Otro'],
+  OTHER:      ['General']
+};
+
+// Para compatibilidad con código anterior
+const CATEGORIES = CATEGORIES_BY_KIND.INGREDIENT;
 const UNITS = ['kg', 'g', 'L', 'mL', 'unidad'];
 const STATES = ['Líquido', 'Sólido', 'Pasta', 'Polvo', 'Granular'];
 
 let view = 'catalog';
 let searchTerm = '';
 let categoryFilter = '';
+let kindFilter = '';
 let selectedRMId = null;
 
 function render() {
@@ -38,6 +58,7 @@ function renderCatalog() {
     const q = searchTerm.toLowerCase();
     items = items.filter(i => (i.name||'').toLowerCase().includes(q) || (i.code||'').toLowerCase().includes(q) || (i.inci||'').toLowerCase().includes(q));
   }
+  if (kindFilter) items = items.filter(i => (i.kind || 'INGREDIENT') === kindFilter);
   if (categoryFilter) items = items.filter(i => i.category === categoryFilter);
   const suppliers = db.getAll(db.COLLECTIONS.suppliers);
   const supplierMap = Object.fromEntries(suppliers.map(s => [s.id, s.name]));
@@ -45,13 +66,15 @@ function renderCatalog() {
 
   const tableHtml = items.length
     ? `<table>
-        <thead><tr><th>Código</th><th>Nombre</th><th>Categoría</th><th style="text-align:right;">Stock</th><th style="text-align:right;">Mínimo</th><th>Proveedor</th><th style="text-align:right;">Último costo</th><th style="text-align:right;width:140px;">Acciones</th></tr></thead>
+        <thead><tr><th>Código</th><th>Tipo</th><th>Nombre</th><th>Categoría</th><th style="text-align:right;">Stock</th><th style="text-align:right;">Mínimo</th><th>Proveedor</th><th style="text-align:right;">Último costo</th><th style="text-align:right;width:140px;">Acciones</th></tr></thead>
         <tbody>
           ${items.map(r => {
             const min = r.minStock || 0;
             const low = r._stock < min && min > 0;
+            const k = KINDS[r.kind || 'INGREDIENT'] || KINDS.INGREDIENT;
             return `<tr>
               <td><span class="td-mono td-strong">${r.code || '—'}</span></td>
+              <td><span class="badge ${k.color}" style="font-size:10px;">${k.label}</span></td>
               <td><div class="td-strong">${ui.escape(r.name)}</div>${r.inci ? `<div class="text-muted" style="font-size:11px;font-style:italic;">${ui.escape(r.inci)}</div>` : ''}</td>
               <td>${r.category ? `<span class="badge badge-plain">${ui.escape(r.category)}</span>` : '<span class="td-muted">—</span>'}</td>
               <td style="text-align:right;"><span class="td-mono ${low?'':'text-strong'}" ${low?'style="color:var(--danger);"':''}>${r._stock.toLocaleString('es-VE',{minimumFractionDigits:2,maximumFractionDigits:3})}</span> <span class="td-muted">${r.unit||''}</span>${low ? '<div><span class="badge badge-danger" style="margin-top:4px;">Bajo</span></div>' : ''}</td>
@@ -67,11 +90,16 @@ function renderCatalog() {
           }).join('')}
         </tbody></table>`
     : (allItems.length === 0
-      ? `<div class="empty-state"><div class="empty-state-icon">${ui.icon('box')}</div><div class="empty-state-title">Sin materias primas</div><div class="empty-state-text">Aún no has registrado materias primas. Comienza agregando los insumos que usas en tus fórmulas.</div><button class="btn btn-primary" onclick="newItem()">${ui.icon('plus')} Crear la primera</button></div>`
+      ? `<div class="empty-state"><div class="empty-state-icon">${ui.icon('box')}</div><div class="empty-state-title">Sin materias primas</div><div class="empty-state-text">Aún no has registrado materias primas. Comienza agregando los insumos que usas en tus fórmulas o los envases.</div></div>`
       : `<div class="empty-state"><div class="empty-state-title">Sin resultados</div><div class="empty-state-text">Ninguna materia prima coincide con tu búsqueda.</div></div>`);
 
   const lowStock = allItems.filter(i => (i.minStock || 0) > 0 && inventory.getStockForRM(i.id) < i.minStock).length;
   const totalLots = db.getAll(db.COLLECTIONS.rmLots).filter(l => l.active && l.balance > 0).length;
+  const ingredientsCount = allItems.filter(i => (i.kind || 'INGREDIENT') === 'INGREDIENT').length;
+  const packagingCount = allItems.filter(i => ['PACKAGING','CAP','LABEL','BOX'].includes(i.kind)).length;
+
+  // Categorías filtradas según kind seleccionado
+  const availableCategories = kindFilter ? (CATEGORIES_BY_KIND[kindFilter] || []) : Object.values(CATEGORIES_BY_KIND).flat().filter((c,i,a)=>a.indexOf(c)===i);
 
   ui.renderLayout({
     activeModule: 'materias-primas',
@@ -81,19 +109,28 @@ function renderCatalog() {
       <div class="action-bar">
         <div class="action-bar-left">
           <h2 class="action-bar-title">Materias primas</h2>
-          <span class="action-bar-count">${allItems.length} referencias · ${totalLots} lotes activos${lowStock ? ` · <span style="color:var(--danger);">${lowStock} con stock bajo</span>` : ''}</span>
-        </div>
-        <div class="action-bar-right">
-          <button class="btn btn-secondary" onclick="newReceipt()">${ui.icon('download')} Registrar recepción</button>
-          <button class="btn btn-primary" onclick="newItem()">${ui.icon('plus')} Nueva MP</button>
+          <span class="action-bar-count">${allItems.length} referencias · ${ingredientsCount} ingredientes · ${packagingCount} envases · ${totalLots} lotes activos${lowStock ? ` · <span style="color:var(--danger);">${lowStock} con stock bajo</span>` : ''}</span>
         </div>
       </div>
       <div class="table-wrap">
         <div class="table-toolbar">
           <div class="search-box">${ui.icon('search')}<input class="input" type="search" placeholder="Buscar..." value="${ui.escape(searchTerm)}" oninput="onSearch(this.value)"></div>
-          <select class="select" style="max-width:240px;" onchange="onCategoryFilter(this.value)"><option value="">Todas las categorías</option>${CATEGORIES.map(c => `<option ${c===categoryFilter?'selected':''}>${c}</option>`).join('')}</select>
+          <select class="select" style="max-width:180px;" onchange="onKindFilter(this.value)">
+            <option value="">Todos los tipos</option>
+            ${Object.entries(KINDS).map(([k,v]) => `<option value="${k}" ${k===kindFilter?'selected':''}>${v.label}</option>`).join('')}
+          </select>
+          <select class="select" style="max-width:240px;" onchange="onCategoryFilter(this.value)">
+            <option value="">Todas las categorías</option>
+            ${availableCategories.map(c => `<option ${c===categoryFilter?'selected':''}>${c}</option>`).join('')}
+          </select>
         </div>
         ${tableHtml}
+      </div>
+
+      <!-- Botones abajo -->
+      <div style="display:flex;justify-content:flex-end;gap:8px;padding:24px 0;border-top:1px solid var(--border);margin-top:24px;">
+        <button class="btn btn-secondary" onclick="newReceipt()">${ui.icon('download')} Registrar recepción</button>
+        <button class="btn btn-primary" onclick="newItem()">${ui.icon('plus')} Nueva MP</button>
       </div>
     `
   });
@@ -101,6 +138,7 @@ function renderCatalog() {
 
 function onSearch(v) { searchTerm = v; render(); }
 function onCategoryFilter(v) { categoryFilter = v; render(); }
+function onKindFilter(v) { kindFilter = v; categoryFilter = ''; render(); }
 
 function viewLots(rmId) { selectedRMId = rmId; view = 'lots'; render(); }
 function backToCatalog() { view = 'catalog'; selectedRMId = null; render(); }
@@ -161,7 +199,7 @@ function renderLots() {
 }
 
 function newItem() {
-  openForm({ code: db.nextCode(db.COLLECTIONS.rawMaterials, 'MP'), unit: 'kg', state: 'Líquido', minStock: 0 });
+  openForm({ code: db.nextCode(db.COLLECTIONS.rawMaterials, 'MP'), unit: 'kg', state: 'Líquido', minStock: 0, kind: 'INGREDIENT' });
 }
 function editItem(id) {
   const r = db.getById(db.COLLECTIONS.rawMaterials, id);
@@ -179,18 +217,24 @@ function openForm(item) {
         <input type="hidden" name="code" value="${item.code}">
         <div class="section-title">Identificación</div>
         <div class="form-grid form-grid-2 mb-24">
+          <div class="field"><label class="field-label">Tipo *</label><select class="select" name="kind" required onchange="onKindChange(this.value)">
+            ${Object.entries(KINDS).map(([k,v]) => `<option value="${k}" ${k===(item.kind||'INGREDIENT')?'selected':''}>${v.label}</option>`).join('')}
+          </select><div class="field-hint">Ingrediente para fórmulas, Envase/Tapa/Etiqueta para envasado</div></div>
+          <div class="field"><label class="field-label">Categoría *</label><select class="select" name="category" id="cat-select" required>
+            <option value="">— Selecciona —</option>
+            ${(CATEGORIES_BY_KIND[item.kind||'INGREDIENT']||[]).map(c => `<option ${c===item.category?'selected':''}>${c}</option>`).join('')}
+          </select></div>
           <div class="field"><label class="field-label">Nombre comercial *</label><input class="input" name="name" required value="${ui.escape(item.name||'')}"></div>
-          <div class="field"><label class="field-label">Nombre INCI</label><input class="input" name="inci" value="${ui.escape(item.inci||'')}"></div>
-          <div class="field"><label class="field-label">CAS</label><input class="input" name="cas" value="${ui.escape(item.cas||'')}"></div>
-          <div class="field"><label class="field-label">Categoría *</label><select class="select" name="category" required><option value="">— Selecciona —</option>${CATEGORIES.map(c => `<option ${c===item.category?'selected':''}>${c}</option>`).join('')}</select></div>
+          <div class="field" id="inci-field" style="${(item.kind && item.kind !== 'INGREDIENT')?'display:none;':''}"><label class="field-label">Nombre INCI</label><input class="input" name="inci" value="${ui.escape(item.inci||'')}"></div>
+          <div class="field" id="cas-field" style="${(item.kind && item.kind !== 'INGREDIENT')?'display:none;':''}"><label class="field-label">CAS</label><input class="input" name="cas" value="${ui.escape(item.cas||'')}"></div>
         </div>
         <div class="section-title">Características técnicas</div>
         <div class="form-grid form-grid-3 mb-24">
-          <div class="field"><label class="field-label">Estado</label><select class="select" name="state">${STATES.map(s => `<option ${s===item.state?'selected':''}>${s}</option>`).join('')}</select></div>
-          <div class="field"><label class="field-label">Unidad *</label><select class="select" name="unit" required>${UNITS.map(u => `<option ${u===item.unit?'selected':''}>${u}</option>`).join('')}</select></div>
-          <div class="field"><label class="field-label">Densidad (g/mL)</label><input class="input" type="number" step="0.001" name="density" value="${item.density||''}"></div>
-          <div class="field"><label class="field-label">pH típico</label><input class="input" type="number" step="0.1" name="ph" value="${item.ph||''}"></div>
-          <div class="field"><label class="field-label">% Activo</label><input class="input" type="number" step="0.1" name="activeContent" value="${item.activeContent||''}"></div>
+          <div class="field" id="state-field" style="${(item.kind && item.kind !== 'INGREDIENT')?'display:none;':''}"><label class="field-label">Estado</label><select class="select" name="state">${STATES.map(s => `<option ${s===item.state?'selected':''}>${s}</option>`).join('')}</select></div>
+          <div class="field"><label class="field-label">Unidad *</label><select class="select" name="unit" required>${UNITS.map(u => `<option ${u===item.unit?'selected':''}>${u}</option>`).join('')}</select><div class="field-hint">Para envases/tapas/etiquetas usar "unidad"</div></div>
+          <div class="field" id="density-field" style="${(item.kind && item.kind !== 'INGREDIENT')?'display:none;':''}"><label class="field-label">Densidad (g/mL)</label><input class="input" type="number" step="0.001" name="density" value="${item.density||''}"></div>
+          <div class="field" id="ph-field" style="${(item.kind && item.kind !== 'INGREDIENT')?'display:none;':''}"><label class="field-label">pH típico</label><input class="input" type="number" step="0.1" name="ph" value="${item.ph||''}"></div>
+          <div class="field" id="active-field" style="${(item.kind && item.kind !== 'INGREDIENT')?'display:none;':''}"><label class="field-label">% Activo</label><input class="input" type="number" step="0.1" name="activeContent" value="${item.activeContent||''}"></div>
           <div class="field"><label class="field-label">Vida útil (meses)</label><input class="input" type="number" name="shelfLifeMonths" value="${item.shelfLifeMonths||''}"></div>
         </div>
         <div class="section-title">Inventario y costos</div>
@@ -206,6 +250,26 @@ function openForm(item) {
     `,
     footer: `<button class="btn btn-secondary" onclick="ui.closeModal()">Cancelar</button><button class="btn btn-primary" onclick="document.getElementById('rm-form').requestSubmit()">${ui.icon('check')} Guardar</button>`
   });
+}
+
+/** Al cambiar el tipo de MP, ajustar categorías disponibles y mostrar/ocultar campos */
+function onKindChange(kind) {
+  const sel = document.getElementById('cat-select');
+  if (sel) {
+    const cats = CATEGORIES_BY_KIND[kind] || [];
+    sel.innerHTML = '<option value="">— Selecciona —</option>' + cats.map(c => `<option>${c}</option>`).join('');
+  }
+  // Mostrar/ocultar campos específicos de ingrediente
+  const isIngredient = kind === 'INGREDIENT';
+  ['inci-field','cas-field','state-field','density-field','ph-field','active-field'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.style.display = isIngredient ? '' : 'none';
+  });
+  // Sugerencia de unidad: para envases/tapas/etiquetas → 'unidad'
+  if (!isIngredient) {
+    const unitSelect = document.querySelector('#rm-form select[name="unit"]');
+    if (unitSelect) unitSelect.value = 'unidad';
+  }
 }
 
 function saveItem(e, id) {
