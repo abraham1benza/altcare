@@ -1,0 +1,257 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Almacenes · altcare</title>
+<link rel="stylesheet" href="../assets/css/styles.css">
+</head>
+<body>
+<script src="../assets/js/db.js"></script>
+<script src="../assets/js/auth.js"></script>
+<script src="../assets/js/currency.js"></script>
+<script src="../assets/js/tax.js"></script>
+<script src="../assets/js/inventory.js"></script>
+<script src="../assets/js/formulas.js"></script>
+<script src="../assets/js/ui.js"></script>
+<script>
+if (!auth.guard('almacenes')) throw new Error('blocked');
+
+let selectedWarehouseId = null;
+
+function render() {
+  const warehouses = db.getAll(db.COLLECTIONS.warehouses);
+  if (!selectedWarehouseId && warehouses.length) selectedWarehouseId = warehouses[0].id;
+
+  const whList = warehouses.map(w => {
+    const locCount = inventory.getLocationsForWarehouse(w.id).length;
+    const isSel = w.id === selectedWarehouseId;
+    return `
+      <div class="card" style="cursor:pointer;${isSel?'border-color:var(--accent);background:var(--accent-soft);':''}padding:16px;" onclick="selectWh('${w.id}')">
+        <div style="display:flex;justify-content:space-between;align-items:start;gap:8px;">
+          <div>
+            <div class="td-strong">${ui.escape(w.name)}</div>
+            <div class="text-mono text-muted" style="font-size:11px;margin-top:2px;">${ui.escape(w.code)}</div>
+          </div>
+          ${w.isDefault ? '<span class="badge badge-accent">Principal</span>' : ''}
+        </div>
+        <div class="text-muted" style="font-size:12px;margin-top:12px;">${locCount} ubicación${locCount!==1?'es':''}</div>
+        ${w.address ? `<div class="text-muted" style="font-size:11px;margin-top:4px;">${ui.escape(w.address)}</div>` : ''}
+      </div>
+    `;
+  }).join('');
+
+  const sel = warehouses.find(w => w.id === selectedWarehouseId);
+  const locations = sel ? inventory.getLocationsForWarehouse(sel.id) : [];
+
+  const locTable = sel ? (locations.length
+    ? `<table>
+        <thead><tr>
+          <th>Código</th>
+          <th>Descripción</th>
+          <th>Tipo</th>
+          <th style="text-align:right;width:110px;">Acciones</th>
+        </tr></thead>
+        <tbody>
+          ${locations.map(l => `
+            <tr>
+              <td><span class="td-mono td-strong">${ui.escape(l.code)}</span></td>
+              <td>${ui.escape(l.description||'—')}</td>
+              <td>${l.type ? `<span class="badge badge-plain">${ui.escape(l.type)}</span>` : '<span class="td-muted">—</span>'}</td>
+              <td class="td-actions">
+                <button class="btn-icon" onclick="editLocation('${l.id}')" title="Editar">${ui.icon('edit')}</button>
+                <button class="btn-icon" onclick="deleteLocation('${l.id}')" title="Eliminar">${ui.icon('trash')}</button>
+              </td>
+            </tr>
+          `).join('')}
+        </tbody>
+      </table>`
+    : `<div class="empty-state">
+        <div class="empty-state-title">Sin ubicaciones</div>
+        <div class="empty-state-text">Las ubicaciones son zonas dentro del almacén (estantes, racks, áreas) para localizar lotes.</div>
+        <button class="btn btn-primary" onclick="newLocation()">${ui.icon('plus')} Crear ubicación</button>
+      </div>`) : '';
+
+  const content = `
+    <div class="action-bar">
+      <div class="action-bar-left">
+        <h2 class="action-bar-title">Almacenes y ubicaciones</h2>
+        <span class="action-bar-count">${warehouses.length} almacén${warehouses.length!==1?'es':''}</span>
+      </div>
+      <div class="action-bar-right">
+        <button class="btn btn-primary" onclick="newWarehouse()">${ui.icon('plus')} Nuevo almacén</button>
+      </div>
+    </div>
+
+    <p class="text-muted mb-24" style="max-width:680px;">
+      Tu sistema soporta múltiples almacenes físicos y ubicaciones internas (estantes, racks, áreas). Cada lote de materia prima o producto terminado se asigna a un almacén y opcionalmente a una ubicación específica.
+    </p>
+
+    <div class="grid grid-3 mb-24">${whList}</div>
+
+    ${sel ? `
+      <div class="card" style="padding:0;">
+        <div style="padding:20px 24px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px;">
+          <div>
+            <div class="card-title">Ubicaciones de ${ui.escape(sel.name)}</div>
+            <div class="text-muted" style="font-size:12px;margin-top:2px;">${locations.length} ubicación${locations.length!==1?'es':''} configurada${locations.length!==1?'s':''}</div>
+          </div>
+          <div style="display:flex;gap:8px;">
+            <button class="btn btn-secondary btn-sm" onclick="editWarehouse('${sel.id}')">${ui.icon('edit')} Editar almacén</button>
+            <button class="btn btn-primary btn-sm" onclick="newLocation()">${ui.icon('plus')} Nueva ubicación</button>
+          </div>
+        </div>
+        ${locTable}
+      </div>
+    ` : ''}
+  `;
+
+  ui.renderLayout({
+    activeModule: 'almacenes',
+    pageEyebrow: 'Sistema',
+    pageTitle: 'Almacenes',
+    contentHtml: content
+  });
+}
+
+function selectWh(id) { selectedWarehouseId = id; render(); }
+
+// ====== ALMACENES ======
+
+function newWarehouse() { openWhForm({ active: true }); }
+function editWarehouse(id) {
+  const w = db.getById(db.COLLECTIONS.warehouses, id);
+  if (w) openWhForm(w);
+}
+
+function openWhForm(item) {
+  const isNew = !item.id;
+  ui.openModal({
+    title: isNew ? 'Nuevo almacén' : 'Editar almacén',
+    body: `
+      <form id="wh-form" onsubmit="saveWh(event, '${item.id || ''}')">
+        <div class="form-grid form-grid-2">
+          <div class="field">
+            <label class="field-label">Código *</label>
+            <input class="input" name="code" required value="${ui.escape(item.code||'')}" placeholder="PRINCIPAL">
+          </div>
+          <div class="field">
+            <label class="field-label">Nombre *</label>
+            <input class="input" name="name" required value="${ui.escape(item.name||'')}" placeholder="Almacén Principal">
+          </div>
+          <div class="field" style="grid-column:1/-1;">
+            <label class="field-label">Dirección</label>
+            <input class="input" name="address" value="${ui.escape(item.address||'')}">
+          </div>
+          <div class="field" style="grid-column:1/-1;">
+            <div class="checkbox-row">
+              <input type="checkbox" id="wh-default" name="isDefault" ${item.isDefault?'checked':''}>
+              <label for="wh-default" style="font-size:13px;">Marcar como almacén principal (por defecto)</label>
+            </div>
+          </div>
+        </div>
+      </form>
+    `,
+    footer: `
+      <button class="btn btn-secondary" onclick="ui.closeModal()">Cancelar</button>
+      <button class="btn btn-primary" onclick="document.getElementById('wh-form').requestSubmit()">${ui.icon('check')} Guardar</button>
+    `
+  });
+}
+
+function saveWh(e, id) {
+  e.preventDefault();
+  const data = ui.formData(e.target);
+  if (!data.code || !data.name) { ui.toast('Completa los campos obligatorios', 'error'); return; }
+  if (id) data.id = id;
+  // Si se marca como default, desmarcar los demás
+  if (data.isDefault) {
+    db.getAll(db.COLLECTIONS.warehouses).forEach(w => {
+      if (w.id !== id && w.isDefault) {
+        w.isDefault = false;
+        db.save(db.COLLECTIONS.warehouses, w);
+      }
+    });
+  }
+  data.active = true;
+  const saved = db.save(db.COLLECTIONS.warehouses, data);
+  selectedWarehouseId = saved.id;
+  ui.closeModal();
+  ui.toast(id ? 'Almacén actualizado' : 'Almacén creado', 'success');
+  render();
+}
+
+// ====== UBICACIONES ======
+
+function newLocation() {
+  if (!selectedWarehouseId) return;
+  openLocForm({ warehouseId: selectedWarehouseId });
+}
+
+function editLocation(id) {
+  const l = db.getById(db.COLLECTIONS.locations, id);
+  if (l) openLocForm(l);
+}
+
+function openLocForm(item) {
+  const isNew = !item.id;
+  ui.openModal({
+    title: isNew ? 'Nueva ubicación' : 'Editar ubicación',
+    body: `
+      <form id="loc-form" onsubmit="saveLoc(event, '${item.id || ''}')">
+        <input type="hidden" name="warehouseId" value="${item.warehouseId}">
+        <div class="form-grid form-grid-2">
+          <div class="field">
+            <label class="field-label">Código *</label>
+            <input class="input" name="code" required value="${ui.escape(item.code||'')}" placeholder="A-01-03">
+            <div class="field-hint">Ej: A-01-03 (zona-rack-nivel)</div>
+          </div>
+          <div class="field">
+            <label class="field-label">Tipo</label>
+            <select class="select" name="type">
+              <option value="">—</option>
+              <option ${item.type==='Estante'?'selected':''}>Estante</option>
+              <option ${item.type==='Rack'?'selected':''}>Rack</option>
+              <option ${item.type==='Piso'?'selected':''}>Piso</option>
+              <option ${item.type==='Cuarentena'?'selected':''}>Cuarentena</option>
+              <option ${item.type==='Refrigerado'?'selected':''}>Refrigerado</option>
+              <option ${item.type==='Otro'?'selected':''}>Otro</option>
+            </select>
+          </div>
+          <div class="field" style="grid-column:1/-1;">
+            <label class="field-label">Descripción</label>
+            <input class="input" name="description" value="${ui.escape(item.description||'')}" placeholder="Estante A, fila 1, nivel 3">
+          </div>
+        </div>
+      </form>
+    `,
+    footer: `
+      <button class="btn btn-secondary" onclick="ui.closeModal()">Cancelar</button>
+      <button class="btn btn-primary" onclick="document.getElementById('loc-form').requestSubmit()">${ui.icon('check')} Guardar</button>
+    `
+  });
+}
+
+function saveLoc(e, id) {
+  e.preventDefault();
+  const data = ui.formData(e.target);
+  if (!data.code) { ui.toast('Código obligatorio', 'error'); return; }
+  if (id) data.id = id;
+  db.save(db.COLLECTIONS.locations, data);
+  ui.closeModal();
+  ui.toast(id ? 'Ubicación actualizada' : 'Ubicación creada', 'success');
+  render();
+}
+
+function deleteLocation(id) {
+  ui.confirm('¿Eliminar esta ubicación?', () => {
+    db.remove(db.COLLECTIONS.locations, id);
+    ui.toast('Ubicación eliminada', 'success');
+    render();
+  }, { danger: true, confirmLabel: 'Eliminar' });
+}
+
+render();
+</script>
+</body>
+</html>

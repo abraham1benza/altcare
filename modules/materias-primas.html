@@ -11,286 +11,329 @@
 <script src="../assets/js/auth.js"></script>
 <script src="../assets/js/currency.js"></script>
 <script src="../assets/js/tax.js"></script>
+<script src="../assets/js/inventory.js"></script>
+<script src="../assets/js/formulas.js"></script>
 <script src="../assets/js/ui.js"></script>
 <script>
 if (!auth.guard('materias-primas')) throw new Error('blocked');
 
-// Categorías típicas para cuidado capilar
-const CATEGORIES = [
-  'Tensoactivo aniónico',
-  'Tensoactivo no iónico',
-  'Tensoactivo anfótero',
-  'Acondicionador catiónico',
-  'Espesante',
-  'Emoliente',
-  'Humectante',
-  'Conservante',
-  'Quelante',
-  'Regulador de pH',
-  'Fragancia',
-  'Colorante',
-  'Activo capilar',
-  'Solvente',
-  'Otro'
-];
+const CATEGORIES = ['Tensoactivo aniónico','Tensoactivo no iónico','Tensoactivo anfótero','Acondicionador catiónico','Espesante','Emoliente','Humectante','Conservante','Quelante','Regulador de pH','Fragancia','Colorante','Activo capilar','Solvente','Otro'];
 const UNITS = ['kg', 'g', 'L', 'mL', 'unidad'];
 const STATES = ['Líquido', 'Sólido', 'Pasta', 'Polvo', 'Granular'];
 
+let view = 'catalog';
 let searchTerm = '';
 let categoryFilter = '';
+let selectedRMId = null;
 
 function render() {
+  if (view === 'lots') return renderLots();
+  return renderCatalog();
+}
+
+function renderCatalog() {
   let items = db.getAll(db.COLLECTIONS.rawMaterials);
   const allItems = items;
-
   if (searchTerm) {
     const q = searchTerm.toLowerCase();
-    items = items.filter(i =>
-      (i.name||'').toLowerCase().includes(q) ||
-      (i.code||'').toLowerCase().includes(q) ||
-      (i.inci||'').toLowerCase().includes(q)
-    );
+    items = items.filter(i => (i.name||'').toLowerCase().includes(q) || (i.code||'').toLowerCase().includes(q) || (i.inci||'').toLowerCase().includes(q));
   }
   if (categoryFilter) items = items.filter(i => i.category === categoryFilter);
-
   const suppliers = db.getAll(db.COLLECTIONS.suppliers);
   const supplierMap = Object.fromEntries(suppliers.map(s => [s.id, s.name]));
-
-  const cols = [
-    { key: 'code', label: 'Código', render: r => `<span class="td-mono td-strong">${r.code || '—'}</span>` },
-    { key: 'name', label: 'Nombre', render: r => `<div class="td-strong">${ui.escape(r.name)}</div>${r.inci ? `<div class="text-muted" style="font-size:11px;font-style:italic;">${ui.escape(r.inci)}</div>` : ''}` },
-    { key: 'category', label: 'Categoría', render: r => r.category ? `<span class="badge badge-plain">${ui.escape(r.category)}</span>` : '<span class="td-muted">—</span>' },
-    { key: 'stock', label: 'Stock', align: 'right', render: r => `<span class="td-mono">${(r.stock||0).toLocaleString('es-VE',{minimumFractionDigits:2,maximumFractionDigits:3})}</span> <span class="td-muted">${r.unit||''}</span>` },
-    { key: 'minStock', label: 'Mínimo', align: 'right', render: r => {
-        const min = r.minStock || 0;
-        const low = (r.stock || 0) < min && min > 0;
-        return `<span class="${low ? 'text-mono' : 'text-mono td-muted'}" ${low?'style="color:var(--danger);"':''}>${min.toLocaleString('es-VE')}</span> ${low ? '<span class="badge badge-danger" style="margin-left:6px;">Bajo</span>' : ''}`;
-      }},
-    { key: 'supplier', label: 'Proveedor', render: r => r.supplierId ? ui.escape(supplierMap[r.supplierId] || '—') : '<span class="td-muted">—</span>' },
-    { key: 'lastCost', label: 'Último costo', align: 'right', render: r => {
-        if (!r.lastCost) return '<span class="td-muted">—</span>';
-        return `<span class="td-mono">${currency.format(r.lastCost, r.lastCostCurrency || 'USD')}</span>`;
-      }}
-  ];
+  items.forEach(i => { i._stock = inventory.getStockForRM(i.id); });
 
   const tableHtml = items.length
     ? `<table>
-        <thead><tr>${cols.map(c => `<th style="${c.align?'text-align:'+c.align:''}">${c.label}</th>`).join('')}<th style="text-align:right;width:110px;">Acciones</th></tr></thead>
+        <thead><tr><th>Código</th><th>Nombre</th><th>Categoría</th><th style="text-align:right;">Stock</th><th style="text-align:right;">Mínimo</th><th>Proveedor</th><th style="text-align:right;">Último costo</th><th style="text-align:right;width:140px;">Acciones</th></tr></thead>
         <tbody>
-          ${items.map(r => `
-            <tr>
-              ${cols.map(c => `<td style="${c.align?'text-align:'+c.align:''}">${c.render ? c.render(r) : (r[c.key]||'')}</td>`).join('')}
+          ${items.map(r => {
+            const min = r.minStock || 0;
+            const low = r._stock < min && min > 0;
+            return `<tr>
+              <td><span class="td-mono td-strong">${r.code || '—'}</span></td>
+              <td><div class="td-strong">${ui.escape(r.name)}</div>${r.inci ? `<div class="text-muted" style="font-size:11px;font-style:italic;">${ui.escape(r.inci)}</div>` : ''}</td>
+              <td>${r.category ? `<span class="badge badge-plain">${ui.escape(r.category)}</span>` : '<span class="td-muted">—</span>'}</td>
+              <td style="text-align:right;"><span class="td-mono ${low?'':'text-strong'}" ${low?'style="color:var(--danger);"':''}>${r._stock.toLocaleString('es-VE',{minimumFractionDigits:2,maximumFractionDigits:3})}</span> <span class="td-muted">${r.unit||''}</span>${low ? '<div><span class="badge badge-danger" style="margin-top:4px;">Bajo</span></div>' : ''}</td>
+              <td style="text-align:right;"><span class="td-mono td-muted">${(r.minStock||0).toLocaleString('es-VE')}</span></td>
+              <td>${r.supplierId ? ui.escape(supplierMap[r.supplierId] || '—') : '<span class="td-muted">—</span>'}</td>
+              <td style="text-align:right;">${r.lastCost ? `<span class="td-mono">${currency.format(r.lastCost, r.lastCostCurrency || 'USD')}</span>` : '<span class="td-muted">—</span>'}</td>
               <td class="td-actions">
+                <button class="btn-icon" onclick="viewLots('${r.id}')" title="Ver lotes">${ui.icon('box')}</button>
                 <button class="btn-icon" onclick="editItem('${r.id}')" title="Editar">${ui.icon('edit')}</button>
                 <button class="btn-icon" onclick="deleteItem('${r.id}')" title="Eliminar">${ui.icon('trash')}</button>
               </td>
-            </tr>
-          `).join('')}
-        </tbody>
-      </table>`
+            </tr>`;
+          }).join('')}
+        </tbody></table>`
     : (allItems.length === 0
-      ? `<div class="empty-state">
-          <div class="empty-state-icon">${ui.icon('box')}</div>
-          <div class="empty-state-title">Sin materias primas</div>
-          <div class="empty-state-text">Aún no has registrado materias primas. Comienza agregando los insumos que usas en tus fórmulas.</div>
-          <button class="btn btn-primary" onclick="newItem()">${ui.icon('plus')} Crear la primera</button>
-        </div>`
-      : `<div class="empty-state">
-          <div class="empty-state-title">Sin resultados</div>
-          <div class="empty-state-text">Ninguna materia prima coincide con tu búsqueda.</div>
-        </div>`);
+      ? `<div class="empty-state"><div class="empty-state-icon">${ui.icon('box')}</div><div class="empty-state-title">Sin materias primas</div><div class="empty-state-text">Aún no has registrado materias primas. Comienza agregando los insumos que usas en tus fórmulas.</div><button class="btn btn-primary" onclick="newItem()">${ui.icon('plus')} Crear la primera</button></div>`
+      : `<div class="empty-state"><div class="empty-state-title">Sin resultados</div><div class="empty-state-text">Ninguna materia prima coincide con tu búsqueda.</div></div>`);
 
-  const lowStock = allItems.filter(i => (i.minStock || 0) > 0 && (i.stock || 0) < i.minStock).length;
-
-  const content = `
-    <div class="action-bar">
-      <div class="action-bar-left">
-        <h2 class="action-bar-title">Materias primas</h2>
-        <span class="action-bar-count">${allItems.length} referencias${lowStock ? ` · <span style="color:var(--danger);">${lowStock} con stock bajo</span>` : ''}</span>
-      </div>
-      <div class="action-bar-right">
-        <button class="btn btn-primary" onclick="newItem()">${ui.icon('plus')} Nueva materia prima</button>
-      </div>
-    </div>
-
-    <div class="table-wrap">
-      <div class="table-toolbar">
-        <div class="search-box">
-          ${ui.icon('search')}
-          <input class="input" type="search" placeholder="Buscar por nombre, código o INCI..." value="${ui.escape(searchTerm)}" oninput="onSearch(this.value)">
-        </div>
-        <select class="select" style="max-width:240px;" onchange="onCategoryFilter(this.value)">
-          <option value="">Todas las categorías</option>
-          ${CATEGORIES.map(c => `<option ${c===categoryFilter?'selected':''}>${c}</option>`).join('')}
-        </select>
-      </div>
-      ${tableHtml}
-    </div>
-  `;
+  const lowStock = allItems.filter(i => (i.minStock || 0) > 0 && inventory.getStockForRM(i.id) < i.minStock).length;
+  const totalLots = db.getAll(db.COLLECTIONS.rmLots).filter(l => l.active && l.balance > 0).length;
 
   ui.renderLayout({
     activeModule: 'materias-primas',
     pageEyebrow: 'Inventario',
     pageTitle: 'Materias Primas',
-    contentHtml: content
+    contentHtml: `
+      <div class="action-bar">
+        <div class="action-bar-left">
+          <h2 class="action-bar-title">Materias primas</h2>
+          <span class="action-bar-count">${allItems.length} referencias · ${totalLots} lotes activos${lowStock ? ` · <span style="color:var(--danger);">${lowStock} con stock bajo</span>` : ''}</span>
+        </div>
+        <div class="action-bar-right">
+          <button class="btn btn-secondary" onclick="newReceipt()">${ui.icon('download')} Registrar recepción</button>
+          <button class="btn btn-primary" onclick="newItem()">${ui.icon('plus')} Nueva MP</button>
+        </div>
+      </div>
+      <div class="table-wrap">
+        <div class="table-toolbar">
+          <div class="search-box">${ui.icon('search')}<input class="input" type="search" placeholder="Buscar..." value="${ui.escape(searchTerm)}" oninput="onSearch(this.value)"></div>
+          <select class="select" style="max-width:240px;" onchange="onCategoryFilter(this.value)"><option value="">Todas las categorías</option>${CATEGORIES.map(c => `<option ${c===categoryFilter?'selected':''}>${c}</option>`).join('')}</select>
+        </div>
+        ${tableHtml}
+      </div>
+    `
   });
 }
 
 function onSearch(v) { searchTerm = v; render(); }
 function onCategoryFilter(v) { categoryFilter = v; render(); }
 
-function newItem() {
-  const code = db.nextCode(db.COLLECTIONS.rawMaterials, 'MP');
-  openForm({ code, unit: 'kg', state: 'Líquido', stock: 0, minStock: 0 });
+function viewLots(rmId) { selectedRMId = rmId; view = 'lots'; render(); }
+function backToCatalog() { view = 'catalog'; selectedRMId = null; render(); }
+
+function renderLots() {
+  const rm = db.getById(db.COLLECTIONS.rawMaterials, selectedRMId);
+  if (!rm) { backToCatalog(); return; }
+  const lots = inventory.getLotsForRM(rm.id);
+  const totalStock = inventory.getStockForRM(rm.id);
+  const totalReserved = lots.reduce((s, l) => s + (parseFloat(l.reserved)||0), 0);
+  const available = totalStock - totalReserved;
+  const suppliers = db.getAll(db.COLLECTIONS.suppliers);
+  const supplierMap = Object.fromEntries(suppliers.map(s => [s.id, s.name]));
+  const warehouses = db.getAll(db.COLLECTIONS.warehouses);
+  const whMap = Object.fromEntries(warehouses.map(w => [w.id, w.name]));
+  const today = new Date().toISOString().slice(0,10);
+
+  const lotsRows = lots.length
+    ? `<table>
+        <thead><tr><th>Lote</th><th>Recibido</th><th>Vence</th><th>Proveedor</th><th>Almacén</th><th style="text-align:right;">Recibido</th><th style="text-align:right;">Reservado</th><th style="text-align:right;">Disponible</th><th style="text-align:right;">Costo</th><th style="text-align:right;width:80px;">Acciones</th></tr></thead>
+        <tbody>${lots.map(l => {
+            const days = l.expiryDate ? Math.round((new Date(l.expiryDate) - new Date(today)) / 86400000) : null;
+            const expClass = days !== null && days < 30 ? 'badge-danger' : days !== null && days < 90 ? 'badge-warning' : 'badge-plain';
+            const avail = (l.balance||0) - (l.reserved||0);
+            return `<tr>
+              <td><div class="td-mono td-strong">${ui.escape(l.code)}</div>${l.supplierLotNumber ? `<div class="text-muted" style="font-size:11px;">Prov: ${ui.escape(l.supplierLotNumber)}</div>` : ''}</td>
+              <td><span class="text-muted">${ui.formatDate(l.receiptDate)}</span></td>
+              <td>${l.expiryDate ? `<span class="badge ${expClass}">${ui.formatDate(l.expiryDate)}${days !== null ? ` · ${days}d` : ''}</span>` : '<span class="td-muted">—</span>'}</td>
+              <td>${l.supplierId ? ui.escape(supplierMap[l.supplierId]||'—') : '<span class="td-muted">—</span>'}</td>
+              <td><span class="text-muted" style="font-size:12px;">${ui.escape(whMap[l.warehouseId]||'—')}</span></td>
+              <td style="text-align:right;"><span class="td-mono">${(l.quantity||0).toLocaleString('es-VE',{minimumFractionDigits:2,maximumFractionDigits:3})}</span></td>
+              <td style="text-align:right;"><span class="td-mono ${l.reserved>0?'':'td-muted'}">${(l.reserved||0).toLocaleString('es-VE',{minimumFractionDigits:2,maximumFractionDigits:3})}</span></td>
+              <td style="text-align:right;"><span class="td-mono td-strong">${avail.toLocaleString('es-VE',{minimumFractionDigits:2,maximumFractionDigits:3})}</span> <span class="text-muted">${l.unit}</span></td>
+              <td style="text-align:right;"><span class="td-mono">${currency.format(l.unitCost, l.costCurrency)}</span></td>
+              <td class="td-actions"><button class="btn-icon" onclick="adjustLot('${l.id}')" title="Ajuste">${ui.icon('edit')}</button></td>
+            </tr>`;
+          }).join('')}</tbody></table>`
+    : `<div class="empty-state"><div class="empty-state-title">Sin lotes activos</div><div class="empty-state-text">Registra una recepción para crear el primer lote.</div><button class="btn btn-primary" onclick="newReceipt('${rm.id}')">${ui.icon('plus')} Registrar recepción</button></div>`;
+
+  ui.renderLayout({
+    activeModule: 'materias-primas',
+    pageEyebrow: 'Materias primas',
+    pageTitle: rm.code + ' · Lotes',
+    contentHtml: `
+      <div class="action-bar">
+        <div class="action-bar-left"><button class="btn btn-ghost btn-sm" onclick="backToCatalog()">← Volver</button><h2 class="action-bar-title" style="margin-left:8px;">${ui.escape(rm.name)}</h2></div>
+        <div class="action-bar-right"><button class="btn btn-primary" onclick="newReceipt('${rm.id}')">${ui.icon('plus')} Nueva recepción</button></div>
+      </div>
+      <div class="grid grid-4 mb-24">
+        <div class="kpi"><div class="kpi-label">Stock total</div><div class="kpi-value">${totalStock.toLocaleString('es-VE',{minimumFractionDigits:2,maximumFractionDigits:3})}</div><div class="kpi-value-sub">${rm.unit}</div></div>
+        <div class="kpi"><div class="kpi-label">Reservado</div><div class="kpi-value">${totalReserved.toLocaleString('es-VE',{minimumFractionDigits:2,maximumFractionDigits:3})}</div><div class="kpi-value-sub">en órdenes activas</div></div>
+        <div class="kpi"><div class="kpi-label">Disponible</div><div class="kpi-value" style="color:var(--accent-ink);">${available.toLocaleString('es-VE',{minimumFractionDigits:2,maximumFractionDigits:3})}</div><div class="kpi-value-sub">${rm.unit}</div></div>
+        <div class="kpi"><div class="kpi-label">Lotes activos</div><div class="kpi-value">${lots.length}</div><div class="kpi-value-sub">en almacén</div></div>
+      </div>
+      <div class="table-wrap">${lotsRows}</div>
+    `
+  });
 }
 
+function newItem() {
+  openForm({ code: db.nextCode(db.COLLECTIONS.rawMaterials, 'MP'), unit: 'kg', state: 'Líquido', minStock: 0 });
+}
 function editItem(id) {
   const r = db.getById(db.COLLECTIONS.rawMaterials, id);
   if (r) openForm(r);
 }
-
 function openForm(item) {
   const isNew = !item.id;
   const suppliers = db.getAll(db.COLLECTIONS.suppliers);
-
   ui.openModal({
     size: 'lg',
     title: isNew ? 'Nueva materia prima' : 'Editar materia prima',
-    subtitle: isNew ? 'Código asignado automáticamente: ' + item.code : `Código: ${item.code}`,
+    subtitle: `Código: ${item.code}`,
     body: `
       <form id="rm-form" onsubmit="saveItem(event, '${item.id || ''}')">
         <input type="hidden" name="code" value="${item.code}">
-
         <div class="section-title">Identificación</div>
         <div class="form-grid form-grid-2 mb-24">
-          <div class="field">
-            <label class="field-label">Nombre comercial *</label>
-            <input class="input" name="name" required value="${ui.escape(item.name||'')}" placeholder="Ej: Lauril éter sulfato de sodio">
-          </div>
-          <div class="field">
-            <label class="field-label">Nombre INCI</label>
-            <input class="input" name="inci" value="${ui.escape(item.inci||'')}" placeholder="Sodium Laureth Sulfate">
-            <div class="field-hint">Nombre internacional para etiquetado</div>
-          </div>
-          <div class="field">
-            <label class="field-label">CAS</label>
-            <input class="input" name="cas" value="${ui.escape(item.cas||'')}" placeholder="68585-34-2">
-          </div>
-          <div class="field">
-            <label class="field-label">Categoría *</label>
-            <select class="select" name="category" required>
-              <option value="">— Selecciona —</option>
-              ${CATEGORIES.map(c => `<option ${c===item.category?'selected':''}>${c}</option>`).join('')}
-            </select>
-          </div>
+          <div class="field"><label class="field-label">Nombre comercial *</label><input class="input" name="name" required value="${ui.escape(item.name||'')}"></div>
+          <div class="field"><label class="field-label">Nombre INCI</label><input class="input" name="inci" value="${ui.escape(item.inci||'')}"></div>
+          <div class="field"><label class="field-label">CAS</label><input class="input" name="cas" value="${ui.escape(item.cas||'')}"></div>
+          <div class="field"><label class="field-label">Categoría *</label><select class="select" name="category" required><option value="">— Selecciona —</option>${CATEGORIES.map(c => `<option ${c===item.category?'selected':''}>${c}</option>`).join('')}</select></div>
         </div>
-
         <div class="section-title">Características técnicas</div>
         <div class="form-grid form-grid-3 mb-24">
-          <div class="field">
-            <label class="field-label">Estado físico</label>
-            <select class="select" name="state">
-              ${STATES.map(s => `<option ${s===item.state?'selected':''}>${s}</option>`).join('')}
-            </select>
-          </div>
-          <div class="field">
-            <label class="field-label">Unidad de medida *</label>
-            <select class="select" name="unit" required>
-              ${UNITS.map(u => `<option ${u===item.unit?'selected':''}>${u}</option>`).join('')}
-            </select>
-          </div>
-          <div class="field">
-            <label class="field-label">Densidad (g/mL)</label>
-            <input class="input" type="number" step="0.001" name="density" value="${item.density||''}">
-          </div>
-          <div class="field">
-            <label class="field-label">pH típico</label>
-            <input class="input" type="number" step="0.1" name="ph" value="${item.ph||''}">
-          </div>
-          <div class="field">
-            <label class="field-label">% Activo</label>
-            <input class="input" type="number" step="0.1" name="activeContent" value="${item.activeContent||''}" placeholder="Ej: 70 (para SLES 70%)">
-          </div>
-          <div class="field">
-            <label class="field-label">Vida útil (meses)</label>
-            <input class="input" type="number" name="shelfLifeMonths" value="${item.shelfLifeMonths||''}">
-          </div>
+          <div class="field"><label class="field-label">Estado</label><select class="select" name="state">${STATES.map(s => `<option ${s===item.state?'selected':''}>${s}</option>`).join('')}</select></div>
+          <div class="field"><label class="field-label">Unidad *</label><select class="select" name="unit" required>${UNITS.map(u => `<option ${u===item.unit?'selected':''}>${u}</option>`).join('')}</select></div>
+          <div class="field"><label class="field-label">Densidad (g/mL)</label><input class="input" type="number" step="0.001" name="density" value="${item.density||''}"></div>
+          <div class="field"><label class="field-label">pH típico</label><input class="input" type="number" step="0.1" name="ph" value="${item.ph||''}"></div>
+          <div class="field"><label class="field-label">% Activo</label><input class="input" type="number" step="0.1" name="activeContent" value="${item.activeContent||''}"></div>
+          <div class="field"><label class="field-label">Vida útil (meses)</label><input class="input" type="number" name="shelfLifeMonths" value="${item.shelfLifeMonths||''}"></div>
         </div>
-
         <div class="section-title">Inventario y costos</div>
         <div class="form-grid form-grid-3 mb-24">
-          <div class="field">
-            <label class="field-label">Stock actual</label>
-            <input class="input" type="number" step="0.001" name="stock" value="${item.stock||0}">
-          </div>
-          <div class="field">
-            <label class="field-label">Stock mínimo</label>
-            <input class="input" type="number" step="0.001" name="minStock" value="${item.minStock||0}">
-            <div class="field-hint">Alerta si baja de este valor</div>
-          </div>
-          <div class="field">
-            <label class="field-label">Ubicación en almacén</label>
-            <input class="input" name="location" value="${ui.escape(item.location||'')}" placeholder="A-01-03">
-          </div>
-          <div class="field">
-            <label class="field-label">Último costo</label>
-            <input class="input" type="number" step="0.0001" name="lastCost" value="${item.lastCost||''}">
-          </div>
-          <div class="field">
-            <label class="field-label">Moneda</label>
-            <select class="select" name="lastCostCurrency">
-              <option value="USD" ${item.lastCostCurrency==='USD'?'selected':''}>USD ($)</option>
-              <option value="VES" ${item.lastCostCurrency==='VES'?'selected':''}>VES (Bs)</option>
-              <option value="EUR" ${item.lastCostCurrency==='EUR'?'selected':''}>EUR (€)</option>
-            </select>
-          </div>
-          <div class="field">
-            <label class="field-label">Proveedor habitual</label>
-            <select class="select" name="supplierId">
-              <option value="">—</option>
-              ${suppliers.map(s => `<option value="${s.id}" ${s.id===item.supplierId?'selected':''}>${ui.escape(s.name)}</option>`).join('')}
-            </select>
-          </div>
+          <div class="field"><label class="field-label">Stock mínimo</label><input class="input" type="number" step="0.001" name="minStock" value="${item.minStock||0}"></div>
+          <div class="field"><label class="field-label">Último costo</label><input class="input" type="number" step="0.0001" name="lastCost" value="${item.lastCost||''}"></div>
+          <div class="field"><label class="field-label">Moneda</label><select class="select" name="lastCostCurrency"><option value="USD" ${item.lastCostCurrency==='USD'?'selected':''}>USD</option><option value="VES" ${item.lastCostCurrency==='VES'?'selected':''}>VES</option><option value="EUR" ${item.lastCostCurrency==='EUR'?'selected':''}>EUR</option></select></div>
+          <div class="field" style="grid-column:1/-1;"><label class="field-label">Proveedor habitual</label><select class="select" name="supplierId"><option value="">—</option>${suppliers.map(s => `<option value="${s.id}" ${s.id===item.supplierId?'selected':''}>${ui.escape(s.name)}</option>`).join('')}</select></div>
         </div>
-
         <div class="section-title">Notas</div>
-        <div class="field">
-          <textarea class="textarea" name="notes" placeholder="Observaciones, condiciones de almacenamiento, advertencias...">${ui.escape(item.notes||'')}</textarea>
-        </div>
+        <div class="field"><textarea class="textarea" name="notes">${ui.escape(item.notes||'')}</textarea></div>
       </form>
     `,
-    footer: `
-      <button class="btn btn-secondary" onclick="ui.closeModal()">Cancelar</button>
-      <button class="btn btn-primary" onclick="document.getElementById('rm-form').requestSubmit()">${ui.icon('check')} Guardar</button>
-    `
+    footer: `<button class="btn btn-secondary" onclick="ui.closeModal()">Cancelar</button><button class="btn btn-primary" onclick="document.getElementById('rm-form').requestSubmit()">${ui.icon('check')} Guardar</button>`
   });
 }
 
 function saveItem(e, id) {
   e.preventDefault();
   const data = ui.formData(e.target);
-  if (!data.name || !data.category) {
-    ui.toast('Completa los campos obligatorios', 'error');
-    return;
-  }
+  if (!data.name || !data.category) { ui.toast('Completa los campos obligatorios', 'error'); return; }
   if (id) data.id = id;
   db.save(db.COLLECTIONS.rawMaterials, data);
   ui.closeModal();
-  ui.toast(id ? 'Materia prima actualizada' : 'Materia prima creada', 'success');
+  ui.toast(id ? 'MP actualizada' : 'MP creada', 'success');
   render();
 }
 
 function deleteItem(id) {
   const r = db.getById(db.COLLECTIONS.rawMaterials, id);
-  ui.confirm(
-    `¿Eliminar "${r.name}"? Esta acción no se puede deshacer.`,
-    () => {
-      db.remove(db.COLLECTIONS.rawMaterials, id);
-      ui.toast('Materia prima eliminada', 'success');
-      render();
-    },
-    { danger: true, confirmLabel: 'Eliminar' }
-  );
+  const activeLots = db.query(db.COLLECTIONS.rmLots, l => l.rawMaterialId === id && l.balance > 0);
+  if (activeLots.length > 0) { ui.toast(`Hay ${activeLots.length} lote(s) con stock`, 'error', 4000); return; }
+  ui.confirm(`¿Eliminar "${r.name}"?`, () => {
+    db.remove(db.COLLECTIONS.rawMaterials, id);
+    ui.toast('MP eliminada', 'success');
+    render();
+  }, { danger: true, confirmLabel: 'Eliminar' });
+}
+
+function newReceipt(rmId) {
+  const rms = db.getAll(db.COLLECTIONS.rawMaterials);
+  if (!rms.length) { ui.toast('Primero crea materias primas', 'error'); return; }
+  const suppliers = db.getAll(db.COLLECTIONS.suppliers);
+  const warehouses = db.getAll(db.COLLECTIONS.warehouses);
+  ui.openModal({
+    size: 'lg',
+    title: 'Registrar recepción',
+    subtitle: 'Crea un nuevo lote y registra el movimiento',
+    body: `
+      <form id="rcpt-form" onsubmit="saveReceipt(event)">
+        <div class="form-grid form-grid-2 mb-24">
+          <div class="field"><label class="field-label">Materia prima *</label><select class="select" name="rawMaterialId" required onchange="onRMChange(this.value)"><option value="">— Selecciona —</option>${rms.map(r => `<option value="${r.id}" ${r.id===rmId?'selected':''}>${ui.escape(r.code)} · ${ui.escape(r.name)}</option>`).join('')}</select></div>
+          <div class="field"><label class="field-label">Proveedor</label><select class="select" name="supplierId"><option value="">—</option>${suppliers.map(s => `<option value="${s.id}">${ui.escape(s.name)}</option>`).join('')}</select></div>
+          <div class="field"><label class="field-label">Cantidad recibida *</label><input class="input" type="number" step="0.001" name="quantity" required></div>
+          <div class="field"><label class="field-label">Lote del proveedor</label><input class="input" name="supplierLotNumber"></div>
+          <div class="field"><label class="field-label">Fecha de recepción *</label><input class="input" type="date" name="receiptDate" required value="${new Date().toISOString().slice(0,10)}"></div>
+          <div class="field"><label class="field-label">Vencimiento</label><input class="input" type="date" name="expiryDate" id="expiry-input"><div class="field-hint">Se calcula auto si la MP tiene vida útil</div></div>
+          <div class="field"><label class="field-label">Costo unitario *</label><input class="input" type="number" step="0.0001" name="unitCost" required></div>
+          <div class="field"><label class="field-label">Moneda</label><select class="select" name="costCurrency"><option value="USD">USD</option><option value="VES">VES</option><option value="EUR">EUR</option></select></div>
+          <div class="field"><label class="field-label">Almacén *</label><select class="select" name="warehouseId" required onchange="onWhChange(this.value)">${warehouses.map(w => `<option value="${w.id}" ${w.isDefault?'selected':''}>${ui.escape(w.name)}</option>`).join('')}</select></div>
+          <div class="field"><label class="field-label">Ubicación</label><select class="select" name="locationId" id="loc-select"><option value="">—</option></select></div>
+          <div class="field" style="grid-column:1/-1;"><label class="field-label">Notas</label><input class="input" name="notes"></div>
+        </div>
+      </form>`,
+    footer: `<button class="btn btn-secondary" onclick="ui.closeModal()">Cancelar</button><button class="btn btn-primary" onclick="document.getElementById('rcpt-form').requestSubmit()">${ui.icon('check')} Registrar</button>`
+  });
+  setTimeout(() => {
+    const defaultWh = warehouses.find(w => w.isDefault) || warehouses[0];
+    if (defaultWh) onWhChange(defaultWh.id);
+    if (rmId) onRMChange(rmId);
+  }, 50);
+}
+
+function onRMChange(rmId) {
+  if (!rmId) return;
+  const rm = db.getById(db.COLLECTIONS.rawMaterials, rmId);
+  if (!rm || !rm.shelfLifeMonths) return;
+  const expInput = document.getElementById('expiry-input');
+  if (expInput && !expInput.value) {
+    const date = new Date();
+    date.setMonth(date.getMonth() + parseInt(rm.shelfLifeMonths, 10));
+    expInput.value = date.toISOString().slice(0,10);
+  }
+}
+
+function onWhChange(whId) {
+  const sel = document.getElementById('loc-select');
+  if (!sel) return;
+  const locs = inventory.getLocationsForWarehouse(whId);
+  sel.innerHTML = '<option value="">—</option>' + locs.map(l => `<option value="${l.id}">${ui.escape(l.code)}${l.description?' · '+ui.escape(l.description):''}</option>`).join('');
+}
+
+function saveReceipt(e) {
+  e.preventDefault();
+  const data = ui.formData(e.target);
+  if (!data.rawMaterialId || !data.quantity || data.quantity <= 0 || !data.unitCost) { ui.toast('Completa los campos obligatorios', 'error'); return; }
+  try {
+    inventory.createRMLot(data);
+    const rm = db.getById(db.COLLECTIONS.rawMaterials, data.rawMaterialId);
+    rm.lastCost = data.unitCost;
+    rm.lastCostCurrency = data.costCurrency;
+    if (data.supplierId) rm.supplierId = data.supplierId;
+    db.save(db.COLLECTIONS.rawMaterials, rm);
+    ui.closeModal();
+    ui.toast('Recepción registrada', 'success');
+    render();
+  } catch (err) { ui.toast(err.message, 'error'); }
+}
+
+function adjustLot(lotId) {
+  const lot = db.getById(db.COLLECTIONS.rmLots, lotId);
+  ui.openModal({
+    title: `Ajustar lote ${lot.code}`,
+    subtitle: `Saldo: ${lot.balance} ${lot.unit}`,
+    body: `
+      <form id="adj-form" onsubmit="saveAdjust(event, '${lotId}')">
+        <div class="form-grid form-grid-2">
+          <div class="field"><label class="field-label">Tipo *</label><select class="select" name="type" required><option value="ADJUSTMENT_IN">Ajuste positivo (+)</option><option value="ADJUSTMENT_OUT">Ajuste negativo (−)</option><option value="SCRAP">Merma / descarte</option></select></div>
+          <div class="field"><label class="field-label">Cantidad *</label><input class="input" type="number" step="0.001" name="quantity" required min="0.001"></div>
+          <div class="field" style="grid-column:1/-1;"><label class="field-label">Motivo *</label><input class="input" name="reason" required></div>
+        </div>
+      </form>`,
+    footer: `<button class="btn btn-secondary" onclick="ui.closeModal()">Cancelar</button><button class="btn btn-primary" onclick="document.getElementById('adj-form').requestSubmit()">${ui.icon('check')} Aplicar</button>`
+  });
+}
+
+function saveAdjust(e, lotId) {
+  e.preventDefault();
+  const data = ui.formData(e.target);
+  const lot = db.getById(db.COLLECTIONS.rmLots, lotId);
+  const qty = parseFloat(data.quantity);
+  const isIn = data.type === 'ADJUSTMENT_IN';
+  if (!isIn && qty > lot.balance) { ui.toast('Cantidad excede el saldo', 'error'); return; }
+  lot.balance = isIn ? lot.balance + qty : lot.balance - qty;
+  if (lot.balance <= 0) lot.balance = 0;
+  db.save(db.COLLECTIONS.rmLots, lot);
+  inventory.registerMove({
+    type: data.type, itemKind: 'MP', itemId: lot.rawMaterialId, itemCode: lot.rawMaterialCode, itemName: lot.rawMaterialName,
+    lotId: lot.id, lotCode: lot.code, quantity: qty, unit: lot.unit, unitCost: lot.unitCost, costCurrency: lot.costCurrency, warehouseId: lot.warehouseId, reference: data.reason
+  });
+  ui.closeModal();
+  ui.toast('Ajuste aplicado', 'success');
+  render();
 }
 
 render();
