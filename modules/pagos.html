@@ -284,11 +284,6 @@ function renderCreate() {
   ui.renderLayout({
     activeModule: 'pagos', pageEyebrow: c.direction === 'OUT' ? 'Registrar pago' : 'Registrar cobro', pageTitle: c.relatedDocLabel,
     contentHtml: `
-      <div class="action-bar">
-        <div class="action-bar-left"><button class="btn btn-ghost btn-sm" onclick="cancelCreate()">← Cancelar</button></div>
-        <div class="action-bar-right"><button class="btn btn-primary" onclick="savePayment()">${ui.icon('check')} ${c.direction==='OUT'?'Registrar pago':'Registrar cobro'}</button></div>
-      </div>
-
       <div class="grid grid-4 mb-24">
         <div class="kpi"><div class="kpi-label">${c.direction==='OUT'?'Proveedor':'Cliente'}</div><div class="kpi-value" style="font-size:18px;">${ui.escape(c.counterpartyName)}</div></div>
         <div class="kpi"><div class="kpi-label">Total factura</div><div class="kpi-value" style="font-size:20px;">${currency.formatCompact(c.docTotal, c.docCurrency)}</div></div>
@@ -301,7 +296,8 @@ function renderCreate() {
         <div class="form-grid form-grid-2">
           <div class="field">
             <label class="field-label">Monto *</label>
-            <input class="input" type="number" step="0.01" id="amount" value="${c.amount}" oninput="updateAmount(this.value)">
+            <input class="input" type="number" step="0.01" id="amount" value="${c.amount}" onchange="updateAmount(this.value)">
+            <div class="field-hint">Sale del campo para actualizar conversión</div>
           </div>
           <div class="field">
             <label class="field-label">Moneda del ${c.direction==='OUT'?'pago':'cobro'} *</label>
@@ -313,7 +309,7 @@ function renderCreate() {
           </div>
           <div class="field">
             <label class="field-label">Fecha *</label>
-            <input class="input" type="date" value="${c.date}" oninput="creating.date=this.value">
+            <input class="input" type="date" value="${c.date}" onchange="creating.date=this.value">
           </div>
           <div class="field">
             <label class="field-label">Método de pago *</label>
@@ -335,24 +331,24 @@ function renderCreate() {
           ${selectedMethod && selectedMethod.requiresReference ? `
             <div class="field">
               <label class="field-label">Referencia *</label>
-              <input class="input" value="${ui.escape(c.reference||'')}" oninput="creating.reference=this.value" placeholder="N° comprobante, hash, etc">
+              <input class="input" value="${ui.escape(c.reference||'')}" onchange="creating.reference=this.value" placeholder="N° comprobante, hash, etc">
             </div>
           ` : `
             <div class="field">
               <label class="field-label">Referencia</label>
-              <input class="input" value="${ui.escape(c.reference||'')}" oninput="creating.reference=this.value">
+              <input class="input" value="${ui.escape(c.reference||'')}" onchange="creating.reference=this.value">
             </div>
           `}
           <div class="field" style="grid-column:1/-1;">
             <label class="field-label">Notas</label>
-            <textarea class="textarea" oninput="creating.notes=this.value">${ui.escape(c.notes||'')}</textarea>
+            <textarea class="textarea" onchange="creating.notes=this.value">${ui.escape(c.notes||'')}</textarea>
           </div>
         </div>
       </div>
 
       ${conversionInfo}
 
-      <div class="card" style="background:var(--surface-2);padding:16px;">
+      <div class="card mb-24" style="background:var(--surface-2);padding:16px;">
         <div style="font-size:12px;color:var(--ink-3);">Al registrar:</div>
         <ul style="margin:8px 0 0 20px;font-size:13px;color:var(--ink-2);line-height:1.8;">
           <li>Se aplicará ${currency.format(c.amountInDocCurrency, c.docCurrency)} a la factura ${c.relatedDocCode}</li>
@@ -360,6 +356,13 @@ function renderCreate() {
           <li>Quedaría pendiente: ${currency.format(c.docRemaining - c.amountInDocCurrency, c.docCurrency)}</li>
         </ul>
       </div>
+
+      <!-- Botones abajo -->
+      <div style="display:flex;justify-content:space-between;gap:8px;padding:24px 0;border-top:1px solid var(--border);margin-top:24px;">
+        <button class="btn btn-secondary" onclick="cancelCreate()">← Cancelar</button>
+        <button class="btn btn-primary" onclick="savePayment()">${ui.icon('check')} ${c.direction==='OUT'?'Registrar pago':'Registrar cobro'}</button>
+      </div>
+      <div style="height:40px;"></div>
     `
   });
 }

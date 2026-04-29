@@ -68,9 +68,6 @@ function renderList() {
           <h2 class="action-bar-title">Compras</h2>
           <span class="action-bar-count">${counts.posActive} OC activas · ${counts.invPending} factura(s) por pagar · $${pendingTotal.toFixed(2)} adeudados</span>
         </div>
-        <div class="action-bar-right">
-          ${tab === 'pos' ? `<button class="btn btn-primary" onclick="newPO()">${ui.icon('plus')} Nueva OC</button>` : `<button class="btn btn-primary" onclick="newInvoice()">${ui.icon('plus')} Nueva factura</button>`}
-        </div>
       </div>
 
       <div style="display:flex;border-bottom:1px solid var(--border);margin-bottom:24px;gap:0;">
@@ -78,7 +75,18 @@ function renderList() {
         <button class="btn btn-ghost" style="border-radius:0;border-bottom:2px solid ${tab==='invoices'?'var(--ink)':'transparent'};color:${tab==='invoices'?'var(--ink)':'var(--ink-3)'};" onclick="changeTab('invoices')">Facturas (${invoices.length})</button>
       </div>
 
+      ${tab === 'pos' ? `<div class="card mb-24" style="padding:14px 18px;background:#eff6ff;border-color:#bfdbfe;">
+        <div style="font-size:12.5px;color:#1e3a8a;line-height:1.5;">
+          <strong>📌 Flujo de compras:</strong> Crea una OC → marcala como Enviada → Recibí mercancía (se crean lotes en inventario) → <strong>Crea la factura del proveedor</strong> (recién ahí aparece la deuda en Pagos para que la pagues).
+        </div>
+      </div>` : ''}
+
       ${tabContent}
+
+      <!-- Botón abajo -->
+      <div style="display:flex;justify-content:flex-end;gap:8px;padding:24px 0;border-top:1px solid var(--border);margin-top:24px;">
+        ${tab === 'pos' ? `<button class="btn btn-primary" onclick="newPO()">${ui.icon('plus')} Nueva OC</button>` : ''}
+      </div>
     `
   });
 }
@@ -164,10 +172,10 @@ function renderPOCreate() {
           <option value="">— MP —</option>
           ${rms.map(rm => `<option value="${rm.id}" ${rm.id===it.rawMaterialId?'selected':''}>${ui.escape(rm.code)} · ${ui.escape(rm.name)}</option>`).join('')}
         </select></td>
-        <td style="text-align:right;"><input class="input" type="number" step="0.001" value="${it.quantity||''}" style="text-align:right;font-family:var(--font-mono);" oninput="updatePOItem(${idx},'quantity',this.value)"></td>
-        <td><span class="text-muted">${it.unit||'—'}</span></td>
-        <td style="text-align:right;"><input class="input" type="number" step="0.0001" value="${it.unitPrice||''}" style="text-align:right;font-family:var(--font-mono);" oninput="updatePOItem(${idx},'unitPrice',this.value)"></td>
-        <td style="text-align:right;"><span class="td-mono td-strong">${currency.format((it.quantity||0)*(it.unitPrice||0), e.currency)}</span></td>
+        <td style="text-align:right;"><input class="input" type="number" step="0.001" value="${it.quantity||''}" style="text-align:right;font-family:var(--font-mono);" oninput="updatePOItemFast(${idx},'quantity',this.value)"></td>
+        <td><span class="text-muted" id="po-unit-${idx}">${it.unit||'—'}</span></td>
+        <td style="text-align:right;"><input class="input" type="number" step="0.0001" value="${it.unitPrice||''}" style="text-align:right;font-family:var(--font-mono);" oninput="updatePOItemFast(${idx},'unitPrice',this.value)"></td>
+        <td style="text-align:right;"><span class="td-mono td-strong" id="po-line-${idx}">${currency.format((it.quantity||0)*(it.unitPrice||0), e.currency)}</span></td>
         <td><button class="btn-icon" onclick="removePOItem(${idx})">${ui.icon('trash')}</button></td>
       </tr>`).join('')}</tbody>
     </table>` : '<div style="padding:32px;text-align:center;color:var(--ink-3);">Sin ítems. Agregá al menos uno.</div>'}
@@ -176,17 +184,13 @@ function renderPOCreate() {
   ui.renderLayout({
     activeModule: 'compras', pageEyebrow: 'Nueva OC', pageTitle: e.code,
     contentHtml: `
-      <div class="action-bar">
-        <div class="action-bar-left"><button class="btn btn-ghost btn-sm" onclick="cancelEdit()">← Cancelar</button></div>
-        <div class="action-bar-right"><button class="btn btn-primary" onclick="savePO()">${ui.icon('check')} Crear OC</button></div>
-      </div>
       <div class="card mb-24">
         <div class="card-header"><div class="card-title">Información</div></div>
         <div class="form-grid form-grid-2">
           <div class="field"><label class="field-label">Código</label><input class="input" value="${e.code}" disabled style="font-family:var(--font-mono);"></div>
           <div class="field"><label class="field-label">Proveedor *</label><select class="select" onchange="onSupplierChange(this.value)"><option value="">— Selecciona —</option>${suppliers.map(s => `<option value="${s.id}" ${s.id===e.supplierId?'selected':''}>${ui.escape(s.name)} · ${ui.escape(s.rif||'')}</option>`).join('')}</select></div>
-          <div class="field"><label class="field-label">Fecha emisión</label><input class="input" type="date" value="${e.issueDate}" oninput="editing.issueDate=this.value"></div>
-          <div class="field"><label class="field-label">Fecha esperada</label><input class="input" type="date" value="${e.expectedDate||''}" oninput="editing.expectedDate=this.value"></div>
+          <div class="field"><label class="field-label">Fecha emisión</label><input class="input" type="date" value="${e.issueDate}" onchange="editing.issueDate=this.value"></div>
+          <div class="field"><label class="field-label">Fecha esperada</label><input class="input" type="date" value="${e.expectedDate||''}" onchange="editing.expectedDate=this.value"></div>
           <div class="field"><label class="field-label">Moneda</label><select class="select" onchange="editing.currency=this.value;render()"><option value="USD" ${e.currency==='USD'?'selected':''}>USD ($)</option><option value="VES" ${e.currency==='VES'?'selected':''}>VES (Bs)</option><option value="EUR" ${e.currency==='EUR'?'selected':''}>EUR (€)</option></select></div>
           <div class="field"><label class="field-label">Tasa de referencia</label><select class="select" onchange="editing.rateType=this.value">${currency.getRates().map(r => `<option value="${r.type}" ${r.type===e.rateType?'selected':''}>${r.label} (${r.value.toFixed(2)})</option>`).join('')}</select></div>
         </div>
@@ -197,15 +201,21 @@ function renderPOCreate() {
       <div class="card mb-24" style="padding:16px 24px;background:var(--accent-soft);border-color:#cdd9c8;">
         <div style="display:flex;justify-content:space-between;align-items:center;">
           <div class="kpi-label">Subtotal de la OC</div>
-          <div style="font-family:var(--font-display);font-size:28px;letter-spacing:-0.02em;">${currency.format(subtotal, e.currency)}</div>
+          <div id="po-subtotal" style="font-family:var(--font-display);font-size:28px;letter-spacing:-0.02em;">${currency.format(subtotal, e.currency)}</div>
         </div>
       </div>
 
-      <div class="card">
+      <div class="card mb-24">
         <div class="card-header"><div class="card-title">Notas</div></div>
-        <textarea class="textarea" oninput="editing.notes=this.value">${ui.escape(e.notes||'')}</textarea>
+        <textarea class="textarea" onchange="editing.notes=this.value">${ui.escape(e.notes||'')}</textarea>
       </div>
-      <div style="height:80px;"></div>
+
+      <!-- Botones abajo -->
+      <div style="display:flex;justify-content:space-between;gap:8px;padding:24px 0;border-top:1px solid var(--border);margin-top:24px;">
+        <button class="btn btn-secondary" onclick="cancelEdit()">← Cancelar</button>
+        <button class="btn btn-primary" onclick="savePO()">${ui.icon('check')} Crear OC</button>
+      </div>
+      <div style="height:40px;"></div>
     `
   });
 }
@@ -239,6 +249,19 @@ function updatePOItem(idx, field, val) {
     }
   }
   render();
+}
+
+/** Actualiza datos numéricos sin re-renderizar (mantiene el foco en el input) */
+function updatePOItemFast(idx, field, val) {
+  const num = parseFloat(val) || 0;
+  editing.items[idx][field] = num;
+  // Actualizar solo el subtotal de la fila y el total general puntualmente
+  const item = editing.items[idx];
+  const lineEl = document.getElementById(`po-line-${idx}`);
+  if (lineEl) lineEl.textContent = currency.format((item.quantity||0) * (item.unitPrice||0), editing.currency);
+  const subtotal = editing.items.reduce((s, it) => s + ((parseFloat(it.quantity)||0) * (parseFloat(it.unitPrice)||0)), 0);
+  const totalEl = document.getElementById('po-subtotal');
+  if (totalEl) totalEl.textContent = currency.format(subtotal, editing.currency);
 }
 
 function removePOItem(idx) {
@@ -317,7 +340,6 @@ function renderPODetail() {
           <button class="btn btn-ghost btn-sm" onclick="backToList()">← Volver</button>
           <span style="margin-left:16px;"><span class="badge ${s.color}">${s.label}</span></span>
         </div>
-        <div class="action-bar-right">${actions}</div>
       </div>
 
       <div class="grid grid-4 mb-24">
@@ -326,6 +348,14 @@ function renderPODetail() {
         <div class="kpi"><div class="kpi-label">Esperada</div><div class="kpi-value" style="font-size:20px;">${po.expectedDate?ui.formatDate(po.expectedDate):'—'}</div></div>
         <div class="kpi"><div class="kpi-label">Total</div><div class="kpi-value" style="color:var(--accent-ink);">${currency.format(po.subtotal, po.currency)}</div></div>
       </div>
+
+      ${(po.status === 'RECEIVED' || po.status === 'PARTIAL') && !po.invoiceId ? `
+        <div class="card mb-24" style="padding:14px 18px;background:#fef3c7;border-color:#fcd34d;">
+          <div style="font-size:13px;color:#92400e;line-height:1.5;">
+            <strong>⚠️ Falta crear la factura:</strong> Esta OC ya está recibida pero <strong>aún no se generó la factura</strong>. Hasta que crees la factura del proveedor, esta deuda no aparecerá en el módulo de Pagos.
+          </div>
+        </div>
+      ` : ''}
 
       ${po.notes ? `<div class="card mb-24" style="padding:16px;"><div class="kpi-label">Notas</div><div style="margin-top:6px;">${ui.escape(po.notes)}</div></div>` : ''}
 
@@ -336,7 +366,7 @@ function renderPODetail() {
 
       ${receipts.length ? `
         <div class="divider-section"><span class="section-title" style="margin:0;">Recepciones (${receipts.length})</span></div>
-        <div class="card" style="padding:0;">
+        <div class="card mb-24" style="padding:0;">
           <table>
             <thead><tr><th>Recepción</th><th>Fecha</th><th style="text-align:right;">Items</th><th>Notas</th></tr></thead>
             <tbody>${receipts.map(r => `<tr>
@@ -348,6 +378,11 @@ function renderPODetail() {
           </table>
         </div>
       ` : ''}
+
+      <!-- Acciones abajo -->
+      <div style="display:flex;justify-content:flex-end;gap:8px;padding:24px 0;border-top:1px solid var(--border);margin-top:24px;flex-wrap:wrap;">
+        ${actions || '<span class="text-muted" style="font-size:13px;align-self:center;">Sin acciones disponibles para este estado</span>'}
+      </div>
     `
   });
 }
@@ -419,21 +454,23 @@ function renderReceipt() {
   ui.renderLayout({
     activeModule: 'compras', pageEyebrow: 'Recepción', pageTitle: 'Contra OC ' + r.poCode,
     contentHtml: `
-      <div class="action-bar">
-        <div class="action-bar-left"><button class="btn btn-ghost btn-sm" onclick="cancelEdit()">← Cancelar</button></div>
-        <div class="action-bar-right"><button class="btn btn-primary" onclick="saveReceipt()">${ui.icon('check')} Confirmar recepción</button></div>
-      </div>
       <div class="card mb-24">
         <div class="form-grid form-grid-2">
-          <div class="field"><label class="field-label">Fecha de recepción *</label><input class="input" type="date" value="${r.receiptDate}" oninput="receiving.receiptDate=this.value"></div>
-          <div class="field"><label class="field-label">Notas</label><input class="input" value="${ui.escape(r.notes||'')}" oninput="receiving.notes=this.value"></div>
+          <div class="field"><label class="field-label">Fecha de recepción *</label><input class="input" type="date" value="${r.receiptDate}" onchange="receiving.receiptDate=this.value"></div>
+          <div class="field"><label class="field-label">Notas</label><input class="input" value="${ui.escape(r.notes||'')}" onchange="receiving.notes=this.value"></div>
         </div>
       </div>
       ${itemsHtml}
       <div class="card mt-24" style="padding:16px;background:var(--accent-soft);border-color:#cdd9c8;">
         <div style="font-size:12.5px;color:var(--accent-ink);">Al confirmar, se crearán automáticamente los lotes de MP en inventario, se actualizarán los costos de las MPs, y la OC pasará a estado "Recibida" o "Parcial".</div>
       </div>
-      <div style="height:80px;"></div>
+
+      <!-- Botones abajo -->
+      <div style="display:flex;justify-content:space-between;gap:8px;padding:24px 0;border-top:1px solid var(--border);margin-top:24px;">
+        <button class="btn btn-secondary" onclick="cancelEdit()">← Cancelar</button>
+        <button class="btn btn-primary" onclick="saveReceipt()">${ui.icon('check')} Confirmar recepción</button>
+      </div>
+      <div style="height:40px;"></div>
     `
   });
 }
@@ -515,11 +552,11 @@ function renderInvoiceCreate() {
     <table>
       <thead><tr><th>Descripción</th><th style="text-align:right;">Cantidad</th><th>Unidad</th><th style="text-align:right;">Precio unit.</th><th style="text-align:right;">Subtotal</th></tr></thead>
       <tbody>${e.items.map((it, idx) => `<tr>
-        <td><input class="input" value="${ui.escape(it.description||'')}" oninput="updateInvItem(${idx},'description',this.value)"></td>
-        <td style="text-align:right;"><input class="input" type="number" step="0.001" value="${it.quantity}" style="text-align:right;font-family:var(--font-mono);" oninput="updateInvItem(${idx},'quantity',this.value);render()"></td>
+        <td><input class="input" value="${ui.escape(it.description||'')}" onchange="updateInvItem(${idx},'description',this.value)"></td>
+        <td style="text-align:right;"><input class="input" type="number" step="0.001" value="${it.quantity}" style="text-align:right;font-family:var(--font-mono);" oninput="updateInvItemFast(${idx},'quantity',this.value)"></td>
         <td><span class="text-muted">${it.unit||'—'}</span></td>
-        <td style="text-align:right;"><input class="input" type="number" step="0.0001" value="${it.unitPrice}" style="text-align:right;font-family:var(--font-mono);" oninput="updateInvItem(${idx},'unitPrice',this.value);render()"></td>
-        <td style="text-align:right;"><span class="td-mono td-strong">${currency.format(it.quantity*it.unitPrice, e.currency)}</span></td>
+        <td style="text-align:right;"><input class="input" type="number" step="0.0001" value="${it.unitPrice}" style="text-align:right;font-family:var(--font-mono);" oninput="updateInvItemFast(${idx},'unitPrice',this.value)"></td>
+        <td style="text-align:right;"><span class="td-mono td-strong" id="inv-line-${idx}">${currency.format(it.quantity*it.unitPrice, e.currency)}</span></td>
       </tr>`).join('')}</tbody>
     </table>
   </div>`;
@@ -527,19 +564,15 @@ function renderInvoiceCreate() {
   ui.renderLayout({
     activeModule: 'compras', pageEyebrow: 'Nueva factura', pageTitle: e.poCode ? 'Factura de OC ' + e.poCode : 'Nueva factura',
     contentHtml: `
-      <div class="action-bar">
-        <div class="action-bar-left"><button class="btn btn-ghost btn-sm" onclick="cancelEdit()">← Cancelar</button></div>
-        <div class="action-bar-right"><button class="btn btn-primary" onclick="saveInvoice()">${ui.icon('check')} Crear factura</button></div>
-      </div>
       <div class="card mb-24">
         <div class="card-header"><div class="card-title">Datos de la factura del proveedor</div></div>
         <div class="form-grid form-grid-2">
           <div class="field"><label class="field-label">Proveedor</label><input class="input" value="${ui.escape(e.supplierName)}" disabled></div>
           <div class="field"><label class="field-label">RIF</label><input class="input" value="${ui.escape(e.supplierRif||'')}" disabled></div>
-          <div class="field"><label class="field-label">N° Factura del proveedor *</label><input class="input" value="${ui.escape(e.supplierInvoiceNumber||'')}" oninput="editing.supplierInvoiceNumber=this.value" placeholder="Ej: 00001234"></div>
-          <div class="field"><label class="field-label">N° de Control *</label><input class="input" value="${ui.escape(e.supplierInvoiceControl||'')}" oninput="editing.supplierInvoiceControl=this.value" placeholder="Ej: 00-12345678"></div>
-          <div class="field"><label class="field-label">Fecha emisión *</label><input class="input" type="date" value="${e.issueDate}" oninput="editing.issueDate=this.value"></div>
-          <div class="field"><label class="field-label">Vencimiento</label><input class="input" type="date" value="${e.dueDate||''}" oninput="editing.dueDate=this.value"></div>
+          <div class="field"><label class="field-label">N° Factura del proveedor *</label><input class="input" value="${ui.escape(e.supplierInvoiceNumber||'')}" onchange="editing.supplierInvoiceNumber=this.value" placeholder="Ej: 00001234"></div>
+          <div class="field"><label class="field-label">N° de Control *</label><input class="input" value="${ui.escape(e.supplierInvoiceControl||'')}" onchange="editing.supplierInvoiceControl=this.value" placeholder="Ej: 00-12345678"></div>
+          <div class="field"><label class="field-label">Fecha emisión *</label><input class="input" type="date" value="${e.issueDate}" onchange="editing.issueDate=this.value"></div>
+          <div class="field"><label class="field-label">Vencimiento</label><input class="input" type="date" value="${e.dueDate||''}" onchange="editing.dueDate=this.value"></div>
         </div>
       </div>
 
@@ -556,42 +589,71 @@ function renderInvoiceCreate() {
               <div class="checkbox-row"><input type="checkbox" id="ret-iva-cb" ${e.applyIVAWithholding?'checked':''} onchange="editing.applyIVAWithholding=this.checked;render()"><label for="ret-iva-cb" style="font-size:13px;">Aplicar retención de IVA (${cfg.ivaWithholdingRate||75}% como agente)</label></div>
             </div>
           ` : ''}
-          <div class="field"><label class="field-label">% Retención ISLR</label><input class="input" type="number" step="0.01" value="${e.islrRate||0}" oninput="editing.islrRate=this.value;render()"><div class="field-hint">0 si no aplica</div></div>
+          <div class="field"><label class="field-label">% Retención ISLR</label><input class="input" type="number" step="0.01" value="${e.islrRate||0}" onchange="editing.islrRate=this.value;render()"><div class="field-hint">0 si no aplica</div></div>
         </div>
       </div>
 
       <!-- Resumen fiscal -->
-      <div class="card mb-24" style="padding:0;">
+      <div class="card mb-24" style="padding:0;" id="inv-summary-card">
         <div style="padding:14px 20px;border-bottom:1px solid var(--border);"><div class="card-title" style="font-size:15px;">Resumen</div></div>
-        <div style="padding:0 20px;">
-          ${[
-            ['Subtotal', currency.format(calc.subtotal, e.currency), false],
-            [e.exempt ? 'Exento de IVA' : `IVA ${calc.ivaRate}%`, currency.format(calc.ivaAmount, e.currency), false],
-            ['Total facturado', currency.format(calc.total, e.currency), true],
-            ...(calc.ivaWithheld > 0 ? [[`(-) Retención IVA ${calc.ivaWithholdingRate}%`, '−' + currency.format(calc.ivaWithheld, e.currency).replace('Bs.','Bs.'), false]] : []),
-            ...(calc.islrWithheld > 0 ? [[`(-) Retención ISLR ${calc.islrRate}%`, '−' + currency.format(calc.islrWithheld, e.currency), false]] : []),
-            ['Total a pagar al proveedor', currency.format(calc.totalToPay, e.currency), true, true]
-          ].map(([label, val, strong, accent]) => `
-            <div class="list-row" style="grid-template-columns:1fr auto;border:none;padding:10px 0;${accent?'border-top:1px solid var(--border);background:var(--accent-soft);margin:0 -20px;padding:14px 20px;':''}">
-              <span style="font-size:13px;${strong?'font-weight:600;':''}${accent?'color:var(--accent-ink);font-weight:600;':''}">${label}</span>
-              <span class="${strong?'td-mono td-strong':'td-mono'}" style="font-size:14px;${accent?'color:var(--accent-ink);font-size:18px;font-family:var(--font-display);font-style:italic;':''}">${val}</span>
-            </div>
-          `).join('')}
+        <div style="padding:0 20px;" id="inv-summary-body">
+          ${renderInvSummary(calc, e)}
         </div>
       </div>
 
-      <div class="card">
+      <div class="card mb-24">
         <div class="card-header"><div class="card-title">Notas</div></div>
-        <textarea class="textarea" oninput="editing.notes=this.value">${ui.escape(e.notes||'')}</textarea>
+        <textarea class="textarea" onchange="editing.notes=this.value">${ui.escape(e.notes||'')}</textarea>
       </div>
-      <div style="height:80px;"></div>
+
+      <!-- Botones abajo -->
+      <div style="display:flex;justify-content:space-between;gap:8px;padding:24px 0;border-top:1px solid var(--border);margin-top:24px;">
+        <button class="btn btn-secondary" onclick="cancelEdit()">← Cancelar</button>
+        <button class="btn btn-primary" onclick="saveInvoice()">${ui.icon('check')} Crear factura</button>
+      </div>
+      <div style="height:40px;"></div>
     `
   });
+}
+
+function renderInvSummary(calc, e) {
+  return [
+    ['Subtotal', currency.format(calc.subtotal, e.currency), false],
+    [e.exempt ? 'Exento de IVA' : `IVA ${calc.ivaRate}%`, currency.format(calc.ivaAmount, e.currency), false],
+    ['Total facturado', currency.format(calc.total, e.currency), true],
+    ...(calc.ivaWithheld > 0 ? [[`(-) Retención IVA ${calc.ivaWithholdingRate}%`, '−' + currency.format(calc.ivaWithheld, e.currency), false]] : []),
+    ...(calc.islrWithheld > 0 ? [[`(-) Retención ISLR ${calc.islrRate}%`, '−' + currency.format(calc.islrWithheld, e.currency), false]] : []),
+    ['Total a pagar al proveedor', currency.format(calc.totalToPay, e.currency), true, true]
+  ].map(([label, val, strong, accent]) => `
+    <div class="list-row" style="grid-template-columns:1fr auto;border:none;padding:10px 0;${accent?'border-top:1px solid var(--border);background:var(--accent-soft);margin:0 -20px;padding:14px 20px;':''}">
+      <span style="font-size:13px;${strong?'font-weight:600;':''}${accent?'color:var(--accent-ink);font-weight:600;':''}">${label}</span>
+      <span class="${strong?'td-mono td-strong':'td-mono'}" style="font-size:14px;${accent?'color:var(--accent-ink);font-size:18px;font-family:var(--font-display);font-style:italic;':''}">${val}</span>
+    </div>
+  `).join('');
 }
 
 function updateInvItem(idx, field, val) {
   if (field === 'quantity' || field === 'unitPrice') val = parseFloat(val) || 0;
   editing.items[idx][field] = val;
+}
+
+/** Actualiza item de factura sin re-renderizar el formulario completo */
+function updateInvItemFast(idx, field, val) {
+  const num = parseFloat(val) || 0;
+  editing.items[idx][field] = num;
+  // Actualizar subtotal de la línea
+  const item = editing.items[idx];
+  const lineEl = document.getElementById(`inv-line-${idx}`);
+  if (lineEl) lineEl.textContent = currency.format((item.quantity||0) * (item.unitPrice||0), editing.currency);
+  // Recalcular totales y actualizar el resumen
+  const subtotal = editing.items.reduce((s, it) => s + (parseFloat(it.quantity) * parseFloat(it.unitPrice)), 0);
+  const calc = tax.computeInvoiceWithWithholdings({
+    subtotal, exempt: editing.exempt,
+    applyIVAWithholding: editing.applyIVAWithholding,
+    islrRate: parseFloat(editing.islrRate) || 0
+  });
+  const summaryBody = document.getElementById('inv-summary-body');
+  if (summaryBody) summaryBody.innerHTML = renderInvSummary(calc, editing);
 }
 
 function saveInvoice() {
@@ -637,10 +699,6 @@ function renderInvoiceDetail() {
           <button class="btn btn-ghost btn-sm" onclick="backToList()">← Volver</button>
           <span style="margin-left:16px;"><span class="badge ${s.color}">${s.label}</span></span>
         </div>
-        <div class="action-bar-right">
-          ${inv.voucherId ? `<button class="btn btn-secondary" onclick="downloadVoucher('${inv.voucherId}')">${ui.icon('download')} Comprobante retención</button>` : ''}
-          ${remaining > 0.01 && inv.status !== 'CANCELLED' ? `<a href="pagos.html?invoice=${inv.id}" class="btn btn-primary">${ui.icon('plus')} Registrar pago</a>` : ''}
-        </div>
       </div>
 
       <div class="grid grid-4 mb-24">
@@ -682,7 +740,7 @@ function renderInvoiceDetail() {
         </div>
       </div>
 
-      <div class="card" style="padding:0;">
+      <div class="card mb-24" style="padding:0;">
         <div style="padding:14px 20px;border-bottom:1px solid var(--border);"><div class="card-title" style="font-size:15px;">Items</div></div>
         <table>
           <thead><tr><th>Descripción</th><th style="text-align:right;">Cantidad</th><th>Unidad</th><th style="text-align:right;">Precio</th><th style="text-align:right;">Subtotal</th></tr></thead>
@@ -694,6 +752,12 @@ function renderInvoiceDetail() {
             <td style="text-align:right;"><span class="td-mono td-strong">${currency.format(it.subtotal, inv.currency)}</span></td>
           </tr>`).join('')}</tbody>
         </table>
+      </div>
+
+      <!-- Acciones abajo -->
+      <div style="display:flex;justify-content:flex-end;gap:8px;padding:24px 0;border-top:1px solid var(--border);margin-top:24px;flex-wrap:wrap;">
+        ${inv.voucherId ? `<button class="btn btn-secondary" onclick="downloadVoucher('${inv.voucherId}')">${ui.icon('download')} Comprobante retención</button>` : ''}
+        ${remaining > 0.01 && inv.status !== 'CANCELLED' ? `<a href="pagos.html?invoice=${inv.id}" class="btn btn-primary">${ui.icon('plus')} Registrar pago</a>` : ''}
       </div>
     `
   });
