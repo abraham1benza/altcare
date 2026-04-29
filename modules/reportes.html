@@ -1,7 +1,8 @@
 <!DOCTYPE html>
 <html lang="es">
 <head>
-<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Reportes · altcare</title>
 <link rel="stylesheet" href="../assets/css/styles.css">
 </head>
@@ -10,20 +11,1024 @@
 <script src="../assets/js/auth.js"></script>
 <script src="../assets/js/currency.js"></script>
 <script src="../assets/js/tax.js"></script>
+<script src="../assets/js/inventory.js"></script>
+<script src="../assets/js/formulas.js"></script>
+<script src="../assets/js/purchases.js"></script>
+<script src="../assets/js/sales.js"></script>
+<script src="../assets/js/payments.js"></script>
+<script src="../assets/js/reports.js"></script>
 <script src="../assets/js/ui.js"></script>
 <script>
 if (!auth.guard('reportes')) throw new Error('blocked');
-ui.renderLayout({
-  activeModule: 'reportes',
-  pageEyebrow: 'Sistema',
-  pageTitle: 'Reportes',
-  contentHtml: `
-    <div class="card" style="text-align:center;padding:64px 32px;">
-      <div style="font-size:48px;margin-bottom:16px;">📊</div>
-      <h3 style="font-family:var(--font-display);font-style:italic;font-size:24px;margin-bottom:8px;">Próximamente</h3>
-      <p class="text-muted" style="max-width:520px;margin:0 auto;">Libro de compras y libro de ventas exportables, reportes de producción, inventario, kardex valorizado, márgenes, retenciones — Fase 3.</p>
+
+const REPORTS = {
+  'libro-compras': {
+    title: 'Libro de Compras',
+    subtitle: 'Formato SENIAT con base imponible, IVA y retenciones',
+    icon: 'box',
+    category: 'Fiscal',
+    color: '#1e3a8a'
+  },
+  'libro-ventas': {
+    title: 'Libro de Ventas',
+    subtitle: 'Formato SENIAT con todas las facturas emitidas',
+    icon: 'box',
+    category: 'Fiscal',
+    color: '#1e3a8a'
+  },
+  'retenciones': {
+    title: 'Retenciones',
+    subtitle: 'Comprobantes de retención emitidos como agente',
+    icon: 'currency',
+    category: 'Fiscal',
+    color: '#1e3a8a'
+  },
+  'estado-cuenta-cliente': {
+    title: 'Estado de cuenta · Cliente',
+    subtitle: 'Movimientos por cliente con saldo corriente',
+    icon: 'users',
+    category: 'Comercial',
+    color: '#5b7a5a'
+  },
+  'estado-cuenta-proveedor': {
+    title: 'Estado de cuenta · Proveedor',
+    subtitle: 'Movimientos por proveedor con saldo corriente',
+    icon: 'users',
+    category: 'Comercial',
+    color: '#5b7a5a'
+  },
+  'inventario-valorizado': {
+    title: 'Inventario valorizado',
+    subtitle: 'Stock de MP y PT con valor a costo',
+    icon: 'box',
+    category: 'Operaciones',
+    color: '#b8860b'
+  },
+  'produccion': {
+    title: 'Producción por período',
+    subtitle: 'OFs ejecutadas, rendimientos y costos',
+    icon: 'flask',
+    category: 'Operaciones',
+    color: '#b8860b'
+  },
+  'margenes': {
+    title: 'Márgenes de venta',
+    subtitle: 'Rentabilidad por producto y por cliente',
+    icon: 'currency',
+    category: 'Comercial',
+    color: '#5b7a5a'
+  },
+  'flujo-caja': {
+    title: 'Flujo de caja',
+    subtitle: 'Movimientos por cuenta bancaria con apertura y cierre',
+    icon: 'currency',
+    category: 'Finanzas',
+    color: '#a83232'
+  }
+};
+
+let currentReport = null;
+let period = 'this_month';
+let customFrom = '';
+let customTo = '';
+let entityId = ''; // para reportes que requieren cliente/proveedor
+
+function render() {
+  if (currentReport) return renderReport();
+  return renderDashboard();
+}
+
+function renderDashboard() {
+  // Agrupar por categoría
+  const byCategory = {};
+  Object.entries(REPORTS).forEach(([id, r]) => {
+    if (!byCategory[r.category]) byCategory[r.category] = [];
+    byCategory[r.category].push({ id, ...r });
+  });
+
+  ui.renderLayout({
+    activeModule: 'reportes', pageEyebrow: 'Sistema', pageTitle: 'Reportes',
+    contentHtml: `
+      <div class="action-bar">
+        <div class="action-bar-left">
+          <h2 class="action-bar-title">Reportes</h2>
+          <span class="action-bar-count">${Object.keys(REPORTS).length} reportes disponibles</span>
+        </div>
+      </div>
+
+      <p class="text-muted mb-24" style="max-width:680px;">
+        Generá libros fiscales, estados de cuenta, análisis de inventario y rentabilidad. Todos exportables a Excel (CSV) y PDF.
+      </p>
+
+      ${Object.entries(byCategory).map(([cat, reports]) => `
+        <div class="divider-section"><span class="section-title" style="margin:0;">${cat}</span></div>
+        <div class="grid grid-3 mb-24">
+          ${reports.map(r => `
+            <div class="card" style="cursor:pointer;padding:20px;" onclick="openReport('${r.id}')">
+              <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px;">
+                <div style="width:36px;height:36px;border-radius:8px;background:${r.color}15;color:${r.color};display:flex;align-items:center;justify-content:center;">${ui.icon(r.icon)}</div>
+                <div class="td-strong" style="font-size:15px;">${ui.escape(r.title)}</div>
+              </div>
+              <div class="text-muted" style="font-size:12.5px;line-height:1.5;">${ui.escape(r.subtitle)}</div>
+              <div style="margin-top:12px;font-size:11px;color:${r.color};">Generar reporte →</div>
+            </div>
+          `).join('')}
+        </div>
+      `).join('')}
+    `
+  });
+}
+
+function openReport(id) {
+  currentReport = id;
+  period = 'this_month';
+  entityId = '';
+  render();
+}
+
+function backToDashboard() {
+  currentReport = null; entityId = '';
+  render();
+}
+
+// ====== VISTA DE REPORTE ======
+
+function renderReport() {
+  const r = REPORTS[currentReport];
+  const { from, to } = reports.periodToDates(period, customFrom, customTo);
+  const periodLabel = reports.periodLabel(period, customFrom, customTo);
+
+  // Selector de período común
+  const periodPicker = `
+    <div class="card mb-24">
+      <div class="form-grid form-grid-3">
+        <div class="field"><label class="field-label">Período</label><select class="select" onchange="onPeriodChange(this.value)">
+          <option value="today" ${period==='today'?'selected':''}>Hoy</option>
+          <option value="yesterday" ${period==='yesterday'?'selected':''}>Ayer</option>
+          <option value="this_week" ${period==='this_week'?'selected':''}>Esta semana</option>
+          <option value="last_week" ${period==='last_week'?'selected':''}>Semana pasada</option>
+          <option value="this_month" ${period==='this_month'?'selected':''}>Este mes</option>
+          <option value="last_month" ${period==='last_month'?'selected':''}>Mes pasado</option>
+          <option value="this_year" ${period==='this_year'?'selected':''}>Este año</option>
+          <option value="last_year" ${period==='last_year'?'selected':''}>Año pasado</option>
+          <option value="all" ${period==='all'?'selected':''}>Todo el histórico</option>
+          <option value="custom" ${period==='custom'?'selected':''}>Rango personalizado</option>
+        </select></div>
+        ${period === 'custom' ? `
+          <div class="field"><label class="field-label">Desde</label><input class="input" type="date" value="${customFrom}" onchange="customFrom=this.value;render()"></div>
+          <div class="field"><label class="field-label">Hasta</label><input class="input" type="date" value="${customTo}" onchange="customTo=this.value;render()"></div>
+        ` : `<div></div><div class="field"><label class="field-label">Aplicado</label><div class="input" style="background:var(--surface-2);">${from} a ${to}</div></div>`}
+      </div>
+      ${(currentReport === 'estado-cuenta-cliente' || currentReport === 'estado-cuenta-proveedor') ? renderEntityPicker() : ''}
     </div>
-  `
-});
+  `;
+
+  let body = '';
+  let exportButtons = '';
+
+  switch (currentReport) {
+    case 'libro-compras':       body = renderLibroCompras(from, to); exportButtons = exportButtonsFor('libro-compras', from, to); break;
+    case 'libro-ventas':        body = renderLibroVentas(from, to); exportButtons = exportButtonsFor('libro-ventas', from, to); break;
+    case 'retenciones':         body = renderRetenciones(from, to); exportButtons = exportButtonsFor('retenciones', from, to); break;
+    case 'estado-cuenta-cliente':   body = renderEstadoCliente(from, to); exportButtons = entityId ? exportButtonsFor('estado-cuenta-cliente', from, to) : ''; break;
+    case 'estado-cuenta-proveedor': body = renderEstadoProveedor(from, to); exportButtons = entityId ? exportButtonsFor('estado-cuenta-proveedor', from, to) : ''; break;
+    case 'inventario-valorizado':   body = renderInventario(); exportButtons = exportButtonsFor('inventario-valorizado', null, null); break;
+    case 'produccion':          body = renderProduccion(from, to); exportButtons = exportButtonsFor('produccion', from, to); break;
+    case 'margenes':            body = renderMargenes(from, to); exportButtons = exportButtonsFor('margenes', from, to); break;
+    case 'flujo-caja':          body = renderFlujoCaja(from, to); exportButtons = exportButtonsFor('flujo-caja', from, to); break;
+  }
+
+  ui.renderLayout({
+    activeModule: 'reportes', pageEyebrow: r.category, pageTitle: r.title,
+    contentHtml: `
+      <div class="action-bar">
+        <div class="action-bar-left">
+          <button class="btn btn-ghost btn-sm" onclick="backToDashboard()">← Volver</button>
+        </div>
+      </div>
+
+      <p class="text-muted mb-24">${ui.escape(r.subtitle)}</p>
+
+      ${periodPicker}
+
+      ${body}
+
+      ${exportButtons ? `<div style="display:flex;justify-content:flex-end;gap:8px;padding:24px 0;border-top:1px solid var(--border);margin-top:24px;">${exportButtons}</div>` : ''}
+    `
+  });
+}
+
+function onPeriodChange(p) {
+  period = p;
+  if (p === 'custom' && !customFrom) {
+    const today = new Date();
+    customTo = today.toISOString().slice(0,10);
+    const monthAgo = new Date(today); monthAgo.setMonth(monthAgo.getMonth()-1);
+    customFrom = monthAgo.toISOString().slice(0,10);
+  }
+  render();
+}
+
+function renderEntityPicker() {
+  const isCustomer = currentReport === 'estado-cuenta-cliente';
+  const list = db.getAll(isCustomer ? db.COLLECTIONS.customers : db.COLLECTIONS.suppliers);
+  return `<div style="margin-top:16px;padding-top:16px;border-top:1px solid var(--border);">
+    <div class="field" style="grid-column:1/-1;">
+      <label class="field-label">${isCustomer ? 'Cliente' : 'Proveedor'} *</label>
+      <select class="select" onchange="entityId=this.value;render()">
+        <option value="">— Selecciona —</option>
+        ${list.map(e => `<option value="${e.id}" ${e.id===entityId?'selected':''}>${ui.escape(e.name)} · ${ui.escape(e.rif||'')}</option>`).join('')}
+      </select>
+    </div>
+  </div>`;
+}
+
+function exportButtonsFor(reportId, from, to) {
+  return `
+    <button class="btn btn-secondary" onclick="exportPDF('${reportId}','${from||''}','${to||''}')">${ui.icon('download')} PDF</button>
+    <button class="btn btn-primary" onclick="exportCSV('${reportId}','${from||''}','${to||''}')">${ui.icon('download')} Excel/CSV</button>
+  `;
+}
+
+// ====== RENDERIZADORES DE CADA REPORTE ======
+
+function renderLibroCompras(from, to) {
+  const { rows, totals } = reports.libroCompras(from, to);
+  if (!rows.length) return '<div class="empty-state"><div class="empty-state-title">Sin facturas en el período</div></div>';
+  return `
+    <div class="grid grid-4 mb-24">
+      <div class="kpi"><div class="kpi-label">Facturas</div><div class="kpi-value">${rows.length}</div></div>
+      <div class="kpi"><div class="kpi-label">Base imponible</div><div class="kpi-value" style="font-size:18px;">${fmtVES(totals.baseImponible)} Bs.</div></div>
+      <div class="kpi"><div class="kpi-label">IVA total</div><div class="kpi-value" style="font-size:18px;color:var(--accent-ink);">${fmtVES(totals.iva)} Bs.</div></div>
+      <div class="kpi"><div class="kpi-label">Total compras</div><div class="kpi-value" style="font-size:18px;">${fmtVES(totals.total)} Bs.</div></div>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr>
+          <th>#</th><th>Fecha</th><th>RIF Proveedor</th><th>Proveedor</th><th>N° Factura</th><th>N° Control</th>
+          <th style="text-align:right;">Base imp.</th><th style="text-align:right;">IVA</th><th style="text-align:right;">Exento</th><th style="text-align:right;">Total</th>
+          <th style="text-align:right;">Ret. IVA</th><th style="text-align:right;">Ret. ISLR</th>
+        </tr></thead>
+        <tbody>${rows.map(r => `<tr>
+          <td>${r.n}</td>
+          <td><span class="text-muted">${fmtDate(r.fecha)}</span></td>
+          <td><span class="td-mono">${ui.escape(r.rifProveedor)}</span></td>
+          <td>${ui.escape(r.nombreProveedor)}</td>
+          <td><span class="td-mono">${ui.escape(r.nFactura)}</span></td>
+          <td><span class="td-mono">${ui.escape(r.nControl)}</span></td>
+          <td style="text-align:right;"><span class="td-mono">${fmtVES(r.baseImponible)}</span></td>
+          <td style="text-align:right;"><span class="td-mono">${fmtVES(r.iva)}</span></td>
+          <td style="text-align:right;"><span class="td-mono">${fmtVES(r.exento)}</span></td>
+          <td style="text-align:right;"><span class="td-mono td-strong">${fmtVES(r.total)}</span></td>
+          <td style="text-align:right;"><span class="td-mono" style="color:var(--danger);">${r.retencionIVA?fmtVES(r.retencionIVA):'—'}</span></td>
+          <td style="text-align:right;"><span class="td-mono" style="color:var(--danger);">${r.retencionISLR?fmtVES(r.retencionISLR):'—'}</span></td>
+        </tr>`).join('')}
+        <tr style="background:var(--ink);color:white;font-weight:600;">
+          <td colspan="6">TOTALES (Bs.)</td>
+          <td style="text-align:right;"><span class="td-mono">${fmtVES(totals.baseImponible)}</span></td>
+          <td style="text-align:right;"><span class="td-mono">${fmtVES(totals.iva)}</span></td>
+          <td style="text-align:right;"><span class="td-mono">${fmtVES(totals.exento)}</span></td>
+          <td style="text-align:right;"><span class="td-mono">${fmtVES(totals.total)}</span></td>
+          <td style="text-align:right;"><span class="td-mono">${fmtVES(totals.retencionIVA)}</span></td>
+          <td style="text-align:right;"><span class="td-mono">${fmtVES(totals.retencionISLR)}</span></td>
+        </tr>
+        </tbody>
+      </table>
+    </div>
+  `;
+}
+
+function renderLibroVentas(from, to) {
+  const { rows, totals } = reports.libroVentas(from, to);
+  if (!rows.length) return '<div class="empty-state"><div class="empty-state-title">Sin facturas en el período</div></div>';
+  return `
+    <div class="grid grid-4 mb-24">
+      <div class="kpi"><div class="kpi-label">Facturas</div><div class="kpi-value">${rows.length}</div></div>
+      <div class="kpi"><div class="kpi-label">Base imponible</div><div class="kpi-value" style="font-size:18px;">${fmtVES(totals.baseImponible)} Bs.</div></div>
+      <div class="kpi"><div class="kpi-label">IVA débito fiscal</div><div class="kpi-value" style="font-size:18px;color:var(--accent-ink);">${fmtVES(totals.iva)} Bs.</div></div>
+      <div class="kpi"><div class="kpi-label">Total ventas</div><div class="kpi-value" style="font-size:18px;">${fmtVES(totals.total)} Bs.</div></div>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr>
+          <th>#</th><th>Fecha</th><th>RIF Cliente</th><th>Cliente</th><th>N° Factura</th><th>N° Control</th>
+          <th style="text-align:right;">Base imp.</th><th style="text-align:right;">IVA</th><th style="text-align:right;">Exento</th><th style="text-align:right;">Total</th>
+        </tr></thead>
+        <tbody>${rows.map(r => `<tr ${r.cancelled?'style="opacity:0.5;"':''}>
+          <td>${r.n}</td>
+          <td><span class="text-muted">${fmtDate(r.fecha)}</span></td>
+          <td><span class="td-mono">${ui.escape(r.rifCliente)}</span></td>
+          <td>${ui.escape(r.nombreCliente)}${r.cancelled?' <span class="badge badge-danger" style="font-size:9px;">ANULADA</span>':''}</td>
+          <td><span class="td-mono">${ui.escape(r.nFactura)}</span></td>
+          <td><span class="td-mono">${ui.escape(r.nControl)}</span></td>
+          <td style="text-align:right;"><span class="td-mono">${fmtVES(r.baseImponible)}</span></td>
+          <td style="text-align:right;"><span class="td-mono">${fmtVES(r.iva)}</span></td>
+          <td style="text-align:right;"><span class="td-mono">${fmtVES(r.exento)}</span></td>
+          <td style="text-align:right;"><span class="td-mono td-strong">${fmtVES(r.total)}</span></td>
+        </tr>`).join('')}
+        <tr style="background:var(--ink);color:white;font-weight:600;">
+          <td colspan="6">TOTALES (Bs.)</td>
+          <td style="text-align:right;"><span class="td-mono">${fmtVES(totals.baseImponible)}</span></td>
+          <td style="text-align:right;"><span class="td-mono">${fmtVES(totals.iva)}</span></td>
+          <td style="text-align:right;"><span class="td-mono">${fmtVES(totals.exento)}</span></td>
+          <td style="text-align:right;"><span class="td-mono">${fmtVES(totals.total)}</span></td>
+        </tr>
+        </tbody>
+      </table>
+    </div>
+  `;
+}
+
+function renderRetenciones(from, to) {
+  const { rows, totals } = reports.retenciones(from, to);
+  if (!rows.length) return '<div class="empty-state"><div class="empty-state-title">Sin retenciones en el período</div></div>';
+  return `
+    <div class="grid grid-4 mb-24">
+      <div class="kpi"><div class="kpi-label">Comprobantes</div><div class="kpi-value">${rows.length}</div></div>
+      <div class="kpi"><div class="kpi-label">Base imponible</div><div class="kpi-value" style="font-size:18px;">${fmtVES(totals.baseImponible)} Bs.</div></div>
+      <div class="kpi"><div class="kpi-label">Ret. IVA</div><div class="kpi-value" style="font-size:18px;color:var(--danger);">${fmtVES(totals.ivaWithheld)} Bs.</div></div>
+      <div class="kpi"><div class="kpi-label">Ret. ISLR</div><div class="kpi-value" style="font-size:18px;color:var(--danger);">${fmtVES(totals.islrWithheld)} Bs.</div></div>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr>
+          <th>#</th><th>Fecha</th><th>Comprobante</th><th>RIF</th><th>Proveedor</th><th>N° Factura</th><th>N° Control</th>
+          <th style="text-align:right;">Base</th><th style="text-align:right;">Ret. IVA</th><th style="text-align:right;">Ret. ISLR</th><th style="text-align:right;">Total</th>
+        </tr></thead>
+        <tbody>${rows.map(r => `<tr>
+          <td>${r.n}</td>
+          <td><span class="text-muted">${fmtDate(r.fecha)}</span></td>
+          <td><span class="td-mono td-strong">${ui.escape(r.comprobante)}</span></td>
+          <td><span class="td-mono">${ui.escape(r.rifProveedor)}</span></td>
+          <td>${ui.escape(r.nombreProveedor)}</td>
+          <td><span class="td-mono">${ui.escape(r.nFactura||'')}</span></td>
+          <td><span class="td-mono">${ui.escape(r.nControl||'')}</span></td>
+          <td style="text-align:right;"><span class="td-mono">${fmtVES(r.baseImponible)}</span></td>
+          <td style="text-align:right;"><span class="td-mono">${fmtVES(r.ivaWithheld)}</span></td>
+          <td style="text-align:right;"><span class="td-mono">${fmtVES(r.islrWithheld)}</span></td>
+          <td style="text-align:right;"><span class="td-mono td-strong">${fmtVES(r.totalWithheld)}</span></td>
+        </tr>`).join('')}
+        <tr style="background:var(--ink);color:white;font-weight:600;">
+          <td colspan="7">TOTALES (Bs.)</td>
+          <td style="text-align:right;"><span class="td-mono">${fmtVES(totals.baseImponible)}</span></td>
+          <td style="text-align:right;"><span class="td-mono">${fmtVES(totals.ivaWithheld)}</span></td>
+          <td style="text-align:right;"><span class="td-mono">${fmtVES(totals.islrWithheld)}</span></td>
+          <td style="text-align:right;"><span class="td-mono">${fmtVES(totals.totalWithheld)}</span></td>
+        </tr>
+        </tbody>
+      </table>
+    </div>
+  `;
+}
+
+function renderEstadoCliente(from, to) {
+  if (!entityId) return '<div class="empty-state"><div class="empty-state-title">Selecciona un cliente</div><div class="empty-state-text">Elegí un cliente arriba para ver su estado de cuenta.</div></div>';
+  const { customer, movements, balanceByCcy } = reports.estadoCuentaCliente(entityId, from, to);
+  if (!movements.length) return `<div class="empty-state"><div class="empty-state-title">Sin movimientos</div><div class="empty-state-text">No hay actividad para este cliente en el período seleccionado.</div></div>`;
+  return renderEstadoTable(customer, movements, balanceByCcy, 'cliente');
+}
+
+function renderEstadoProveedor(from, to) {
+  if (!entityId) return '<div class="empty-state"><div class="empty-state-title">Selecciona un proveedor</div></div>';
+  const { supplier, movements, balanceByCcy } = reports.estadoCuentaProveedor(entityId, from, to);
+  if (!movements.length) return '<div class="empty-state"><div class="empty-state-title">Sin movimientos</div></div>';
+  return renderEstadoTable(supplier, movements, balanceByCcy, 'proveedor');
+}
+
+function renderEstadoTable(entity, movements, balanceByCcy, kind) {
+  const balanceCards = Object.entries(balanceByCcy).map(([ccy, bal]) => {
+    const positive = kind === 'cliente' ? bal > 0 : bal > 0; // saldo positivo = me deben (cliente) o yo debo (proveedor)
+    return `<div class="kpi"><div class="kpi-label">Saldo ${ccy}</div><div class="kpi-value" style="color:${bal>0?'var(--danger)':bal<0?'var(--success)':'var(--ink-3)'};font-size:22px;">${currency.format(bal, ccy)}</div><div class="kpi-value-sub">${kind==='cliente' ? (bal>0?'me debe':bal<0?'tiene a favor':'al día') : (bal>0?'le debo':bal<0?'tengo a favor':'al día')}</div></div>`;
+  }).join('');
+
+  return `
+    <div class="card mb-24" style="padding:16px;background:var(--accent-soft);border-color:#cdd9c8;">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:12px;">
+        <div>
+          <div class="kpi-label">${kind==='cliente'?'Cliente':'Proveedor'}</div>
+          <div style="font-family:var(--font-display);font-style:italic;font-size:24px;letter-spacing:-0.02em;margin-top:2px;">${ui.escape(entity.name)}</div>
+          <div class="text-muted" style="font-size:12px;margin-top:4px;">RIF/CI: ${ui.escape(entity.rif||'—')}${entity.email?' · '+ui.escape(entity.email):''}${entity.phone?' · '+ui.escape(entity.phone):''}</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="grid ${Object.keys(balanceByCcy).length === 1 ? 'grid-2' : Object.keys(balanceByCcy).length === 2 ? 'grid-3' : 'grid-4'} mb-24">
+      <div class="kpi"><div class="kpi-label">Movimientos</div><div class="kpi-value">${movements.length}</div></div>
+      ${balanceCards}
+    </div>
+
+    <div class="table-wrap">
+      <table>
+        <thead><tr>
+          <th>Fecha</th><th>Documento</th><th>Concepto</th><th>Moneda</th>
+          <th style="text-align:right;">${kind==='cliente'?'Cargo':'Pago'}</th><th style="text-align:right;">${kind==='cliente'?'Abono':'Cargo'}</th><th style="text-align:right;">Saldo</th>
+        </tr></thead>
+        <tbody>${movements.map(m => `<tr>
+          <td><span class="text-muted">${fmtDate(m.date)}</span></td>
+          <td><span class="td-mono td-strong">${ui.escape(m.ref)}</span></td>
+          <td>${ui.escape(m.description)}</td>
+          <td><span class="badge ${m.currency==='USD'?'badge-accent':'badge-plain'}">${m.currency}</span></td>
+          <td style="text-align:right;"><span class="td-mono ${m.debit>0?'td-strong':''}" style="${m.debit>0?'color:var(--danger);':'color:var(--ink-3);'}">${m.debit>0?currency.format(m.debit, m.currency):'—'}</span></td>
+          <td style="text-align:right;"><span class="td-mono ${m.credit>0?'td-strong':''}" style="${m.credit>0?'color:var(--success);':'color:var(--ink-3);'}">${m.credit>0?currency.format(m.credit, m.currency):'—'}</span></td>
+          <td style="text-align:right;"><span class="td-mono td-strong">${currency.format(m.balance, m.currency)}</span></td>
+        </tr>`).join('')}</tbody>
+      </table>
+    </div>
+  `;
+}
+
+function renderInventario() {
+  const { rows, totals } = reports.inventarioValorizado();
+  if (!rows.length) return '<div class="empty-state"><div class="empty-state-title">Sin inventario</div></div>';
+  return `
+    <div class="grid grid-3 mb-24">
+      <div class="kpi"><div class="kpi-label">Valor MP</div><div class="kpi-value" style="color:var(--accent-ink);font-size:24px;">${fmtUSD(totals.rmValue)}</div></div>
+      <div class="kpi"><div class="kpi-label">Valor PT</div><div class="kpi-value" style="color:var(--accent-ink);font-size:24px;">${fmtUSD(totals.fgValue)}</div></div>
+      <div class="kpi"><div class="kpi-label">Total inventario</div><div class="kpi-value" style="color:var(--accent-ink);font-size:24px;">${fmtUSD(totals.total)}</div></div>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr>
+          <th>Tipo</th><th>Código</th><th>Producto</th><th style="text-align:right;">Cantidad</th><th>Unidad</th>
+          <th style="text-align:right;">Costo unit.</th><th style="text-align:right;">Lotes</th><th style="text-align:right;">Valor USD</th>
+        </tr></thead>
+        <tbody>${rows.map(r => `<tr>
+          <td><span class="badge ${r.kind==='MP'?'badge-plain':'badge-accent'}">${r.kind}</span></td>
+          <td><span class="td-mono">${ui.escape(r.code||'—')}</span></td>
+          <td>${ui.escape(r.name)}</td>
+          <td style="text-align:right;"><span class="td-mono td-strong">${(r.quantity||0).toFixed(3)}</span></td>
+          <td><span class="text-muted">${ui.escape(r.unit||'—')}</span></td>
+          <td style="text-align:right;"><span class="td-mono">${fmtUSD(r.avgCost)}</span></td>
+          <td style="text-align:right;"><span class="td-mono">${r.lotCount}</span></td>
+          <td style="text-align:right;"><span class="td-mono td-strong">${fmtUSD(r.valueUSD)}</span></td>
+        </tr>`).join('')}
+        <tr style="background:var(--ink);color:white;font-weight:600;">
+          <td colspan="7">VALOR TOTAL DE INVENTARIO</td>
+          <td style="text-align:right;"><span class="td-mono">${fmtUSD(totals.total)}</span></td>
+        </tr>
+        </tbody>
+      </table>
+    </div>
+  `;
+}
+
+function renderProduccion(from, to) {
+  const { rows, totals } = reports.produccion(from, to);
+  if (!rows.length) return '<div class="empty-state"><div class="empty-state-title">Sin órdenes de fabricación en el período</div></div>';
+  return `
+    <div class="grid grid-4 mb-24">
+      <div class="kpi"><div class="kpi-label">OFs totales</div><div class="kpi-value">${totals.countTotal}</div><div class="kpi-value-sub">${totals.countCompleted} terminadas</div></div>
+      <div class="kpi"><div class="kpi-label">Producido</div><div class="kpi-value" style="font-size:22px;">${totals.totalProduced.toFixed(3)}</div><div class="kpi-value-sub">unidades</div></div>
+      <div class="kpi"><div class="kpi-label">Costo materiales</div><div class="kpi-value" style="font-size:22px;color:var(--accent-ink);">${fmtUSD(totals.totalCostUSD)}</div></div>
+      <div class="kpi"><div class="kpi-label">Rendimiento promedio</div><div class="kpi-value" style="font-size:22px;color:${totals.avgYield>=95?'var(--success)':totals.avgYield>=85?'var(--warning)':'var(--danger)'};">${totals.avgYield.toFixed(1)}%</div></div>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr>
+          <th>OF</th><th>Producto</th><th>Versión</th><th>Programada</th><th>Terminada</th><th>Lote PT</th>
+          <th style="text-align:right;">Plan</th><th style="text-align:right;">Real</th><th style="text-align:right;">Rendim.</th>
+          <th style="text-align:right;">Costo MP</th><th style="text-align:right;">Costo unit.</th><th>Estado</th>
+        </tr></thead>
+        <tbody>${rows.map(r => `<tr>
+          <td><span class="td-mono td-strong">${r.code}</span></td>
+          <td>${ui.escape(r.formulaName)}</td>
+          <td><span class="td-mono">v${r.formulaVersion}</span></td>
+          <td><span class="text-muted">${fmtDate(r.scheduledDate)}</span></td>
+          <td><span class="text-muted">${r.completedAt?fmtDate(r.completedAt):'—'}</span></td>
+          <td><span class="td-mono">${ui.escape(r.lotCode)}</span></td>
+          <td style="text-align:right;"><span class="td-mono">${r.plannedBatch.toFixed(3)}</span></td>
+          <td style="text-align:right;"><span class="td-mono td-strong">${r.actualQty.toFixed(3)}</span></td>
+          <td style="text-align:right;"><span class="td-mono" style="color:${r.yieldPct>=95?'var(--success)':r.yieldPct>=85?'var(--warning)':'var(--danger)'};">${r.yieldPct.toFixed(1)}%</span></td>
+          <td style="text-align:right;"><span class="td-mono">${fmtUSD(r.materialCostUSD)}</span></td>
+          <td style="text-align:right;"><span class="td-mono">${fmtUSD(r.unitCostUSD)}</span></td>
+          <td><span class="badge badge-plain" style="font-size:10px;">${r.status}</span></td>
+        </tr>`).join('')}</tbody>
+      </table>
+    </div>
+  `;
+}
+
+function renderMargenes(from, to) {
+  const { productRows, customerRows, totals } = reports.margenes(from, to);
+  if (!productRows.length) return '<div class="empty-state"><div class="empty-state-title">Sin facturas de venta en el período</div></div>';
+  return `
+    <div class="grid grid-4 mb-24">
+      <div class="kpi"><div class="kpi-label">Ingresos</div><div class="kpi-value" style="color:var(--accent-ink);font-size:22px;">${fmtUSD(totals.revenueUSD)}</div></div>
+      <div class="kpi"><div class="kpi-label">Costos</div><div class="kpi-value" style="color:var(--danger);font-size:22px;">${fmtUSD(totals.costUSD)}</div></div>
+      <div class="kpi"><div class="kpi-label">Margen bruto</div><div class="kpi-value" style="color:var(--success);font-size:22px;">${fmtUSD(totals.profitUSD)}</div></div>
+      <div class="kpi"><div class="kpi-label">% margen</div><div class="kpi-value" style="font-size:22px;color:${totals.marginPct>=30?'var(--success)':totals.marginPct>=15?'var(--warning)':'var(--danger)'};">${totals.marginPct.toFixed(1)}%</div></div>
+    </div>
+
+    <div class="divider-section"><span class="section-title" style="margin:0;">Por producto</span></div>
+    <div class="table-wrap mb-24">
+      <table>
+        <thead><tr>
+          <th>Producto</th><th style="text-align:right;">Cantidad</th>
+          <th style="text-align:right;">Ingresos</th><th style="text-align:right;">Costo</th><th style="text-align:right;">Margen</th><th style="text-align:right;">% margen</th>
+        </tr></thead>
+        <tbody>${productRows.map(r => `<tr>
+          <td><div class="td-strong">${ui.escape(r.formulaName)}</div></td>
+          <td style="text-align:right;"><span class="td-mono">${r.quantity.toFixed(3)}</span></td>
+          <td style="text-align:right;"><span class="td-mono">${fmtUSD(r.revenueUSD)}</span></td>
+          <td style="text-align:right;"><span class="td-mono">${fmtUSD(r.costUSD)}</span></td>
+          <td style="text-align:right;"><span class="td-mono td-strong">${fmtUSD(r.profitUSD)}</span></td>
+          <td style="text-align:right;"><span class="td-mono" style="color:${r.marginPct>=30?'var(--success)':r.marginPct>=15?'var(--warning)':'var(--danger)'};">${r.marginPct.toFixed(1)}%</span></td>
+        </tr>`).join('')}</tbody>
+      </table>
+    </div>
+
+    <div class="divider-section"><span class="section-title" style="margin:0;">Por cliente</span></div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr>
+          <th>Cliente</th><th style="text-align:right;">Facturas</th>
+          <th style="text-align:right;">Ingresos</th><th style="text-align:right;">Costo</th><th style="text-align:right;">Margen</th><th style="text-align:right;">% margen</th>
+        </tr></thead>
+        <tbody>${customerRows.map(r => `<tr>
+          <td><div class="td-strong">${ui.escape(r.customerName)}</div></td>
+          <td style="text-align:right;"><span class="td-mono">${r.docCount}</span></td>
+          <td style="text-align:right;"><span class="td-mono">${fmtUSD(r.revenueUSD)}</span></td>
+          <td style="text-align:right;"><span class="td-mono">${fmtUSD(r.costUSD)}</span></td>
+          <td style="text-align:right;"><span class="td-mono td-strong">${fmtUSD(r.profitUSD)}</span></td>
+          <td style="text-align:right;"><span class="td-mono" style="color:${r.marginPct>=30?'var(--success)':r.marginPct>=15?'var(--warning)':'var(--danger)'};">${r.marginPct.toFixed(1)}%</span></td>
+        </tr>`).join('')}</tbody>
+      </table>
+    </div>
+  `;
+}
+
+function renderFlujoCaja(from, to) {
+  const { byAccount } = reports.flujoCaja(from, to);
+  if (!byAccount.length) return '<div class="empty-state"><div class="empty-state-title">Sin cuentas bancarias</div></div>';
+
+  return byAccount.map(g => `
+    <div class="card mb-24" style="padding:0;">
+      <div style="padding:14px 20px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center;">
+        <div>
+          <div class="card-title">${ui.escape(g.account.name)}</div>
+          <div class="text-muted" style="font-size:11px;margin-top:2px;">${ui.escape(g.account.bank||'')} · ${g.account.currency}</div>
+        </div>
+        <span class="badge ${g.account.currency==='USD'?'badge-accent':'badge-plain'}">${g.account.currency}</span>
+      </div>
+      <div style="padding:16px 20px;background:var(--surface-2);border-bottom:1px solid var(--border);display:grid;grid-template-columns:repeat(4,1fr);gap:16px;">
+        <div><div class="kpi-label">Apertura</div><div style="font-family:var(--font-mono);font-weight:600;margin-top:2px;">${currency.format(g.opening, g.account.currency)}</div></div>
+        <div><div class="kpi-label">Total entradas</div><div style="font-family:var(--font-mono);color:var(--success);font-weight:600;margin-top:2px;">+${currency.format(g.totalIn, g.account.currency)}</div></div>
+        <div><div class="kpi-label">Total salidas</div><div style="font-family:var(--font-mono);color:var(--danger);font-weight:600;margin-top:2px;">−${currency.format(g.totalOut, g.account.currency)}</div></div>
+        <div><div class="kpi-label">Cierre</div><div style="font-family:var(--font-mono);color:var(--accent-ink);font-weight:600;margin-top:2px;">${currency.format(g.closing, g.account.currency)}</div></div>
+      </div>
+      ${g.moves.length ? `<table>
+        <thead><tr><th>Fecha</th><th>Tipo</th><th>Concepto</th><th>Referencia</th><th style="text-align:right;">Monto</th><th style="text-align:right;">Saldo</th></tr></thead>
+        <tbody>${g.moves.map(m => {
+          const sign = m.direction === 'IN' ? '+' : '−';
+          const color = m.direction === 'IN' ? 'var(--success)' : 'var(--danger)';
+          return `<tr>
+            <td><span class="text-muted" style="font-size:12px;">${fmtDate(m.date)}</span></td>
+            <td><span class="badge badge-plain" style="font-size:10px;">${m.type}</span></td>
+            <td>${ui.escape(m.counterpartyName||m.reference||'—')}</td>
+            <td><span class="text-muted" style="font-size:12px;">${ui.escape(m.reference||'')}</span></td>
+            <td style="text-align:right;color:${color};font-family:var(--font-mono);font-weight:600;">${sign}${currency.format(m.amount, m.currency)}</td>
+            <td style="text-align:right;"><span class="td-mono td-strong">${currency.format(m.runningBalance, g.account.currency)}</span></td>
+          </tr>`;
+        }).join('')}</tbody>
+      </table>` : '<div style="padding:24px;text-align:center;color:var(--ink-3);">Sin movimientos en este período</div>'}
+    </div>
+  `).join('');
+}
+
+// ====== EXPORTACIÓN ======
+
+function exportCSV(reportId, from, to) {
+  const periodLbl = reports.periodLabel(period, customFrom, customTo);
+  let csv, filename;
+
+  switch (reportId) {
+    case 'libro-compras': {
+      const { rows, totals } = reports.libroCompras(from, to);
+      csv = reports.toCSV(rows, [
+        { key: 'n', label: '#' },
+        { key: 'fecha', label: 'Fecha' },
+        { key: 'rifProveedor', label: 'RIF Proveedor' },
+        { key: 'nombreProveedor', label: 'Proveedor' },
+        { key: 'nFactura', label: 'N° Factura' },
+        { key: 'nControl', label: 'N° Control' },
+        { key: 'baseImponible', label: 'Base Imponible (Bs)', format: v => v.toFixed(2) },
+        { key: 'iva', label: 'IVA (Bs)', format: v => v.toFixed(2) },
+        { key: 'exento', label: 'Exento (Bs)', format: v => v.toFixed(2) },
+        { key: 'total', label: 'Total (Bs)', format: v => v.toFixed(2) },
+        { key: 'retencionIVA', label: 'Ret. IVA (Bs)', format: v => v.toFixed(2) },
+        { key: 'retencionISLR', label: 'Ret. ISLR (Bs)', format: v => v.toFixed(2) }
+      ]);
+      filename = `libro-compras-${from}-a-${to}.csv`;
+      break;
+    }
+    case 'libro-ventas': {
+      const { rows } = reports.libroVentas(from, to);
+      csv = reports.toCSV(rows, [
+        { key: 'n', label: '#' }, { key: 'fecha', label: 'Fecha' },
+        { key: 'rifCliente', label: 'RIF Cliente' }, { key: 'nombreCliente', label: 'Cliente' },
+        { key: 'nFactura', label: 'N° Factura' }, { key: 'nControl', label: 'N° Control' },
+        { key: 'baseImponible', label: 'Base (Bs)', format: v => v.toFixed(2) },
+        { key: 'iva', label: 'IVA (Bs)', format: v => v.toFixed(2) },
+        { key: 'exento', label: 'Exento (Bs)', format: v => v.toFixed(2) },
+        { key: 'total', label: 'Total (Bs)', format: v => v.toFixed(2) },
+        { key: 'cancelled', label: 'Anulada', format: v => v ? 'SI' : 'NO' }
+      ]);
+      filename = `libro-ventas-${from}-a-${to}.csv`;
+      break;
+    }
+    case 'retenciones': {
+      const { rows } = reports.retenciones(from, to);
+      csv = reports.toCSV(rows, [
+        { key: 'n', label: '#' }, { key: 'fecha', label: 'Fecha' },
+        { key: 'comprobante', label: 'N° Comprobante' },
+        { key: 'rifProveedor', label: 'RIF' }, { key: 'nombreProveedor', label: 'Proveedor' },
+        { key: 'nFactura', label: 'N° Factura' }, { key: 'nControl', label: 'N° Control' },
+        { key: 'baseImponible', label: 'Base (Bs)', format: v => v.toFixed(2) },
+        { key: 'ivaWithheld', label: 'Ret. IVA (Bs)', format: v => v.toFixed(2) },
+        { key: 'islrWithheld', label: 'Ret. ISLR (Bs)', format: v => v.toFixed(2) },
+        { key: 'totalWithheld', label: 'Total Ret. (Bs)', format: v => v.toFixed(2) }
+      ]);
+      filename = `retenciones-${from}-a-${to}.csv`;
+      break;
+    }
+    case 'estado-cuenta-cliente': {
+      const { customer, movements } = reports.estadoCuentaCliente(entityId, from, to);
+      csv = reports.toCSV(movements, [
+        { key: 'date', label: 'Fecha' },
+        { key: 'ref', label: 'Documento' },
+        { key: 'description', label: 'Concepto' },
+        { key: 'currency', label: 'Moneda' },
+        { key: 'debit', label: 'Cargo', format: v => (v||0).toFixed(2) },
+        { key: 'credit', label: 'Abono', format: v => (v||0).toFixed(2) },
+        { key: 'balance', label: 'Saldo', format: v => (v||0).toFixed(2) }
+      ]);
+      filename = `estado-cuenta-${customer.name.replace(/\s/g,'_')}-${from}-a-${to}.csv`;
+      break;
+    }
+    case 'estado-cuenta-proveedor': {
+      const { supplier, movements } = reports.estadoCuentaProveedor(entityId, from, to);
+      csv = reports.toCSV(movements, [
+        { key: 'date', label: 'Fecha' }, { key: 'ref', label: 'Documento' },
+        { key: 'description', label: 'Concepto' }, { key: 'currency', label: 'Moneda' },
+        { key: 'debit', label: 'Pago', format: v => (v||0).toFixed(2) },
+        { key: 'credit', label: 'Cargo', format: v => (v||0).toFixed(2) },
+        { key: 'balance', label: 'Saldo', format: v => (v||0).toFixed(2) }
+      ]);
+      filename = `estado-cuenta-${supplier.name.replace(/\s/g,'_')}-${from}-a-${to}.csv`;
+      break;
+    }
+    case 'inventario-valorizado': {
+      const { rows } = reports.inventarioValorizado();
+      csv = reports.toCSV(rows, [
+        { key: 'kind', label: 'Tipo' }, { key: 'code', label: 'Código' },
+        { key: 'name', label: 'Producto' }, { key: 'unit', label: 'Unidad' },
+        { key: 'quantity', label: 'Cantidad', format: v => v.toFixed(3) },
+        { key: 'avgCost', label: 'Costo Unit (USD)', format: v => v.toFixed(4) },
+        { key: 'lotCount', label: 'Lotes' },
+        { key: 'valueUSD', label: 'Valor (USD)', format: v => v.toFixed(2) }
+      ]);
+      filename = `inventario-valorizado-${new Date().toISOString().slice(0,10)}.csv`;
+      break;
+    }
+    case 'produccion': {
+      const { rows } = reports.produccion(from, to);
+      csv = reports.toCSV(rows, [
+        { key: 'code', label: 'OF' }, { key: 'formulaName', label: 'Producto' },
+        { key: 'formulaVersion', label: 'Versión' },
+        { key: 'scheduledDate', label: 'Programada' }, { key: 'completedAt', label: 'Terminada', format: v => v ? v.slice(0,10) : '' },
+        { key: 'lotCode', label: 'Lote PT' },
+        { key: 'plannedBatch', label: 'Plan', format: v => v.toFixed(3) },
+        { key: 'actualQty', label: 'Real', format: v => v.toFixed(3) },
+        { key: 'unit', label: 'Unidad' },
+        { key: 'yieldPct', label: 'Rendim %', format: v => v.toFixed(1) },
+        { key: 'materialCostUSD', label: 'Costo MP (USD)', format: v => v.toFixed(2) },
+        { key: 'unitCostUSD', label: 'Costo Unit (USD)', format: v => v.toFixed(4) },
+        { key: 'status', label: 'Estado' }
+      ]);
+      filename = `produccion-${from}-a-${to}.csv`;
+      break;
+    }
+    case 'margenes': {
+      const { productRows } = reports.margenes(from, to);
+      csv = reports.toCSV(productRows, [
+        { key: 'formulaName', label: 'Producto' },
+        { key: 'quantity', label: 'Cantidad', format: v => v.toFixed(3) },
+        { key: 'revenueUSD', label: 'Ingresos (USD)', format: v => v.toFixed(2) },
+        { key: 'costUSD', label: 'Costo (USD)', format: v => v.toFixed(2) },
+        { key: 'profitUSD', label: 'Margen (USD)', format: v => v.toFixed(2) },
+        { key: 'marginPct', label: '% Margen', format: v => v.toFixed(2) }
+      ]);
+      filename = `margenes-${from}-a-${to}.csv`;
+      break;
+    }
+    case 'flujo-caja': {
+      const { byAccount } = reports.flujoCaja(from, to);
+      const flatMoves = [];
+      byAccount.forEach(g => g.moves.forEach(m => flatMoves.push({
+        ...m,
+        accountName: g.account.name,
+        accountCurrency: g.account.currency
+      })));
+      csv = reports.toCSV(flatMoves, [
+        { key: 'accountName', label: 'Cuenta' },
+        { key: 'accountCurrency', label: 'Moneda' },
+        { key: 'date', label: 'Fecha' },
+        { key: 'type', label: 'Tipo' },
+        { key: 'counterpartyName', label: 'Contraparte' },
+        { key: 'reference', label: 'Referencia' },
+        { key: 'direction', label: 'Dirección' },
+        { key: 'amount', label: 'Monto', format: v => v.toFixed(2) },
+        { key: 'runningBalance', label: 'Saldo', format: v => (v||0).toFixed(2) }
+      ]);
+      filename = `flujo-caja-${from}-a-${to}.csv`;
+      break;
+    }
+  }
+
+  if (!csv) { ui.toast('No se pudo generar el CSV', 'error'); return; }
+  reports.downloadCSV(filename, csv);
+  ui.toast('Descargado', 'success');
+}
+
+function exportPDF(reportId, from, to) {
+  const periodLbl = reports.periodLabel(period, customFrom, customTo);
+  const r = REPORTS[reportId];
+  let bodyHtml = '';
+
+  switch (reportId) {
+    case 'libro-compras':       bodyHtml = pdfLibroCompras(from, to); break;
+    case 'libro-ventas':        bodyHtml = pdfLibroVentas(from, to); break;
+    case 'retenciones':         bodyHtml = pdfRetenciones(from, to); break;
+    case 'estado-cuenta-cliente':   bodyHtml = pdfEstadoCliente(from, to); break;
+    case 'estado-cuenta-proveedor': bodyHtml = pdfEstadoProveedor(from, to); break;
+    case 'inventario-valorizado':   bodyHtml = pdfInventario(); break;
+    case 'produccion':          bodyHtml = pdfProduccion(from, to); break;
+    case 'margenes':            bodyHtml = pdfMargenes(from, to); break;
+    case 'flujo-caja':          bodyHtml = pdfFlujoCaja(from, to); break;
+  }
+
+  reports.openPrintable({
+    title: r.title,
+    subtitle: r.subtitle,
+    periodLabel: periodLbl,
+    bodyHtml
+  });
+}
+
+// ====== GENERADORES PDF ======
+
+function pdfLibroCompras(from, to) {
+  const { rows, totals } = reports.libroCompras(from, to);
+  if (!rows.length) return '<p>Sin facturas en el período.</p>';
+  return `
+    <div class="summary-grid">
+      <div class="summary-box"><div class="label">Facturas</div><div class="value">${rows.length}</div></div>
+      <div class="summary-box"><div class="label">Base imponible</div><div class="value">${fmtVES(totals.baseImponible)} Bs.</div></div>
+      <div class="summary-box"><div class="label">IVA total</div><div class="value">${fmtVES(totals.iva)} Bs.</div></div>
+      <div class="summary-box"><div class="label">Total compras</div><div class="value">${fmtVES(totals.total)} Bs.</div></div>
+    </div>
+    <table>
+      <thead><tr>
+        <th>#</th><th>Fecha</th><th>RIF</th><th>Proveedor</th><th>N° Factura</th><th>N° Control</th>
+        <th class="num">Base imp.</th><th class="num">IVA</th><th class="num">Exento</th><th class="num">Total</th>
+        <th class="num">Ret. IVA</th><th class="num">Ret. ISLR</th>
+      </tr></thead>
+      <tbody>${rows.map(r => `<tr>
+        <td>${r.n}</td><td>${fmtDate(r.fecha)}</td><td>${escapeHtml(r.rifProveedor)}</td>
+        <td>${escapeHtml(r.nombreProveedor)}</td><td>${escapeHtml(r.nFactura)}</td><td>${escapeHtml(r.nControl)}</td>
+        <td class="num">${fmtVES(r.baseImponible)}</td><td class="num">${fmtVES(r.iva)}</td>
+        <td class="num">${fmtVES(r.exento)}</td><td class="num"><strong>${fmtVES(r.total)}</strong></td>
+        <td class="num">${r.retencionIVA?fmtVES(r.retencionIVA):'—'}</td>
+        <td class="num">${r.retencionISLR?fmtVES(r.retencionISLR):'—'}</td>
+      </tr>`).join('')}
+      <tr class="total-row"><td colspan="6">TOTALES (Bs.)</td>
+        <td class="num">${fmtVES(totals.baseImponible)}</td><td class="num">${fmtVES(totals.iva)}</td>
+        <td class="num">${fmtVES(totals.exento)}</td><td class="num">${fmtVES(totals.total)}</td>
+        <td class="num">${fmtVES(totals.retencionIVA)}</td><td class="num">${fmtVES(totals.retencionISLR)}</td>
+      </tr>
+      </tbody>
+    </table>
+  `;
+}
+
+function pdfLibroVentas(from, to) {
+  const { rows, totals } = reports.libroVentas(from, to);
+  if (!rows.length) return '<p>Sin facturas en el período.</p>';
+  return `
+    <div class="summary-grid">
+      <div class="summary-box"><div class="label">Facturas</div><div class="value">${rows.length}</div></div>
+      <div class="summary-box"><div class="label">Base imponible</div><div class="value">${fmtVES(totals.baseImponible)} Bs.</div></div>
+      <div class="summary-box"><div class="label">IVA débito fiscal</div><div class="value">${fmtVES(totals.iva)} Bs.</div></div>
+      <div class="summary-box"><div class="label">Total ventas</div><div class="value">${fmtVES(totals.total)} Bs.</div></div>
+    </div>
+    <table>
+      <thead><tr>
+        <th>#</th><th>Fecha</th><th>RIF</th><th>Cliente</th><th>N° Factura</th><th>N° Control</th>
+        <th class="num">Base</th><th class="num">IVA</th><th class="num">Exento</th><th class="num">Total</th>
+      </tr></thead>
+      <tbody>${rows.map(r => `<tr ${r.cancelled?'style="opacity:0.5"':''}>
+        <td>${r.n}</td><td>${fmtDate(r.fecha)}</td><td>${escapeHtml(r.rifCliente)}</td>
+        <td>${escapeHtml(r.nombreCliente)}${r.cancelled?' [ANULADA]':''}</td><td>${escapeHtml(r.nFactura)}</td><td>${escapeHtml(r.nControl)}</td>
+        <td class="num">${fmtVES(r.baseImponible)}</td><td class="num">${fmtVES(r.iva)}</td>
+        <td class="num">${fmtVES(r.exento)}</td><td class="num"><strong>${fmtVES(r.total)}</strong></td>
+      </tr>`).join('')}
+      <tr class="total-row"><td colspan="6">TOTALES (Bs.)</td>
+        <td class="num">${fmtVES(totals.baseImponible)}</td><td class="num">${fmtVES(totals.iva)}</td>
+        <td class="num">${fmtVES(totals.exento)}</td><td class="num">${fmtVES(totals.total)}</td>
+      </tr>
+      </tbody>
+    </table>
+  `;
+}
+
+function pdfRetenciones(from, to) {
+  const { rows, totals } = reports.retenciones(from, to);
+  if (!rows.length) return '<p>Sin retenciones en el período.</p>';
+  return `
+    <div class="summary-grid">
+      <div class="summary-box"><div class="label">Comprobantes</div><div class="value">${rows.length}</div></div>
+      <div class="summary-box"><div class="label">Base imponible</div><div class="value">${fmtVES(totals.baseImponible)} Bs.</div></div>
+      <div class="summary-box"><div class="label">Ret. IVA total</div><div class="value">${fmtVES(totals.ivaWithheld)} Bs.</div></div>
+      <div class="summary-box"><div class="label">Ret. ISLR total</div><div class="value">${fmtVES(totals.islrWithheld)} Bs.</div></div>
+    </div>
+    <table>
+      <thead><tr>
+        <th>#</th><th>Fecha</th><th>Comprob.</th><th>RIF</th><th>Proveedor</th><th>Factura</th><th>Control</th>
+        <th class="num">Base</th><th class="num">Ret. IVA</th><th class="num">Ret. ISLR</th><th class="num">Total</th>
+      </tr></thead>
+      <tbody>${rows.map(r => `<tr>
+        <td>${r.n}</td><td>${fmtDate(r.fecha)}</td><td>${escapeHtml(r.comprobante)}</td>
+        <td>${escapeHtml(r.rifProveedor)}</td><td>${escapeHtml(r.nombreProveedor)}</td>
+        <td>${escapeHtml(r.nFactura||'')}</td><td>${escapeHtml(r.nControl||'')}</td>
+        <td class="num">${fmtVES(r.baseImponible)}</td>
+        <td class="num">${fmtVES(r.ivaWithheld)}</td>
+        <td class="num">${fmtVES(r.islrWithheld)}</td>
+        <td class="num"><strong>${fmtVES(r.totalWithheld)}</strong></td>
+      </tr>`).join('')}
+      <tr class="total-row"><td colspan="7">TOTALES (Bs.)</td>
+        <td class="num">${fmtVES(totals.baseImponible)}</td>
+        <td class="num">${fmtVES(totals.ivaWithheld)}</td>
+        <td class="num">${fmtVES(totals.islrWithheld)}</td>
+        <td class="num">${fmtVES(totals.totalWithheld)}</td>
+      </tr>
+      </tbody>
+    </table>
+  `;
+}
+
+function pdfEstadoCliente(from, to) {
+  if (!entityId) return '<p>Selecciona un cliente.</p>';
+  const { customer, movements, balanceByCcy } = reports.estadoCuentaCliente(entityId, from, to);
+  return `
+    <h2 class="section-title">${escapeHtml(customer.name)}</h2>
+    <p style="font-size:10pt;color:#4a4a45;">RIF/CI: ${escapeHtml(customer.rif||'—')}${customer.email?' · '+escapeHtml(customer.email):''}</p>
+    <div class="summary-grid">
+      ${Object.entries(balanceByCcy).map(([ccy, bal]) => `<div class="summary-box"><div class="label">Saldo ${ccy}</div><div class="value">${currency.format(bal, ccy)}</div></div>`).join('')}
+    </div>
+    <table>
+      <thead><tr><th>Fecha</th><th>Documento</th><th>Concepto</th><th>Mon.</th><th class="num">Cargo</th><th class="num">Abono</th><th class="num">Saldo</th></tr></thead>
+      <tbody>${movements.map(m => `<tr>
+        <td>${fmtDate(m.date)}</td><td>${escapeHtml(m.ref)}</td><td>${escapeHtml(m.description)}</td><td>${m.currency}</td>
+        <td class="num">${m.debit>0?currency.format(m.debit, m.currency):'—'}</td>
+        <td class="num">${m.credit>0?currency.format(m.credit, m.currency):'—'}</td>
+        <td class="num"><strong>${currency.format(m.balance, m.currency)}</strong></td>
+      </tr>`).join('')}</tbody>
+    </table>
+  `;
+}
+
+function pdfEstadoProveedor(from, to) {
+  if (!entityId) return '<p>Selecciona un proveedor.</p>';
+  const { supplier, movements, balanceByCcy } = reports.estadoCuentaProveedor(entityId, from, to);
+  return `
+    <h2 class="section-title">${escapeHtml(supplier.name)}</h2>
+    <p style="font-size:10pt;color:#4a4a45;">RIF: ${escapeHtml(supplier.rif||'—')}</p>
+    <div class="summary-grid">
+      ${Object.entries(balanceByCcy).map(([ccy, bal]) => `<div class="summary-box"><div class="label">Saldo ${ccy}</div><div class="value">${currency.format(bal, ccy)}</div></div>`).join('')}
+    </div>
+    <table>
+      <thead><tr><th>Fecha</th><th>Documento</th><th>Concepto</th><th>Mon.</th><th class="num">Pago</th><th class="num">Cargo</th><th class="num">Saldo</th></tr></thead>
+      <tbody>${movements.map(m => `<tr>
+        <td>${fmtDate(m.date)}</td><td>${escapeHtml(m.ref)}</td><td>${escapeHtml(m.description)}</td><td>${m.currency}</td>
+        <td class="num">${m.debit>0?currency.format(m.debit, m.currency):'—'}</td>
+        <td class="num">${m.credit>0?currency.format(m.credit, m.currency):'—'}</td>
+        <td class="num"><strong>${currency.format(m.balance, m.currency)}</strong></td>
+      </tr>`).join('')}</tbody>
+    </table>
+  `;
+}
+
+function pdfInventario() {
+  const { rows, totals } = reports.inventarioValorizado();
+  return `
+    <div class="summary-grid">
+      <div class="summary-box"><div class="label">Valor MP</div><div class="value">${fmtUSD(totals.rmValue)}</div></div>
+      <div class="summary-box"><div class="label">Valor PT</div><div class="value">${fmtUSD(totals.fgValue)}</div></div>
+      <div class="summary-box"><div class="label">TOTAL</div><div class="value">${fmtUSD(totals.total)}</div></div>
+    </div>
+    <table>
+      <thead><tr>
+        <th>Tipo</th><th>Código</th><th>Producto</th><th class="num">Cantidad</th><th>Unidad</th>
+        <th class="num">Costo Unit.</th><th class="num">Lotes</th><th class="num">Valor USD</th>
+      </tr></thead>
+      <tbody>${rows.map(r => `<tr>
+        <td>${r.kind}</td><td>${escapeHtml(r.code||'—')}</td><td>${escapeHtml(r.name)}</td>
+        <td class="num">${(r.quantity||0).toFixed(3)}</td><td>${escapeHtml(r.unit||'—')}</td>
+        <td class="num">${fmtUSD(r.avgCost)}</td><td class="num">${r.lotCount}</td>
+        <td class="num"><strong>${fmtUSD(r.valueUSD)}</strong></td>
+      </tr>`).join('')}
+      <tr class="total-row"><td colspan="7">VALOR TOTAL DE INVENTARIO</td><td class="num">${fmtUSD(totals.total)}</td></tr>
+      </tbody>
+    </table>
+  `;
+}
+
+function pdfProduccion(from, to) {
+  const { rows, totals } = reports.produccion(from, to);
+  if (!rows.length) return '<p>Sin OFs en el período.</p>';
+  return `
+    <div class="summary-grid">
+      <div class="summary-box"><div class="label">OFs totales</div><div class="value">${totals.countTotal}</div></div>
+      <div class="summary-box"><div class="label">Producido</div><div class="value">${totals.totalProduced.toFixed(2)}</div></div>
+      <div class="summary-box"><div class="label">Costo materiales</div><div class="value">${fmtUSD(totals.totalCostUSD)}</div></div>
+      <div class="summary-box"><div class="label">Rendim. promedio</div><div class="value">${totals.avgYield.toFixed(1)}%</div></div>
+    </div>
+    <table>
+      <thead><tr>
+        <th>OF</th><th>Producto</th><th>v.</th><th>Programada</th><th>Terminada</th><th>Lote</th>
+        <th class="num">Plan</th><th class="num">Real</th><th class="num">Rendim.</th>
+        <th class="num">Costo MP</th><th class="num">Costo unit.</th><th>Estado</th>
+      </tr></thead>
+      <tbody>${rows.map(r => `<tr>
+        <td>${escapeHtml(r.code)}</td><td>${escapeHtml(r.formulaName)}</td><td>v${r.formulaVersion}</td>
+        <td>${fmtDate(r.scheduledDate)}</td><td>${r.completedAt?fmtDate(r.completedAt):'—'}</td>
+        <td>${escapeHtml(r.lotCode)}</td>
+        <td class="num">${r.plannedBatch.toFixed(3)}</td><td class="num">${r.actualQty.toFixed(3)}</td>
+        <td class="num">${r.yieldPct.toFixed(1)}%</td><td class="num">${fmtUSD(r.materialCostUSD)}</td>
+        <td class="num">${fmtUSD(r.unitCostUSD)}</td><td>${r.status}</td>
+      </tr>`).join('')}</tbody>
+    </table>
+  `;
+}
+
+function pdfMargenes(from, to) {
+  const { productRows, customerRows, totals } = reports.margenes(from, to);
+  if (!productRows.length) return '<p>Sin facturas de venta en el período.</p>';
+  return `
+    <div class="summary-grid">
+      <div class="summary-box"><div class="label">Ingresos</div><div class="value">${fmtUSD(totals.revenueUSD)}</div></div>
+      <div class="summary-box"><div class="label">Costos</div><div class="value">${fmtUSD(totals.costUSD)}</div></div>
+      <div class="summary-box"><div class="label">Margen bruto</div><div class="value">${fmtUSD(totals.profitUSD)}</div></div>
+      <div class="summary-box"><div class="label">% margen</div><div class="value">${totals.marginPct.toFixed(1)}%</div></div>
+    </div>
+    <h2 class="section-title">Por producto</h2>
+    <table>
+      <thead><tr><th>Producto</th><th class="num">Cantidad</th><th class="num">Ingresos</th><th class="num">Costo</th><th class="num">Margen</th><th class="num">% margen</th></tr></thead>
+      <tbody>${productRows.map(r => `<tr>
+        <td>${escapeHtml(r.formulaName)}</td><td class="num">${r.quantity.toFixed(3)}</td>
+        <td class="num">${fmtUSD(r.revenueUSD)}</td><td class="num">${fmtUSD(r.costUSD)}</td>
+        <td class="num"><strong>${fmtUSD(r.profitUSD)}</strong></td><td class="num">${r.marginPct.toFixed(1)}%</td>
+      </tr>`).join('')}</tbody>
+    </table>
+    <h2 class="section-title">Por cliente</h2>
+    <table>
+      <thead><tr><th>Cliente</th><th class="num">Facturas</th><th class="num">Ingresos</th><th class="num">Costo</th><th class="num">Margen</th><th class="num">% margen</th></tr></thead>
+      <tbody>${customerRows.map(r => `<tr>
+        <td>${escapeHtml(r.customerName)}</td><td class="num">${r.docCount}</td>
+        <td class="num">${fmtUSD(r.revenueUSD)}</td><td class="num">${fmtUSD(r.costUSD)}</td>
+        <td class="num"><strong>${fmtUSD(r.profitUSD)}</strong></td><td class="num">${r.marginPct.toFixed(1)}%</td>
+      </tr>`).join('')}</tbody>
+    </table>
+  `;
+}
+
+function pdfFlujoCaja(from, to) {
+  const { byAccount } = reports.flujoCaja(from, to);
+  return byAccount.map(g => `
+    <h2 class="section-title">${escapeHtml(g.account.name)} (${g.account.currency})</h2>
+    <div class="summary-grid">
+      <div class="summary-box"><div class="label">Apertura</div><div class="value">${currency.format(g.opening, g.account.currency)}</div></div>
+      <div class="summary-box"><div class="label">Entradas</div><div class="value">+${currency.format(g.totalIn, g.account.currency)}</div></div>
+      <div class="summary-box"><div class="label">Salidas</div><div class="value">−${currency.format(g.totalOut, g.account.currency)}</div></div>
+      <div class="summary-box"><div class="label">Cierre</div><div class="value">${currency.format(g.closing, g.account.currency)}</div></div>
+    </div>
+    ${g.moves.length ? `<table>
+      <thead><tr><th>Fecha</th><th>Tipo</th><th>Concepto</th><th>Ref.</th><th class="num">Monto</th><th class="num">Saldo</th></tr></thead>
+      <tbody>${g.moves.map(m => {
+        const sign = m.direction === 'IN' ? '+' : '−';
+        return `<tr>
+          <td>${fmtDate(m.date)}</td><td>${m.type}</td>
+          <td>${escapeHtml(m.counterpartyName||m.reference||'—')}</td>
+          <td>${escapeHtml(m.reference||'')}</td>
+          <td class="num"><strong>${sign}${currency.format(m.amount, m.currency)}</strong></td>
+          <td class="num">${currency.format(m.runningBalance, g.account.currency)}</td>
+        </tr>`;
+      }).join('')}</tbody>
+    </table>` : '<p style="font-size:10pt;color:#8a8a82;">Sin movimientos en este período.</p>'}
+  `).join('');
+}
+
+render();
 </script>
-</body></html>
+</body>
+</html>
