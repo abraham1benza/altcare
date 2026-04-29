@@ -44,6 +44,8 @@ const NAV_STRUCTURE = [
     items: [
       { id: 'reportes',          label: 'Reportes',          href: 'modules/reportes.html' },
       { id: 'almacenes',         label: 'Almacenes',         href: 'modules/almacenes.html' },
+      { id: 'cuentas-bancarias', label: 'Cuentas bancarias', href: 'modules/cuentas-bancarias.html' },
+      { id: 'metodos-pago',      label: 'Métodos de pago',   href: 'modules/metodos-pago.html' },
       { id: 'usuarios',          label: 'Usuarios',          href: 'modules/usuarios.html' },
       { id: 'configuracion',     label: 'Configuración',     href: 'modules/configuracion.html' }
     ]
