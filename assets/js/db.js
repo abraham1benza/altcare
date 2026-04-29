@@ -5,7 +5,7 @@
    sistema sigue llamando db.getAll(), db.save(), etc.
    ============================================ */
 
-const DB_VERSION = 3;
+const DB_VERSION = 4;
 const DB_PREFIX = 'altcare_';
 
 const COLLECTIONS = {
@@ -23,26 +23,25 @@ const COLLECTIONS = {
   // Producción
   formulas: 'formulas',
   formulaVersions: 'formulaVersions',
-  productionOrders: 'productionOrders',
+  presentations: 'presentations',          // 🆕 SKUs envasados (Shampoo X · 250ml)
+  productionOrders: 'productionOrders',     // OF de fabricación (granel)
+  packagingOrders: 'packagingOrders',       // 🆕 OF de envasado
   qcTests: 'qcTests',
-  finishedGoods: 'finishedGoods',
+  finishedGoods: 'finishedGoods',           // ahora distingue BULK / PACKAGED
   packaging: 'packaging',
   // Movimientos
   warehouseMoves: 'warehouseMoves',
   // ===== COMERCIAL FASE 3 =====
-  // Compras
-  purchaseOrders: 'purchaseOrders',           // OCs
-  purchaseReceipts: 'purchaseReceipts',       // recepciones contra OC
-  supplierInvoices: 'supplierInvoices',       // facturas de proveedor con IVA y retenciones
-  withholdingVouchers: 'withholdingVouchers', // comprobantes de retención emitidos
-  // Ventas
-  salesOrders: 'salesOrders',                 // pedidos / cotizaciones / facturas (estado en doc)
-  salesInvoices: 'salesInvoices',             // facturas emitidas (cuando un pedido se convierte)
-  // Pagos
-  paymentMethods: 'paymentMethods',           // efectivo, transferencia, zelle, etc.
-  bankAccounts: 'bankAccounts',               // cuentas bancarias propias con saldo
-  payments: 'payments',                        // pagos (a proveedores o de clientes)
-  bankMoves: 'bankMoves',                     // movimientos por cuenta bancaria (kardex bancario)
+  purchaseOrders: 'purchaseOrders',
+  purchaseReceipts: 'purchaseReceipts',
+  supplierInvoices: 'supplierInvoices',
+  withholdingVouchers: 'withholdingVouchers',
+  salesOrders: 'salesOrders',
+  salesInvoices: 'salesInvoices',
+  paymentMethods: 'paymentMethods',
+  bankAccounts: 'bankAccounts',
+  payments: 'payments',
+  bankMoves: 'bankMoves',
   // Sistema
   auditLog: 'auditLog'
 };
