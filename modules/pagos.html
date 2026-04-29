@@ -1,7 +1,8 @@
 <!DOCTYPE html>
 <html lang="es">
 <head>
-<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Pagos · altcare</title>
 <link rel="stylesheet" href="../assets/css/styles.css">
 </head>
@@ -10,20 +11,417 @@
 <script src="../assets/js/auth.js"></script>
 <script src="../assets/js/currency.js"></script>
 <script src="../assets/js/tax.js"></script>
+<script src="../assets/js/inventory.js"></script>
+<script src="../assets/js/formulas.js"></script>
+<script src="../assets/js/purchases.js"></script>
+<script src="../assets/js/sales.js"></script>
+<script src="../assets/js/payments.js"></script>
 <script src="../assets/js/ui.js"></script>
 <script>
 if (!auth.guard('pagos')) throw new Error('blocked');
-ui.renderLayout({
-  activeModule: 'pagos',
-  pageEyebrow: 'Comercial',
-  pageTitle: 'Pagos',
-  contentHtml: `
-    <div class="card" style="text-align:center;padding:64px 32px;">
-      <div style="font-size:48px;margin-bottom:16px;">💳</div>
-      <h3 style="font-family:var(--font-display);font-style:italic;font-size:24px;margin-bottom:8px;">Próximamente</h3>
-      <p class="text-muted" style="max-width:520px;margin:0 auto;">Cuentas por pagar y por cobrar en multi-moneda. Conciliación de pagos parciales, pagos en distintas tasas — Fase 3.</p>
-    </div>
-  `
-});
+
+let tab = 'cxp';        // cxp | cxc | history
+let creating = null;     // borrador de pago
+
+function render() {
+  if (creating) return renderCreate();
+
+  // Auto-ejecutar acciones por query string (ej: ?invoice=xxx desde compras)
+  const params = new URLSearchParams(window.location.search);
+  const invoiceParam = params.get('invoice');
+  const docParam = params.get('doc');
+  if (invoiceParam) {
+    window.history.replaceState({}, '', window.location.pathname);
+    setTimeout(() => newPaymentForInvoice(invoiceParam), 50);
+    return;
+  }
+  if (docParam) {
+    window.history.replaceState({}, '', window.location.pathname);
+    setTimeout(() => newPaymentForDoc(docParam), 50);
+    return;
+  }
+
+  return renderList();
+}
+
+function renderList() {
+  // Cuentas por pagar (facturas proveedor pendientes)
+  const supplierInvoices = db.getAll(db.COLLECTIONS.supplierInvoices)
+    .filter(i => i.status !== 'CANCELLED' && (i.totalToPay - (i.paidAmount||0)) > 0.01)
+    .sort((a,b) => (a.dueDate||a.issueDate||'').localeCompare(b.dueDate||b.issueDate||''));
+
+  // Cuentas por cobrar (facturas venta pendientes)
+  const salesDocs = db.getAll(db.COLLECTIONS.salesOrders)
+    .filter(d => !d.cancelled && d.type === 'FACTURA' && (d.total - (d.paidAmount||0)) > 0.01)
+    .sort((a,b) => (a.dueDate||a.issueDate||'').localeCompare(b.dueDate||b.issueDate||''));
+
+  // Histórico de pagos
+  const allPayments = db.getAll(db.COLLECTIONS.payments).sort((a,b) => (b.date||'').localeCompare(a.date||''));
+
+  // Totales en USD
+  const cxpUSD = supplierInvoices.reduce((s, i) => {
+    const remaining = i.totalToPay - (i.paidAmount||0);
+    let usd = remaining;
+    if (i.currency === 'VES') {
+      const r = currency.getActiveRate();
+      usd = r && r.value ? remaining / r.value : 0;
+    }
+    return s + usd;
+  }, 0);
+  const cxcUSD = salesDocs.reduce((s, d) => {
+    const remaining = d.total - (d.paidAmount||0);
+    let usd = remaining;
+    if (d.currency === 'VES') {
+      const r = currency.getActiveRate();
+      usd = r && r.value ? remaining / r.value : 0;
+    }
+    return s + usd;
+  }, 0);
+
+  // Vencidas
+  const today = new Date().toISOString().slice(0,10);
+  const cxpOverdue = supplierInvoices.filter(i => i.dueDate && i.dueDate < today).length;
+  const cxcOverdue = salesDocs.filter(d => d.dueDate && d.dueDate < today).length;
+
+  let tabContent;
+  if (tab === 'cxp') tabContent = renderCXPTable(supplierInvoices);
+  else if (tab === 'cxc') tabContent = renderCXCTable(salesDocs);
+  else tabContent = renderHistoryTable(allPayments);
+
+  ui.renderLayout({
+    activeModule: 'pagos', pageEyebrow: 'Comercial', pageTitle: 'Pagos',
+    contentHtml: `
+      <div class="action-bar">
+        <div class="action-bar-left">
+          <h2 class="action-bar-title">Pagos</h2>
+          <span class="action-bar-count">Cuentas por pagar y por cobrar</span>
+        </div>
+      </div>
+
+      <div class="grid grid-4 mb-24">
+        <div class="kpi"><div class="kpi-label">Por pagar</div><div class="kpi-value" style="color:var(--danger);">$${cxpUSD.toLocaleString('en-US',{minimumFractionDigits:0,maximumFractionDigits:0})}</div><div class="kpi-value-sub">${supplierInvoices.length} factura${supplierInvoices.length!==1?'s':''}${cxpOverdue?` · ${cxpOverdue} vencida${cxpOverdue!==1?'s':''}`:''}</div></div>
+        <div class="kpi"><div class="kpi-label">Por cobrar</div><div class="kpi-value" style="color:var(--accent-ink);">$${cxcUSD.toLocaleString('en-US',{minimumFractionDigits:0,maximumFractionDigits:0})}</div><div class="kpi-value-sub">${salesDocs.length} factura${salesDocs.length!==1?'s':''}${cxcOverdue?` · ${cxcOverdue} vencida${cxcOverdue!==1?'s':''}`:''}</div></div>
+        <div class="kpi"><div class="kpi-label">Disponible</div><div class="kpi-value" style="color:var(--success);">$${payments.totalBalanceUSD().toLocaleString('en-US',{minimumFractionDigits:0,maximumFractionDigits:0})}</div><div class="kpi-value-sub">en cuentas bancarias</div></div>
+        <div class="kpi"><div class="kpi-label">Pagos registrados</div><div class="kpi-value">${allPayments.length}</div><div class="kpi-value-sub">total histórico</div></div>
+      </div>
+
+      <div style="display:flex;border-bottom:1px solid var(--border);margin-bottom:24px;gap:0;">
+        <button class="btn btn-ghost" style="border-radius:0;border-bottom:2px solid ${tab==='cxp'?'var(--ink)':'transparent'};color:${tab==='cxp'?'var(--ink)':'var(--ink-3)'};" onclick="changeTab('cxp')">Por pagar (${supplierInvoices.length})</button>
+        <button class="btn btn-ghost" style="border-radius:0;border-bottom:2px solid ${tab==='cxc'?'var(--ink)':'transparent'};color:${tab==='cxc'?'var(--ink)':'var(--ink-3)'};" onclick="changeTab('cxc')">Por cobrar (${salesDocs.length})</button>
+        <button class="btn btn-ghost" style="border-radius:0;border-bottom:2px solid ${tab==='history'?'var(--ink)':'transparent'};color:${tab==='history'?'var(--ink)':'var(--ink-3)'};" onclick="changeTab('history')">Historial (${allPayments.length})</button>
+      </div>
+
+      ${tabContent}
+    `
+  });
+}
+
+function changeTab(t) { tab = t; render(); }
+
+function renderCXPTable(invoices) {
+  if (!invoices.length) return '<div class="empty-state"><div class="empty-state-title">Sin facturas pendientes</div><div class="empty-state-text">Todas las facturas de proveedores están pagadas.</div></div>';
+  const today = new Date().toISOString().slice(0,10);
+  return `<div class="table-wrap"><table>
+    <thead><tr><th>Factura</th><th>Proveedor</th><th>Emitida</th><th>Vence</th><th style="text-align:right;">Total</th><th style="text-align:right;">Pagado</th><th style="text-align:right;">Pendiente</th><th>Moneda</th><th style="text-align:right;width:130px;">Acciones</th></tr></thead>
+    <tbody>${invoices.map(i => {
+      const remaining = i.totalToPay - (i.paidAmount||0);
+      const overdue = i.dueDate && i.dueDate < today;
+      const dueClass = overdue ? 'badge-danger' : 'badge-plain';
+      return `<tr>
+        <td><span class="td-mono td-strong">${i.code}</span><div class="text-muted" style="font-size:11px;">${ui.escape(i.supplierInvoiceNumber||'')}</div></td>
+        <td>${ui.escape(i.supplierName)}</td>
+        <td><span class="text-muted">${ui.formatDate(i.issueDate)}</span></td>
+        <td>${i.dueDate ? `<span class="badge ${dueClass}">${ui.formatDate(i.dueDate)}</span>` : '<span class="td-muted">—</span>'}</td>
+        <td style="text-align:right;"><span class="td-mono">${currency.format(i.totalToPay, i.currency)}</span></td>
+        <td style="text-align:right;"><span class="td-mono">${currency.format(i.paidAmount||0, i.currency)}</span></td>
+        <td style="text-align:right;"><span class="td-mono td-strong">${currency.format(remaining, i.currency)}</span></td>
+        <td><span class="badge ${i.currency==='USD'?'badge-accent':'badge-plain'}">${i.currency}</span></td>
+        <td class="td-actions"><button class="btn btn-primary btn-sm" onclick="newPaymentForInvoice('${i.id}')">Registrar pago</button></td>
+      </tr>`;
+    }).join('')}</tbody></table></div>`;
+}
+
+function renderCXCTable(docs) {
+  if (!docs.length) return '<div class="empty-state"><div class="empty-state-title">Sin facturas por cobrar</div><div class="empty-state-text">Todas tus facturas de venta están cobradas.</div></div>';
+  const today = new Date().toISOString().slice(0,10);
+  return `<div class="table-wrap"><table>
+    <thead><tr><th>Factura</th><th>Cliente</th><th>Emitida</th><th>Vence</th><th style="text-align:right;">Total</th><th style="text-align:right;">Cobrado</th><th style="text-align:right;">Pendiente</th><th>Moneda</th><th style="text-align:right;width:130px;">Acciones</th></tr></thead>
+    <tbody>${docs.map(d => {
+      const remaining = d.total - (d.paidAmount||0);
+      const overdue = d.dueDate && d.dueDate < today;
+      const dueClass = overdue ? 'badge-danger' : 'badge-plain';
+      return `<tr>
+        <td><span class="td-mono td-strong">${d.invoiceNumber||d.code}</span><div class="text-muted" style="font-size:11px;">Ctrl: ${d.controlNumber||'—'}</div></td>
+        <td>${ui.escape(d.customerName)}</td>
+        <td><span class="text-muted">${ui.formatDate(d.issueDate)}</span></td>
+        <td>${d.dueDate ? `<span class="badge ${dueClass}">${ui.formatDate(d.dueDate)}</span>` : '<span class="td-muted">—</span>'}</td>
+        <td style="text-align:right;"><span class="td-mono">${currency.format(d.total, d.currency)}</span></td>
+        <td style="text-align:right;"><span class="td-mono">${currency.format(d.paidAmount||0, d.currency)}</span></td>
+        <td style="text-align:right;"><span class="td-mono td-strong">${currency.format(remaining, d.currency)}</span></td>
+        <td><span class="badge ${d.currency==='USD'?'badge-accent':'badge-plain'}">${d.currency}</span></td>
+        <td class="td-actions"><button class="btn btn-primary btn-sm" onclick="newPaymentForDoc('${d.id}')">Registrar cobro</button></td>
+      </tr>`;
+    }).join('')}</tbody></table></div>`;
+}
+
+function renderHistoryTable(payments) {
+  if (!payments.length) return '<div class="empty-state"><div class="empty-state-title">Sin pagos registrados</div></div>';
+  return `<div class="table-wrap"><table>
+    <thead><tr><th>Código</th><th>Tipo</th><th>Fecha</th><th>Contraparte</th><th>Documento</th><th>Método</th><th>Cuenta</th><th style="text-align:right;">Monto</th><th>Referencia</th></tr></thead>
+    <tbody>${payments.map(p => `<tr>
+      <td><span class="td-mono td-strong">${p.code}</span></td>
+      <td><span class="badge ${p.direction==='IN'?'badge-success':'badge-plain'}">${p.direction==='IN'?'Cobro':'Pago'}</span></td>
+      <td><span class="text-muted">${ui.formatDate(p.date)}</span></td>
+      <td>${ui.escape(p.counterpartyName||'—')}</td>
+      <td><span class="td-mono">${ui.escape(p.relatedDocCode||'—')}</span></td>
+      <td>${ui.escape(p.paymentMethodName||'—')}</td>
+      <td><span class="text-muted" style="font-size:12px;">${p.bankAccountId ? ui.escape(db.getById(db.COLLECTIONS.bankAccounts, p.bankAccountId)?.name||'—') : '—'}</span></td>
+      <td style="text-align:right;"><span class="td-mono td-strong" style="color:${p.direction==='IN'?'var(--success)':'var(--danger)'};">${p.direction==='IN'?'+':'−'}${currency.format(p.amount, p.currency)}</span>${p.amountInDocCurrency !== p.amount ? `<div class="text-muted" style="font-size:11px;">≈ ${currency.format(p.amountInDocCurrency, p.docCurrency)}</div>` : ''}</td>
+      <td><span class="text-muted" style="font-size:12px;">${ui.escape(p.reference||'—')}</span></td>
+    </tr>`).join('')}</tbody></table></div>`;
+}
+
+// ====== CREAR PAGO ======
+
+function newPaymentForInvoice(invoiceId) {
+  const inv = db.getById(db.COLLECTIONS.supplierInvoices, invoiceId);
+  if (!inv) { ui.toast('Factura no encontrada', 'error'); return; }
+  const remaining = inv.totalToPay - (inv.paidAmount||0);
+  creating = {
+    direction: 'OUT',
+    relatedDocId: inv.id,
+    relatedDocCode: inv.code,
+    relatedDocLabel: `${inv.code} · ${inv.supplierInvoiceNumber||''}`,
+    counterpartyId: inv.supplierId,
+    counterpartyName: inv.supplierName,
+    docCurrency: inv.currency,
+    docTotal: inv.totalToPay,
+    docPaid: inv.paidAmount || 0,
+    docRemaining: remaining,
+    currency: inv.currency,
+    amount: remaining,
+    amountInDocCurrency: remaining,
+    rateUsed: null,
+    paymentMethodId: '',
+    paymentMethodName: '',
+    bankAccountId: '',
+    reference: '',
+    date: new Date().toISOString().slice(0,10),
+    notes: ''
+  };
+  render();
+}
+
+function newPaymentForDoc(docId) {
+  const doc = db.getById(db.COLLECTIONS.salesOrders, docId);
+  if (!doc) { ui.toast('Documento no encontrado', 'error'); return; }
+  const remaining = doc.total - (doc.paidAmount||0);
+  creating = {
+    direction: 'IN',
+    relatedDocId: doc.id,
+    relatedDocCode: doc.invoiceNumber || doc.code,
+    relatedDocLabel: `${doc.invoiceNumber||doc.code} · ${doc.customerName}`,
+    counterpartyId: doc.customerId,
+    counterpartyName: doc.customerName,
+    docCurrency: doc.currency,
+    docTotal: doc.total,
+    docPaid: doc.paidAmount || 0,
+    docRemaining: remaining,
+    currency: doc.currency,
+    amount: remaining,
+    amountInDocCurrency: remaining,
+    rateUsed: null,
+    paymentMethodId: '',
+    paymentMethodName: '',
+    bankAccountId: '',
+    reference: '',
+    date: new Date().toISOString().slice(0,10),
+    notes: ''
+  };
+  render();
+}
+
+function renderCreate() {
+  const c = creating;
+  const methods = db.getAll(db.COLLECTIONS.paymentMethods).filter(m => m.active !== false);
+  const accounts = db.getAll(db.COLLECTIONS.bankAccounts).filter(a => a.active !== false);
+  const selectedMethod = methods.find(m => m.id === c.paymentMethodId);
+
+  // Filtrar cuentas por la moneda del pago
+  const matchingAccounts = accounts.filter(a => a.currency === c.currency);
+
+  // Si moneda del pago != moneda de doc, calcular conversión
+  let conversionInfo = '';
+  if (c.currency !== c.docCurrency) {
+    const rate = currency.getActiveRate();
+    if (rate && rate.value) {
+      // Caso típico: factura en VES, pago en USD → convertir USD a VES
+      let amountInDoc;
+      if (c.docCurrency === 'VES' && c.currency !== 'VES') {
+        amountInDoc = parseFloat(c.amount) * rate.value;
+      } else if (c.docCurrency !== 'VES' && c.currency === 'VES') {
+        amountInDoc = parseFloat(c.amount) / rate.value;
+      } else {
+        amountInDoc = parseFloat(c.amount); // USD ↔ EUR no soportado por simplicidad
+      }
+      c.amountInDocCurrency = Math.round(amountInDoc * 100) / 100;
+      c.rateUsed = rate.value;
+      conversionInfo = `
+        <div class="card mb-24" style="background:var(--accent-soft);border-color:#cdd9c8;padding:16px;">
+          <div style="font-size:12px;color:var(--accent-ink);font-weight:600;margin-bottom:8px;">Conversión de moneda</div>
+          <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:16px;font-size:13px;">
+            <div><div class="text-muted" style="font-size:11px;">Pago recibido</div><div class="td-mono td-strong" style="font-size:16px;">${currency.format(c.amount, c.currency)}</div></div>
+            <div><div class="text-muted" style="font-size:11px;">Tasa usada</div><div class="td-mono td-strong" style="font-size:16px;">${c.rateUsed.toFixed(4)} (${rate.label})</div></div>
+            <div><div class="text-muted" style="font-size:11px;">Equivale a</div><div class="td-mono td-strong" style="font-size:16px;color:var(--accent-ink);">${currency.format(c.amountInDocCurrency, c.docCurrency)}</div></div>
+          </div>
+        </div>
+      `;
+    }
+  } else {
+    c.amountInDocCurrency = parseFloat(c.amount);
+  }
+
+  ui.renderLayout({
+    activeModule: 'pagos', pageEyebrow: c.direction === 'OUT' ? 'Registrar pago' : 'Registrar cobro', pageTitle: c.relatedDocLabel,
+    contentHtml: `
+      <div class="action-bar">
+        <div class="action-bar-left"><button class="btn btn-ghost btn-sm" onclick="cancelCreate()">← Cancelar</button></div>
+        <div class="action-bar-right"><button class="btn btn-primary" onclick="savePayment()">${ui.icon('check')} ${c.direction==='OUT'?'Registrar pago':'Registrar cobro'}</button></div>
+      </div>
+
+      <div class="grid grid-4 mb-24">
+        <div class="kpi"><div class="kpi-label">${c.direction==='OUT'?'Proveedor':'Cliente'}</div><div class="kpi-value" style="font-size:18px;">${ui.escape(c.counterpartyName)}</div></div>
+        <div class="kpi"><div class="kpi-label">Total factura</div><div class="kpi-value" style="font-size:20px;">${currency.formatCompact(c.docTotal, c.docCurrency)}</div></div>
+        <div class="kpi"><div class="kpi-label">Ya ${c.direction==='OUT'?'pagado':'cobrado'}</div><div class="kpi-value" style="font-size:20px;">${currency.formatCompact(c.docPaid, c.docCurrency)}</div></div>
+        <div class="kpi"><div class="kpi-label">Pendiente</div><div class="kpi-value" style="color:var(--accent-ink);">${currency.formatCompact(c.docRemaining, c.docCurrency)}</div></div>
+      </div>
+
+      <div class="card mb-24">
+        <div class="card-header"><div class="card-title">Datos del ${c.direction==='OUT'?'pago':'cobro'}</div></div>
+        <div class="form-grid form-grid-2">
+          <div class="field">
+            <label class="field-label">Monto *</label>
+            <input class="input" type="number" step="0.01" id="amount" value="${c.amount}" oninput="updateAmount(this.value)">
+          </div>
+          <div class="field">
+            <label class="field-label">Moneda del ${c.direction==='OUT'?'pago':'cobro'} *</label>
+            <select class="select" onchange="updateCurrency(this.value)">
+              <option value="${c.docCurrency}" ${c.currency===c.docCurrency?'selected':''}>${c.docCurrency} (misma de la factura)</option>
+              ${['VES','USD','EUR'].filter(cc => cc !== c.docCurrency).map(cc => `<option value="${cc}" ${c.currency===cc?'selected':''}>${cc}</option>`).join('')}
+            </select>
+            <div class="field-hint">Si recibiste/pagaste en moneda distinta a la factura, se hará conversión con la tasa activa</div>
+          </div>
+          <div class="field">
+            <label class="field-label">Fecha *</label>
+            <input class="input" type="date" value="${c.date}" oninput="creating.date=this.value">
+          </div>
+          <div class="field">
+            <label class="field-label">Método de pago *</label>
+            <select class="select" onchange="updateMethod(this.value)">
+              <option value="">— Selecciona —</option>
+              ${methods.map(m => `<option value="${m.id}" ${m.id===c.paymentMethodId?'selected':''}>${ui.escape(m.name)}</option>`).join('')}
+            </select>
+          </div>
+          ${selectedMethod && selectedMethod.requiresBank ? `
+            <div class="field">
+              <label class="field-label">Cuenta bancaria *</label>
+              <select class="select" onchange="creating.bankAccountId=this.value">
+                <option value="">— Selecciona —</option>
+                ${matchingAccounts.length ? matchingAccounts.map(a => `<option value="${a.id}" ${a.id===c.bankAccountId?'selected':''}>${ui.escape(a.name)} · saldo ${currency.format(a.balance, a.currency)}</option>`).join('') : `<option value="" disabled>Sin cuentas en ${c.currency}</option>`}
+              </select>
+              ${!matchingAccounts.length ? `<div class="field-hint" style="color:var(--danger);">No tenés cuentas en ${c.currency}. <a href="cuentas-bancarias.html">Crear una →</a></div>` : ''}
+            </div>
+          ` : '<div></div>'}
+          ${selectedMethod && selectedMethod.requiresReference ? `
+            <div class="field">
+              <label class="field-label">Referencia *</label>
+              <input class="input" value="${ui.escape(c.reference||'')}" oninput="creating.reference=this.value" placeholder="N° comprobante, hash, etc">
+            </div>
+          ` : `
+            <div class="field">
+              <label class="field-label">Referencia</label>
+              <input class="input" value="${ui.escape(c.reference||'')}" oninput="creating.reference=this.value">
+            </div>
+          `}
+          <div class="field" style="grid-column:1/-1;">
+            <label class="field-label">Notas</label>
+            <textarea class="textarea" oninput="creating.notes=this.value">${ui.escape(c.notes||'')}</textarea>
+          </div>
+        </div>
+      </div>
+
+      ${conversionInfo}
+
+      <div class="card" style="background:var(--surface-2);padding:16px;">
+        <div style="font-size:12px;color:var(--ink-3);">Al registrar:</div>
+        <ul style="margin:8px 0 0 20px;font-size:13px;color:var(--ink-2);line-height:1.8;">
+          <li>Se aplicará ${currency.format(c.amountInDocCurrency, c.docCurrency)} a la factura ${c.relatedDocCode}</li>
+          ${c.bankAccountId ? `<li>${c.direction==='OUT'?'Saldrá':'Entrará'} ${currency.format(c.amount, c.currency)} de la cuenta seleccionada</li>` : ''}
+          <li>Quedaría pendiente: ${currency.format(c.docRemaining - c.amountInDocCurrency, c.docCurrency)}</li>
+        </ul>
+      </div>
+    `
+  });
+}
+
+function updateAmount(val) {
+  creating.amount = parseFloat(val) || 0;
+  render();
+}
+
+function updateCurrency(ccy) {
+  creating.currency = ccy;
+  // Reset cuenta bancaria si cambió moneda
+  if (creating.bankAccountId) {
+    const a = db.getById(db.COLLECTIONS.bankAccounts, creating.bankAccountId);
+    if (!a || a.currency !== ccy) creating.bankAccountId = '';
+  }
+  render();
+}
+
+function updateMethod(mid) {
+  creating.paymentMethodId = mid;
+  const m = db.getById(db.COLLECTIONS.paymentMethods, mid);
+  creating.paymentMethodName = m?.name || '';
+  // Si no requiere banco, limpiar cuenta
+  if (m && !m.requiresBank) creating.bankAccountId = '';
+  render();
+}
+
+function cancelCreate() { creating = null; render(); }
+
+function savePayment() {
+  const c = creating;
+  if (!c.amount || c.amount <= 0) { ui.toast('Monto inválido', 'error'); return; }
+  if (!c.paymentMethodId) { ui.toast('Selecciona un método de pago', 'error'); return; }
+  const m = db.getById(db.COLLECTIONS.paymentMethods, c.paymentMethodId);
+  if (m.requiresBank && !c.bankAccountId) { ui.toast('Selecciona una cuenta bancaria', 'error'); return; }
+  if (m.requiresReference && !c.reference) { ui.toast('La referencia es obligatoria para este método', 'error'); return; }
+
+  // Validar saldo si pago saliente
+  if (c.direction === 'OUT' && c.bankAccountId) {
+    const a = db.getById(db.COLLECTIONS.bankAccounts, c.bankAccountId);
+    if (a.balance < c.amount) {
+      if (!confirm(`La cuenta tiene ${currency.format(a.balance, a.currency)} pero el pago es de ${currency.format(c.amount, c.currency)}. ¿Continuar de todos modos? (saldo quedaría negativo)`)) return;
+    }
+  }
+
+  // Validar que no exceda lo pendiente
+  if (c.amountInDocCurrency > c.docRemaining + 0.01) {
+    if (!confirm(`El monto excede lo pendiente (${currency.format(c.docRemaining, c.docCurrency)}). ¿Continuar?`)) return;
+  }
+
+  try {
+    payments.createPayment(c);
+    ui.toast(`${c.direction==='OUT'?'Pago':'Cobro'} registrado`, 'success');
+    creating = null;
+    render();
+  } catch (err) {
+    ui.toast(err.message, 'error');
+  }
+}
+
+render();
 </script>
-</body></html>
+</body>
+</html>

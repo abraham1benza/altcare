@@ -1,0 +1,298 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Cuentas Bancarias · altcare</title>
+<link rel="stylesheet" href="../assets/css/styles.css">
+</head>
+<body>
+<script src="../assets/js/db.js"></script>
+<script src="../assets/js/auth.js"></script>
+<script src="../assets/js/currency.js"></script>
+<script src="../assets/js/tax.js"></script>
+<script src="../assets/js/inventory.js"></script>
+<script src="../assets/js/formulas.js"></script>
+<script src="../assets/js/purchases.js"></script>
+<script src="../assets/js/sales.js"></script>
+<script src="../assets/js/payments.js"></script>
+<script src="../assets/js/ui.js"></script>
+<script>
+if (!auth.guard('cuentas-bancarias')) throw new Error('blocked');
+
+let view = 'list';        // list | detail
+let selectedId = null;
+
+function render() {
+  if (view === 'detail' && selectedId) return renderDetail();
+  return renderList();
+}
+
+function renderList() {
+  const accounts = db.getAll(db.COLLECTIONS.bankAccounts).filter(a => a.active !== false);
+
+  // Total consolidado en USD
+  const totalUSD = payments.totalBalanceUSD();
+
+  const cards = accounts.map(a => {
+    let usdEquivalent = a.balance;
+    if (a.currency === 'VES') {
+      const r = currency.getActiveRate();
+      usdEquivalent = r && r.value ? a.balance / r.value : 0;
+    }
+    return `
+      <div class="card" style="cursor:pointer;padding:20px;" onclick="openDetail('${a.id}')">
+        <div style="display:flex;justify-content:space-between;align-items:start;gap:8px;margin-bottom:12px;">
+          <div>
+            <div class="td-strong" style="font-size:15px;">${ui.escape(a.name)}</div>
+            <div class="text-muted" style="font-size:11px;margin-top:2px;">${ui.escape(a.bank||'')}${a.accountNumber?` · ····${a.accountNumber.slice(-4)}`:''}</div>
+          </div>
+          <span class="badge ${a.currency==='USD'?'badge-accent':a.currency==='EUR'?'badge-warning':'badge-plain'}">${a.currency}</span>
+        </div>
+        <div style="margin-bottom:12px;">
+          <div style="font-family:var(--font-display);font-size:30px;letter-spacing:-0.03em;line-height:1;${a.balance<0?'color:var(--danger);':''}">${currency.format(a.balance, a.currency)}</div>
+          ${a.currency !== 'USD' ? `<div class="text-muted" style="font-size:12px;margin-top:6px;">≈ $${usdEquivalent.toFixed(2)} USD</div>` : ''}
+        </div>
+        <div style="display:flex;justify-content:space-between;align-items:center;font-size:11px;">
+          <span class="text-muted">${a.type||'Corriente'}</span>
+          <span style="color:var(--accent-ink);">Ver detalle →</span>
+        </div>
+      </div>
+    `;
+  }).join('');
+
+  ui.renderLayout({
+    activeModule: 'cuentas-bancarias', pageEyebrow: 'Sistema', pageTitle: 'Cuentas Bancarias',
+    contentHtml: `
+      <div class="action-bar">
+        <div class="action-bar-left">
+          <h2 class="action-bar-title">Cuentas bancarias</h2>
+          <span class="action-bar-count">${accounts.length} cuenta${accounts.length!==1?'s':''} activas · Total consolidado ≈ $${totalUSD.toFixed(2)} USD</span>
+        </div>
+        <div class="action-bar-right">
+          <button class="btn btn-primary" onclick="newAccount()">${ui.icon('plus')} Nueva cuenta</button>
+        </div>
+      </div>
+
+      <p class="text-muted mb-24" style="max-width:680px;">
+        Cada cuenta bancaria lleva su propio saldo corriente. Al registrar pagos, el sistema actualiza automáticamente los saldos. Podés tener cuentas en distintas monedas.
+      </p>
+
+      ${accounts.length ? `<div class="grid grid-3 mb-24">${cards}</div>` : `
+        <div class="empty-state">
+          <div class="empty-state-icon">${ui.icon('currency')}</div>
+          <div class="empty-state-title">Sin cuentas bancarias</div>
+          <div class="empty-state-text">Registra tus cuentas bancarias (en Bs, USD, EUR) con saldo inicial. El sistema llevará el track automáticamente.</div>
+          <button class="btn btn-primary" onclick="newAccount()">${ui.icon('plus')} Crear primera cuenta</button>
+        </div>
+      `}
+    `
+  });
+}
+
+function renderDetail() {
+  const a = db.getById(db.COLLECTIONS.bankAccounts, selectedId);
+  if (!a) { backToList(); return; }
+  let moves = db.query(db.COLLECTIONS.bankMoves, m => m.accountId === a.id);
+  moves.sort((x,y) => (y.timestamp||'').localeCompare(x.timestamp||''));
+
+  // Stats
+  const credits = moves.filter(m => m.direction === 'IN').reduce((s,m)=>s+Math.abs(m.amount||0), 0);
+  const debits = moves.filter(m => m.direction === 'OUT').reduce((s,m)=>s+Math.abs(m.amount||0), 0);
+
+  const movesTable = moves.length ? `<table>
+    <thead><tr><th>Fecha</th><th>Tipo</th><th>Concepto</th><th>Referencia</th><th style="text-align:right;">Monto</th><th style="text-align:right;">Saldo</th></tr></thead>
+    <tbody>${moves.map(m => {
+      const sign = m.direction === 'IN' ? '+' : '−';
+      const color = m.direction === 'IN' ? 'var(--success)' : 'var(--danger)';
+      const typeLabel = ({'OPENING':'Saldo inicial','PAYMENT_OUT':'Pago a proveedor','PAYMENT_IN':'Cobro de cliente','DEPOSIT':'Depósito','WITHDRAWAL':'Retiro','TRANSFER_IN':'Transferencia recibida','TRANSFER_OUT':'Transferencia enviada','FEE':'Comisión','ADJUSTMENT':'Ajuste'}[m.type]) || m.type;
+      return `<tr>
+        <td><span class="text-muted" style="font-size:12px;">${ui.formatDate(m.date)}</span></td>
+        <td><span class="badge badge-plain" style="font-size:10px;">${typeLabel}</span></td>
+        <td><div class="td-strong" style="font-size:13px;">${ui.escape(m.counterpartyName||m.reference||'—')}</div>${m.counterpartyName && m.reference !== m.counterpartyName ? `<div class="text-muted" style="font-size:11px;">${ui.escape(m.reference||'')}</div>` : ''}</td>
+        <td><span class="text-muted" style="font-size:12px;">${ui.escape(m.reference||'—')}</span></td>
+        <td style="text-align:right;color:${color};font-weight:600;font-family:var(--font-mono);">${sign}${currency.format(Math.abs(m.amount||0), m.currency)}</td>
+        <td style="text-align:right;"><span class="td-mono td-strong">${currency.format(m.runningBalance||0, a.currency)}</span></td>
+      </tr>`;
+    }).join('')}</tbody></table>` : '<div class="empty-state"><div class="empty-state-title">Sin movimientos</div><div class="empty-state-text">Los pagos y cobros realizados desde esta cuenta aparecerán aquí.</div></div>';
+
+  ui.renderLayout({
+    activeModule: 'cuentas-bancarias', pageEyebrow: 'Cuenta bancaria', pageTitle: a.name,
+    contentHtml: `
+      <div class="action-bar">
+        <div class="action-bar-left"><button class="btn btn-ghost btn-sm" onclick="backToList()">← Volver</button></div>
+        <div class="action-bar-right">
+          <button class="btn btn-secondary" onclick="adjustBalance('${a.id}')">${ui.icon('edit')} Ajustar saldo</button>
+          <button class="btn btn-secondary" onclick="newManualMove('${a.id}')">${ui.icon('plus')} Movimiento manual</button>
+          <button class="btn btn-secondary" onclick="editAccount('${a.id}')">${ui.icon('edit')} Editar cuenta</button>
+        </div>
+      </div>
+
+      <div class="grid grid-4 mb-24">
+        <div class="kpi"><div class="kpi-label">Saldo actual</div><div class="kpi-value" style="color:${a.balance<0?'var(--danger)':'var(--accent-ink)'};">${currency.formatCompact(a.balance, a.currency)}</div><div class="kpi-value-sub">${a.currency}</div></div>
+        <div class="kpi"><div class="kpi-label">Saldo inicial</div><div class="kpi-value" style="font-size:22px;">${currency.formatCompact(a.openingBalance||0, a.currency)}</div></div>
+        <div class="kpi"><div class="kpi-label">Total ingresado</div><div class="kpi-value" style="color:var(--success);font-size:22px;">+${currency.formatCompact(credits, a.currency)}</div></div>
+        <div class="kpi"><div class="kpi-label">Total egresado</div><div class="kpi-value" style="color:var(--danger);font-size:22px;">−${currency.formatCompact(debits, a.currency)}</div></div>
+      </div>
+
+      <div class="card" style="padding:0;">
+        <div style="padding:14px 20px;border-bottom:1px solid var(--border);"><div class="card-title" style="font-size:15px;">Movimientos · Kardex bancario</div><div class="text-muted" style="font-size:12px;margin-top:2px;">${moves.length} movimientos</div></div>
+        ${movesTable}
+      </div>
+    `
+  });
+}
+
+function openDetail(id) { selectedId = id; view = 'detail'; render(); }
+function backToList() { view = 'list'; selectedId = null; render(); }
+
+// ====== CRUD CUENTA ======
+
+function newAccount() {
+  openForm({ currency: 'VES', type: 'Corriente', openingBalance: 0 });
+}
+
+function editAccount(id) {
+  const a = db.getById(db.COLLECTIONS.bankAccounts, id);
+  if (a) openForm(a);
+}
+
+function openForm(item) {
+  const isNew = !item.id;
+  ui.openModal({
+    title: isNew ? 'Nueva cuenta bancaria' : 'Editar cuenta',
+    body: `
+      <form id="acc-form" onsubmit="saveAccount(event, '${item.id || ''}')">
+        <div class="form-grid form-grid-2">
+          <div class="field"><label class="field-label">Nombre / Alias *</label><input class="input" name="name" required value="${ui.escape(item.name||'')}" placeholder="Ej: Banesco Bs principal"></div>
+          <div class="field"><label class="field-label">Banco</label><input class="input" name="bank" value="${ui.escape(item.bank||'')}" placeholder="Banesco, Mercantil, Zelle, Bitcoin..."></div>
+          <div class="field"><label class="field-label">Número de cuenta</label><input class="input" name="accountNumber" value="${ui.escape(item.accountNumber||'')}"></div>
+          <div class="field"><label class="field-label">Moneda *</label><select class="select" name="currency" required ${!isNew?'disabled':''}>
+            <option value="VES" ${item.currency==='VES'?'selected':''}>Bolívares (VES)</option>
+            <option value="USD" ${item.currency==='USD'?'selected':''}>Dólares (USD)</option>
+            <option value="EUR" ${item.currency==='EUR'?'selected':''}>Euros (EUR)</option>
+          </select>${!isNew?'<div class="field-hint">No se puede cambiar la moneda una vez creada</div>':''}</div>
+          <div class="field"><label class="field-label">Tipo</label><select class="select" name="type">
+            <option ${item.type==='Corriente'?'selected':''}>Corriente</option>
+            <option ${item.type==='Ahorro'?'selected':''}>Ahorro</option>
+            <option ${item.type==='Custodia'?'selected':''}>Custodia</option>
+            <option ${item.type==='Cripto'?'selected':''}>Cripto</option>
+            <option ${item.type==='Digital'?'selected':''}>Digital (Zelle/Wise)</option>
+            <option ${item.type==='Otro'?'selected':''}>Otro</option>
+          </select></div>
+          ${isNew ? `<div class="field"><label class="field-label">Saldo inicial</label><input class="input" type="number" step="0.01" name="openingBalance" value="${item.openingBalance||0}"><div class="field-hint">Saldo actual de la cuenta al momento de cargarla</div></div>` : ''}
+        </div>
+      </form>
+    `,
+    footer: `<button class="btn btn-secondary" onclick="ui.closeModal()">Cancelar</button><button class="btn btn-primary" onclick="document.getElementById('acc-form').requestSubmit()">${ui.icon('check')} Guardar</button>`
+  });
+}
+
+function saveAccount(e, id) {
+  e.preventDefault();
+  const data = ui.formData(e.target);
+  if (!data.name || !data.currency) { ui.toast('Nombre y moneda son obligatorios', 'error'); return; }
+  if (id) {
+    const a = db.getById(db.COLLECTIONS.bankAccounts, id);
+    Object.assign(a, { name: data.name, bank: data.bank, accountNumber: data.accountNumber, type: data.type });
+    db.save(db.COLLECTIONS.bankAccounts, a);
+    ui.toast('Cuenta actualizada', 'success');
+  } else {
+    const created = payments.createBankAccount({ ...data, openingBalance: data.openingBalance || 0 });
+    selectedId = created.id;
+    ui.toast('Cuenta creada', 'success');
+  }
+  ui.closeModal();
+  render();
+}
+
+// ====== AJUSTE DE SALDO ======
+
+function adjustBalance(id) {
+  const a = db.getById(db.COLLECTIONS.bankAccounts, id);
+  ui.openModal({
+    title: `Ajustar saldo de ${a.name}`,
+    subtitle: `Saldo actual: ${currency.format(a.balance, a.currency)}`,
+    body: `
+      <form id="adj-form" onsubmit="saveAdjust(event, '${id}')">
+        <div class="form-grid form-grid-2">
+          <div class="field"><label class="field-label">Saldo correcto *</label><input class="input" type="number" step="0.01" name="newBalance" required value="${a.balance}"></div>
+          <div class="field"><label class="field-label">Fecha</label><input class="input" type="date" name="date" value="${new Date().toISOString().slice(0,10)}"></div>
+          <div class="field" style="grid-column:1/-1;"><label class="field-label">Motivo *</label><input class="input" name="reason" required placeholder="Ej: Conciliación bancaria, intereses, comisión..."></div>
+        </div>
+      </form>
+    `,
+    footer: `<button class="btn btn-secondary" onclick="ui.closeModal()">Cancelar</button><button class="btn btn-primary" onclick="document.getElementById('adj-form').requestSubmit()">${ui.icon('check')} Aplicar</button>`
+  });
+}
+
+function saveAdjust(e, id) {
+  e.preventDefault();
+  const data = ui.formData(e.target);
+  const a = db.getById(db.COLLECTIONS.bankAccounts, id);
+  const newBal = parseFloat(data.newBalance);
+  const diff = newBal - a.balance;
+  if (Math.abs(diff) < 0.01) { ui.toast('Sin diferencia que ajustar', 'error'); return; }
+  payments.registerBankMove({
+    accountId: id,
+    type: diff > 0 ? 'DEPOSIT' : 'WITHDRAWAL',
+    amount: Math.abs(diff),
+    currency: a.currency,
+    date: data.date,
+    reference: data.reason
+  });
+  ui.closeModal();
+  ui.toast('Saldo ajustado', 'success');
+  render();
+}
+
+// ====== MOVIMIENTO MANUAL ======
+
+function newManualMove(id) {
+  const a = db.getById(db.COLLECTIONS.bankAccounts, id);
+  ui.openModal({
+    title: `Movimiento manual en ${a.name}`,
+    subtitle: 'Para depósitos, retiros, comisiones, transferencias entre cuentas',
+    body: `
+      <form id="mov-form" onsubmit="saveMove(event, '${id}')">
+        <div class="form-grid form-grid-2">
+          <div class="field"><label class="field-label">Tipo *</label><select class="select" name="type" required>
+            <option value="DEPOSIT">Depósito (+)</option>
+            <option value="WITHDRAWAL">Retiro (−)</option>
+            <option value="TRANSFER_IN">Transferencia recibida (+)</option>
+            <option value="TRANSFER_OUT">Transferencia enviada (−)</option>
+            <option value="FEE">Comisión bancaria (−)</option>
+          </select></div>
+          <div class="field"><label class="field-label">Monto *</label><input class="input" type="number" step="0.01" name="amount" required min="0.01"></div>
+          <div class="field"><label class="field-label">Fecha</label><input class="input" type="date" name="date" value="${new Date().toISOString().slice(0,10)}"></div>
+          <div class="field"><label class="field-label">Concepto / Contraparte</label><input class="input" name="counterpartyName" placeholder="Quien envía/recibe"></div>
+          <div class="field" style="grid-column:1/-1;"><label class="field-label">Referencia</label><input class="input" name="reference" placeholder="N° comprobante, descripción..."></div>
+        </div>
+      </form>
+    `,
+    footer: `<button class="btn btn-secondary" onclick="ui.closeModal()">Cancelar</button><button class="btn btn-primary" onclick="document.getElementById('mov-form').requestSubmit()">${ui.icon('check')} Registrar</button>`
+  });
+}
+
+function saveMove(e, id) {
+  e.preventDefault();
+  const data = ui.formData(e.target);
+  const a = db.getById(db.COLLECTIONS.bankAccounts, id);
+  payments.registerBankMove({
+    accountId: id,
+    type: data.type,
+    amount: parseFloat(data.amount),
+    currency: a.currency,
+    date: data.date,
+    reference: data.reference,
+    counterpartyName: data.counterpartyName
+  });
+  ui.closeModal();
+  ui.toast('Movimiento registrado', 'success');
+  render();
+}
+
+render();
+</script>
+</body>
+</html>
