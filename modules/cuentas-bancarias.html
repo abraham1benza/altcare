@@ -70,7 +70,7 @@ function renderList() {
           <span class="action-bar-count">${accounts.length} cuenta${accounts.length!==1?'s':''} activas · Total consolidado ≈ $${totalUSD.toFixed(2)} USD</span>
         </div>
         <div class="action-bar-right">
-          <button class="btn btn-primary" onclick="newAccount()">${ui.icon('plus')} Nueva cuenta</button>
+          <button class="btn btn-secondary" onclick="recalcBalances()" title="Recalcula los saldos desde los movimientos. Útil si hay diferencia.">${ui.icon('refresh')} Recalcular saldos</button>
         </div>
       </div>
 
@@ -83,9 +83,13 @@ function renderList() {
           <div class="empty-state-icon">${ui.icon('currency')}</div>
           <div class="empty-state-title">Sin cuentas bancarias</div>
           <div class="empty-state-text">Registra tus cuentas bancarias (en Bs, USD, EUR) con saldo inicial. El sistema llevará el track automáticamente.</div>
-          <button class="btn btn-primary" onclick="newAccount()">${ui.icon('plus')} Crear primera cuenta</button>
         </div>
       `}
+
+      <!-- Botón abajo -->
+      <div style="display:flex;justify-content:flex-end;gap:8px;padding:24px 0;border-top:1px solid var(--border);margin-top:24px;">
+        <button class="btn btn-primary" onclick="newAccount()">${ui.icon('plus')} Nueva cuenta</button>
+      </div>
     `
   });
 }
@@ -121,11 +125,6 @@ function renderDetail() {
     contentHtml: `
       <div class="action-bar">
         <div class="action-bar-left"><button class="btn btn-ghost btn-sm" onclick="backToList()">← Volver</button></div>
-        <div class="action-bar-right">
-          <button class="btn btn-secondary" onclick="adjustBalance('${a.id}')">${ui.icon('edit')} Ajustar saldo</button>
-          <button class="btn btn-secondary" onclick="newManualMove('${a.id}')">${ui.icon('plus')} Movimiento manual</button>
-          <button class="btn btn-secondary" onclick="editAccount('${a.id}')">${ui.icon('edit')} Editar cuenta</button>
-        </div>
       </div>
 
       <div class="grid grid-4 mb-24">
@@ -135,9 +134,16 @@ function renderDetail() {
         <div class="kpi"><div class="kpi-label">Total egresado</div><div class="kpi-value" style="color:var(--danger);font-size:22px;">−${currency.formatCompact(debits, a.currency)}</div></div>
       </div>
 
-      <div class="card" style="padding:0;">
+      <div class="card mb-24" style="padding:0;">
         <div style="padding:14px 20px;border-bottom:1px solid var(--border);"><div class="card-title" style="font-size:15px;">Movimientos · Kardex bancario</div><div class="text-muted" style="font-size:12px;margin-top:2px;">${moves.length} movimientos</div></div>
         ${movesTable}
+      </div>
+
+      <!-- Acciones abajo -->
+      <div style="display:flex;justify-content:flex-end;gap:8px;padding:24px 0;border-top:1px solid var(--border);margin-top:24px;flex-wrap:wrap;">
+        <button class="btn btn-secondary" onclick="editAccount('${a.id}')">${ui.icon('edit')} Editar cuenta</button>
+        <button class="btn btn-secondary" onclick="adjustBalance('${a.id}')">${ui.icon('edit')} Ajustar saldo</button>
+        <button class="btn btn-primary" onclick="newManualMove('${a.id}')">${ui.icon('plus')} Movimiento manual</button>
       </div>
     `
   });
@@ -290,6 +296,18 @@ function saveMove(e, id) {
   ui.closeModal();
   ui.toast('Movimiento registrado', 'success');
   render();
+}
+
+function recalcBalances() {
+  ui.confirm(
+    '¿Recalcular los saldos de todas las cuentas desde sus movimientos? Esto corrige diferencias por bugs anteriores. No elimina movimientos.',
+    () => {
+      const fixed = payments.recalcAllBalances();
+      ui.toast(fixed > 0 ? `${fixed} cuenta(s) corregida(s)` : 'Todos los saldos están correctos', 'success');
+      render();
+    },
+    { confirmLabel: 'Recalcular' }
+  );
 }
 
 render();
