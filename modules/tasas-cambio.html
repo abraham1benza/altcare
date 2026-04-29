@@ -15,41 +15,60 @@
 <script>
 if (!auth.guard('tasas-cambio')) throw new Error('blocked');
 
+let isFetching = false;
+
 function render() {
   const rates = currency.getRates();
+  const bcv_usd = currency.getRate('BCV_USD');
+  const p2p_usd = currency.getRate('BINANCE');
+  const bcv_eur = currency.getRate('BCV_EUR');
+  const p2p_eur = currency.getRate('P2P_EUR');
+  const custom = currency.getRate('CUSTOM');
 
-  const cards = rates.map(r => {
+  // Última actualización (la más reciente entre todas)
+  let lastUpdate = null;
+  let lastSource = null;
+  rates.forEach(r => {
+    if (r.updatedAt && (!lastUpdate || r.updatedAt > lastUpdate)) {
+      lastUpdate = r.updatedAt;
+      lastSource = r.source;
+    }
+  });
+
+  // Card de cada tasa
+  const renderRateCard = (r, color) => {
+    if (!r) return '';
     const isActive = r.active;
+    const fromAuto = r.source === 'auto';
     return `
-      <div class="card" style="${isActive ? 'border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft);' : ''}">
-        <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:16px;">
+      <div class="card" style="${isActive ? 'border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft);' : ''};padding:18px;">
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:12px;">
           <div>
-            <div style="font-size:11px;letter-spacing:0.14em;text-transform:uppercase;color:var(--ink-3);font-weight:600;">${r.type.replace('_',' ')}</div>
-            <div class="card-title" style="margin-top:4px;">${r.label}</div>
+            <div style="font-size:10px;letter-spacing:0.14em;text-transform:uppercase;color:${color};font-weight:600;">${r.label}</div>
+            <div class="text-muted" style="font-size:11px;margin-top:2px;">${fromAuto ? '🌐 Automática' : r.source === 'manual' ? '✋ Manual' : '— Sin actualizar'}</div>
           </div>
-          ${isActive ? '<span class="badge badge-accent">Activa</span>' : ''}
+          ${isActive ? '<span class="badge badge-accent" style="font-size:10px;">Activa</span>' : ''}
         </div>
-
-        <div style="margin-bottom:16px;">
-          <div style="font-family:var(--font-display);font-size:36px;font-weight:400;letter-spacing:-0.03em;line-height:1;">
-            ${r.value > 0 ? r.value.toLocaleString('es-VE', {minimumFractionDigits:2, maximumFractionDigits:4}) : '—'}
-            <span style="font-size:14px;color:var(--ink-3);font-family:var(--font-ui);">Bs / ${r.symbol}</span>
-          </div>
-          <div class="text-muted" style="font-size:12px;margin-top:6px;">Actualizada ${ui.formatDate(r.updatedDate)}</div>
+        <div style="font-family:var(--font-display);font-size:28px;font-weight:400;letter-spacing:-0.03em;line-height:1;color:${r.value > 0 ? color : 'var(--ink-3)'};">
+          ${r.value > 0 ? r.value.toLocaleString('es-VE', {minimumFractionDigits:2, maximumFractionDigits:4}) : '—'}
         </div>
-
-        <div style="display:flex;gap:8px;">
-          <button class="btn btn-secondary btn-sm" onclick="editRate('${r.type}')">${ui.icon('edit')} Actualizar</button>
-          ${!isActive ? `<button class="btn btn-primary btn-sm" onclick="activate('${r.type}')">${ui.icon('check')} Activar</button>` : ''}
+        <div class="text-muted" style="font-size:11px;margin-top:4px;">Bs por ${r.symbol}1</div>
+        <div class="text-muted" style="font-size:11px;margin-top:8px;">
+          ${r.updatedAt ? currency.timeSince(r.updatedAt) : 'Nunca actualizada'}
+        </div>
+        <div style="display:flex;gap:6px;margin-top:12px;">
+          <button class="btn btn-secondary btn-sm" onclick="editRate('${r.type}')" style="flex:1;">Editar manual</button>
+          ${!isActive ? `<button class="btn btn-primary btn-sm" onclick="activate('${r.type}')" style="flex:1;">Activar</button>` : ''}
         </div>
       </div>
     `;
-  }).join('');
+  };
 
   const converterHtml = `
     <div class="card">
       <div class="card-header">
         <div class="card-title">Convertidor rápido</div>
+        <div class="text-muted" style="font-size:12px;margin-top:2px;">Probá la conversión con cualquier monto y tasa</div>
       </div>
       <div class="form-grid form-grid-3">
         <div class="field">
@@ -67,7 +86,7 @@ function render() {
         <div class="field">
           <label class="field-label">Tasa</label>
           <select class="select" id="conv-rate" onchange="convert()">
-            ${currency.getRates().map(r => `<option value="${r.type}" ${r.active?'selected':''}>${r.label}</option>`).join('')}
+            ${rates.filter(r => r.value > 0).map(r => `<option value="${r.type}" ${r.active?'selected':''}>${r.label} (${r.value.toFixed(2)})</option>`).join('')}
           </select>
         </div>
       </div>
@@ -79,7 +98,24 @@ function render() {
     <div class="action-bar">
       <div class="action-bar-left">
         <h2 class="action-bar-title">Multi-moneda</h2>
-        <span class="action-bar-count">${rates.length} tasas configuradas</span>
+        <span class="action-bar-count">
+          ${rates.length} tasas configuradas ·
+          ${lastUpdate ? `Última actualización ${currency.timeSince(lastUpdate)} (${lastSource === 'auto' ? '🌐 automática' : '✋ manual'})` : 'Sin actualizar todavía'}
+        </span>
+      </div>
+    </div>
+
+    <!-- Banner de sincronización -->
+    <div class="card mb-24" style="background:linear-gradient(135deg, #eff6ff 0%, #e0f2fe 100%);border-color:#bfdbfe;padding:20px;">
+      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:16px;">
+        <div>
+          <div style="font-size:11px;letter-spacing:0.14em;text-transform:uppercase;color:#1e3a8a;font-weight:600;margin-bottom:4px;">Sincronización en línea</div>
+          <div style="font-size:15px;color:#1e3a8a;font-weight:500;">Actualizar tasas BCV y paralelo desde dolarapi.com</div>
+          <div class="text-muted" style="font-size:12px;margin-top:4px;">Datos públicos del Banco Central de Venezuela y mercado paralelo. No requiere registro.</div>
+        </div>
+        <button class="btn btn-primary" onclick="fetchLive()" ${isFetching?'disabled':''} id="btn-fetch">
+          ${isFetching ? '⏳ Actualizando…' : ui.icon('refresh') + ' Actualizar ahora'}
+        </button>
       </div>
     </div>
 
@@ -87,7 +123,22 @@ function render() {
       Cada transacción del sistema se guardará con el valor en bolívares y en moneda extranjera, congelando la tasa usada en ese momento. Esto garantiza que los reportes históricos no cambien aunque las tasas se muevan después.
     </p>
 
-    <div class="grid grid-2 mb-24">${cards}</div>
+    <div class="divider-section"><span class="section-title" style="margin:0;">Dólar (USD)</span></div>
+    <div class="grid grid-2 mb-24">
+      ${renderRateCard(bcv_usd, '#1e3a8a')}
+      ${renderRateCard(p2p_usd, '#b8860b')}
+    </div>
+
+    <div class="divider-section"><span class="section-title" style="margin:0;">Euro (EUR)</span></div>
+    <div class="grid grid-2 mb-24">
+      ${renderRateCard(bcv_eur, '#1e3a8a')}
+      ${renderRateCard(p2p_eur, '#b8860b')}
+    </div>
+
+    <div class="divider-section"><span class="section-title" style="margin:0;">Personalizada</span></div>
+    <div class="grid grid-2 mb-24">
+      ${renderRateCard(custom, '#5b7a5a')}
+    </div>
 
     ${converterHtml}
   `;
@@ -102,10 +153,41 @@ function render() {
   setTimeout(convert, 50);
 }
 
+// ====== ACTUALIZACIÓN AUTOMÁTICA ======
+
+async function fetchLive() {
+  if (isFetching) return;
+  isFetching = true;
+  // Re-render para mostrar el botón loading
+  const btn = document.getElementById('btn-fetch');
+  if (btn) { btn.disabled = true; btn.innerHTML = '⏳ Actualizando…'; }
+
+  try {
+    const result = await currency.fetchLiveRates();
+    if (result.ok) {
+      const updatedNames = result.updated.map(u => {
+        const labels = { BCV_USD: 'BCV USD', BINANCE: 'P2P USD', BCV_EUR: 'BCV EUR', P2P_EUR: 'P2P EUR' };
+        return labels[u.type] || u.type;
+      }).join(', ');
+      ui.toast(`Tasas actualizadas: ${updatedNames}`, 'success', 4000);
+    } else {
+      const errMsg = result.errors.map(e => e.error).join(' · ');
+      ui.toast('No se pudieron obtener las tasas: ' + errMsg, 'error', 5000);
+    }
+  } catch (e) {
+    ui.toast('Error al conectar con dolarapi.com: ' + e.message, 'error', 5000);
+  }
+
+  isFetching = false;
+  render();
+}
+
+// ====== EDICIÓN MANUAL ======
+
 function editRate(type) {
   const r = currency.getRate(type);
   ui.openModal({
-    title: 'Actualizar ' + r.label,
+    title: 'Editar ' + r.label + ' (manual)',
     subtitle: 'Ingresa el valor en bolívares por cada ' + r.symbol + '1',
     body: `
       <form id="rate-form" onsubmit="saveRate(event, '${type}')">
@@ -117,6 +199,11 @@ function editRate(type) {
         <div class="checkbox-row" style="margin-top:16px;">
           <input type="checkbox" id="set-active" ${r.active?'checked':''}>
           <label for="set-active" style="font-size:13px;">Marcar como tasa activa por defecto</label>
+        </div>
+        <div class="card mt-24" style="padding:12px 14px;background:var(--accent-soft);border-color:#cdd9c8;">
+          <div style="font-size:12px;color:var(--accent-ink);">
+            💡 También podés actualizarla automáticamente desde dolarapi.com con el botón "Actualizar ahora" arriba.
+          </div>
         </div>
       </form>
     `,
@@ -133,10 +220,10 @@ function saveRate(e, type) {
   const value = parseFloat(form.value.value) || 0;
   const setActive = document.getElementById('set-active').checked;
   if (value <= 0) { ui.toast('El valor debe ser mayor a cero', 'error'); return; }
-  currency.updateRate(type, value);
+  currency.updateRate(type, value, 'manual');
   if (setActive) currency.setActiveRate(type);
   ui.closeModal();
-  ui.toast('Tasa actualizada', 'success');
+  ui.toast('Tasa actualizada manualmente', 'success');
   render();
 }
 
@@ -145,6 +232,8 @@ function activate(type) {
   ui.toast('Tasa activa cambiada', 'success');
   render();
 }
+
+// ====== CONVERTIDOR ======
 
 function convert() {
   const amount = parseFloat(document.getElementById('conv-amount').value) || 0;
@@ -160,6 +249,7 @@ function convert() {
 
   const c = currency.convert(amount, from, rateType);
   const foreignSym = r.symbol;
+  const foreignCcy = r.type.includes('EUR') ? 'EUR' : 'USD';
 
   result.innerHTML = `
     <div style="display:grid;grid-template-columns:1fr auto 1fr;gap:24px;align-items:center;">
@@ -172,7 +262,7 @@ function convert() {
       </div>
       <div style="color:var(--ink-3);font-size:20px;">→</div>
       <div>
-        <div style="font-size:11px;letter-spacing:0.14em;text-transform:uppercase;color:var(--ink-3);font-weight:600;margin-bottom:6px;">${from === 'VES' ? r.type.split('_')[1] || 'USD' : 'VES'}</div>
+        <div style="font-size:11px;letter-spacing:0.14em;text-transform:uppercase;color:var(--ink-3);font-weight:600;margin-bottom:6px;">${from === 'VES' ? foreignCcy : 'VES'}</div>
         <div style="font-family:var(--font-display);font-size:28px;letter-spacing:-0.02em;color:var(--accent-ink);">
           ${(from === 'VES' ? c.foreign : c.ves).toLocaleString('es-VE', {minimumFractionDigits:2, maximumFractionDigits:4})}
           <span style="font-size:13px;color:var(--ink-3);font-family:var(--font-ui);">${from === 'VES' ? foreignSym : 'Bs'}</span>
@@ -185,7 +275,17 @@ function convert() {
   `;
 }
 
-render();
+// Auto-refresh al cargar si las tasas están vencidas (>6h)
+(async function init() {
+  render();
+  if (currency.needsRefresh()) {
+    // Esperar un poquito para que el render se termine de ver
+    setTimeout(async () => {
+      console.log('[tasas] Tasas vencidas, refrescando automáticamente...');
+      await fetchLive();
+    }, 500);
+  }
+})();
 </script>
 </body>
 </html>
