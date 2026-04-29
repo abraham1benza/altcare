@@ -244,12 +244,19 @@ const sales = {
   applyPayment(docId, paymentId, amountInDocCurrency) {
     const doc = db.getById(db.COLLECTIONS.salesOrders, docId);
     if (!doc) throw new Error('Documento no encontrado');
-    doc.paidAmount = (doc.paidAmount || 0) + parseFloat(amountInDocCurrency);
+    const amount = parseFloat(amountInDocCurrency) || 0;
+    if (amount <= 0) throw new Error('Monto del pago debe ser positivo');
+    doc.paidAmount = Math.round(((doc.paidAmount || 0) + amount) * 100) / 100;
     doc.payments = doc.payments || [];
     if (!doc.payments.includes(paymentId)) doc.payments.push(paymentId);
     doc.paidPercent = doc.total > 0 ? (doc.paidAmount / doc.total) * 100 : 0;
-    if (doc.paidAmount >= doc.total - 0.01) doc.status = 'PAID';
-    else if (doc.paidAmount > 0) doc.status = 'PARTIAL';
+    // Estado: PAID solo si pagado >= total con tolerancia mínima
+    const remaining = Math.round((doc.total - doc.paidAmount) * 100) / 100;
+    if (remaining <= 0.01) {
+      doc.status = 'PAID';
+    } else if (doc.paidAmount > 0) {
+      doc.status = 'PARTIAL';
+    }
     return db.save(db.COLLECTIONS.salesOrders, doc);
   },
 

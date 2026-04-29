@@ -266,12 +266,18 @@ const purchases = {
   applyPaymentToInvoice(invoiceId, paymentId, amountInInvoiceCurrency) {
     const inv = db.getById(db.COLLECTIONS.supplierInvoices, invoiceId);
     if (!inv) throw new Error('Factura no encontrada');
-    inv.paidAmount = (inv.paidAmount || 0) + parseFloat(amountInInvoiceCurrency);
+    const amount = parseFloat(amountInInvoiceCurrency) || 0;
+    if (amount <= 0) throw new Error('Monto del pago debe ser positivo');
+    inv.paidAmount = Math.round(((inv.paidAmount || 0) + amount) * 100) / 100;
     inv.payments = inv.payments || [];
     if (!inv.payments.includes(paymentId)) inv.payments.push(paymentId);
     inv.paidPercent = inv.totalToPay > 0 ? (inv.paidAmount / inv.totalToPay) * 100 : 0;
-    if (inv.paidAmount >= inv.totalToPay - 0.01) inv.status = 'PAID';
-    else if (inv.paidAmount > 0) inv.status = 'PARTIAL';
+    const remaining = Math.round((inv.totalToPay - inv.paidAmount) * 100) / 100;
+    if (remaining <= 0.01) {
+      inv.status = 'PAID';
+    } else if (inv.paidAmount > 0) {
+      inv.status = 'PARTIAL';
+    }
     return db.save(db.COLLECTIONS.supplierInvoices, inv);
   }
 };

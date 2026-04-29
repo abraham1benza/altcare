@@ -195,5 +195,54 @@ const payments = {
       }
     });
     return fixed;
+  },
+
+  /**
+   * Repara facturas (de venta y compra) cuyo estado no coincide con el pagado real.
+   * Recalcula paidAmount sumando los pagos y ajusta status.
+   * Devuelve {salesFixed, purchasesFixed}.
+   */
+  recalcAllInvoiceStatuses() {
+    let salesFixed = 0, purchasesFixed = 0;
+
+    // Facturas de venta (salesOrders con type=FACTURA)
+    db.getAll(db.COLLECTIONS.salesOrders).filter(d => d.type === 'FACTURA').forEach(doc => {
+      if (doc.cancelled) return;
+      const pays = db.query(db.COLLECTIONS.payments, p => p.direction === 'IN' && p.relatedDocId === doc.id);
+      const realPaid = Math.round(pays.reduce((s,p) => s + (parseFloat(p.amountInDocCurrency)||0), 0) * 100) / 100;
+      const realRemaining = Math.round((doc.total - realPaid) * 100) / 100;
+      let newStatus;
+      if (realRemaining <= 0.01) newStatus = 'PAID';
+      else if (realPaid > 0) newStatus = 'PARTIAL';
+      else newStatus = 'FACTURA';
+      if (Math.abs((doc.paidAmount||0) - realPaid) > 0.01 || doc.status !== newStatus) {
+        doc.paidAmount = realPaid;
+        doc.paidPercent = doc.total > 0 ? (realPaid / doc.total) * 100 : 0;
+        doc.status = newStatus;
+        db.save(db.COLLECTIONS.salesOrders, doc);
+        salesFixed++;
+      }
+    });
+
+    // Facturas de compra
+    db.getAll(db.COLLECTIONS.supplierInvoices).forEach(inv => {
+      if (inv.status === 'CANCELLED') return;
+      const pays = db.query(db.COLLECTIONS.payments, p => p.direction === 'OUT' && p.relatedDocId === inv.id);
+      const realPaid = Math.round(pays.reduce((s,p) => s + (parseFloat(p.amountInDocCurrency)||0), 0) * 100) / 100;
+      const realRemaining = Math.round((inv.totalToPay - realPaid) * 100) / 100;
+      let newStatus;
+      if (realRemaining <= 0.01) newStatus = 'PAID';
+      else if (realPaid > 0) newStatus = 'PARTIAL';
+      else newStatus = 'PENDING';
+      if (Math.abs((inv.paidAmount||0) - realPaid) > 0.01 || inv.status !== newStatus) {
+        inv.paidAmount = realPaid;
+        inv.paidPercent = inv.totalToPay > 0 ? (realPaid / inv.totalToPay) * 100 : 0;
+        inv.status = newStatus;
+        db.save(db.COLLECTIONS.supplierInvoices, inv);
+        purchasesFixed++;
+      }
+    });
+
+    return { salesFixed, purchasesFixed };
   }
 };
