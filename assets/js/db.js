@@ -233,10 +233,21 @@ db.COLLECTIONS = COLLECTIONS;
   // Tasas iniciales (vacías, el usuario las llena)
   if (db.getAll(COLLECTIONS.rates).length === 0) {
     const today = new Date().toISOString().slice(0,10);
-    db.save(COLLECTIONS.rates, { id: 'rate_BCV_USD', type: 'BCV_USD', label: 'BCV USD', symbol: '$', value: 0, updatedDate: today, active: true });
-    db.save(COLLECTIONS.rates, { id: 'rate_BCV_EUR', type: 'BCV_EUR', label: 'BCV EUR', symbol: '€', value: 0, updatedDate: today, active: false });
-    db.save(COLLECTIONS.rates, { id: 'rate_BINANCE', type: 'BINANCE', label: 'Binance USD', symbol: '$', value: 0, updatedDate: today, active: false });
-    db.save(COLLECTIONS.rates, { id: 'rate_CUSTOM', type: 'CUSTOM', label: 'Tasa Personalizada', symbol: '$', value: 0, updatedDate: today, active: false });
+    db.save(COLLECTIONS.rates, { id: 'rate_BCV_USD', type: 'BCV_USD', label: 'BCV USD',  symbol: '$', value: 0, updatedDate: today, source: null, active: true });
+    db.save(COLLECTIONS.rates, { id: 'rate_BCV_EUR', type: 'BCV_EUR', label: 'BCV EUR',  symbol: '€', value: 0, updatedDate: today, source: null, active: false });
+    db.save(COLLECTIONS.rates, { id: 'rate_BINANCE', type: 'BINANCE', label: 'P2P USD',  symbol: '$', value: 0, updatedDate: today, source: null, active: false });
+    db.save(COLLECTIONS.rates, { id: 'rate_P2P_EUR', type: 'P2P_EUR', label: 'P2P EUR',  symbol: '€', value: 0, updatedDate: today, source: null, active: false });
+    db.save(COLLECTIONS.rates, { id: 'rate_CUSTOM',  type: 'CUSTOM',  label: 'Personalizada', symbol: '$', value: 0, updatedDate: today, source: null, active: false });
+  } else {
+    // Migración: asegurar que P2P_EUR existe y BINANCE tenga el label nuevo
+    if (!db.getAll(COLLECTIONS.rates).find(r => r.type === 'P2P_EUR')) {
+      db.save(COLLECTIONS.rates, { id: 'rate_P2P_EUR', type: 'P2P_EUR', label: 'P2P EUR', symbol: '€', value: 0, updatedDate: new Date().toISOString().slice(0,10), source: null, active: false });
+    }
+    const binance = db.getAll(COLLECTIONS.rates).find(r => r.type === 'BINANCE');
+    if (binance && binance.label === 'Binance USD') {
+      binance.label = 'P2P USD';
+      db.save(COLLECTIONS.rates, binance);
+    }
   }
   // Usuario admin por defecto
   if (db.getAll(COLLECTIONS.users).length === 0) {
