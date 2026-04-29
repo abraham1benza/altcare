@@ -55,6 +55,9 @@
 <script src="assets/js/tax.js"></script>
 <script src="assets/js/inventory.js"></script>
 <script src="assets/js/formulas.js"></script>
+<script src="assets/js/purchases.js"></script>
+<script src="assets/js/sales.js"></script>
+<script src="assets/js/payments.js"></script>
 <script src="assets/js/ui.js"></script>
 <script>
 (function() {
@@ -79,96 +82,198 @@
 function renderDashboard() {
   document.getElementById('login-view')?.classList.add('hidden');
 
-  // KPIs base
-  const rmCount = db.getAll(db.COLLECTIONS.rawMaterials).length;
-  const formulaCount = db.getAll(db.COLLECTIONS.formulas).length;
+  // === DATOS ===
+  const cfg = db.getById(db.COLLECTIONS.config, 'main');
+  const activeRate = currency.getActiveRate();
+  const today = new Date().toISOString().slice(0,10);
+
+  // Producción
   const ofs = db.getAll(db.COLLECTIONS.productionOrders);
   const ofsInProcess = ofs.filter(o => o.status === 'IN_PROCESS').length;
   const ofsPlanned = ofs.filter(o => o.status === 'PLANNED').length;
   const fgLots = db.getAll(db.COLLECTIONS.finishedGoods).filter(l => l.balance > 0);
   const fgQuarantine = db.getAll(db.COLLECTIONS.finishedGoods).filter(l => l.status === 'CUARENTENA' && !l.qcTestId).length;
-  const activeRate = currency.getActiveRate();
-  const cfg = db.getById(db.COLLECTIONS.config, 'main');
 
-  // Stock bajo
+  // Inventario
   const lowStockCount = db.getAll(db.COLLECTIONS.rawMaterials).filter(rm => {
     const min = rm.minStock || 0;
     return min > 0 && inventory.getStockForRM(rm.id) < min;
   }).length;
-
-  // Vencimientos
   const expiring = inventory.getExpiringLots();
   const expSoon = expiring.mp.length + expiring.fg.length;
 
-  // Valor inventario
-  const totalRMValue = db.getAll(db.COLLECTIONS.rmLots).filter(l => l.balance > 0).reduce((s, l) => {
+  // === COMERCIAL FASE 3 ===
+
+  // Cuentas por pagar (facturas proveedor pendientes)
+  const cxpPending = db.getAll(db.COLLECTIONS.supplierInvoices)
+    .filter(i => i.status !== 'CANCELLED' && (i.totalToPay - (i.paidAmount||0)) > 0.01);
+  const cxpOverdue = cxpPending.filter(i => i.dueDate && i.dueDate < today);
+
+  // Cuentas por cobrar (facturas venta pendientes)
+  const cxcPending = db.getAll(db.COLLECTIONS.salesOrders)
+    .filter(d => !d.cancelled && d.type === 'FACTURA' && (d.total - (d.paidAmount||0)) > 0.01);
+  const cxcOverdue = cxcPending.filter(d => d.dueDate && d.dueDate < today);
+
+  // Totales por moneda
+  const cxpByCcy = { VES: 0, USD: 0, EUR: 0 };
+  cxpPending.forEach(i => { cxpByCcy[i.currency] = (cxpByCcy[i.currency]||0) + (i.totalToPay - (i.paidAmount||0)); });
+  const cxcByCcy = { VES: 0, USD: 0, EUR: 0 };
+  cxcPending.forEach(d => { cxcByCcy[d.currency] = (cxcByCcy[d.currency]||0) + (d.total - (d.paidAmount||0)); });
+  const bankByCcy = { VES: 0, USD: 0, EUR: 0 };
+  db.getAll(db.COLLECTIONS.bankAccounts).filter(a => a.active !== false).forEach(a => {
+    bankByCcy[a.currency] = (bankByCcy[a.currency]||0) + (a.balance||0);
+  });
+
+  // OCs sin facturar (listas para crear factura)
+  const ocsToInvoice = db.getAll(db.COLLECTIONS.purchaseOrders)
+    .filter(p => (p.status === 'RECEIVED' || p.status === 'PARTIAL') && !p.invoiceId);
+
+  // Facturas sin lotes asignados
+  const invoicesNoLots = db.getAll(db.COLLECTIONS.salesOrders)
+    .filter(d => d.type === 'FACTURA' && !d.cancelled && !d.lotsAssigned);
+
+  // Pedidos abiertos
+  const openOrders = db.getAll(db.COLLECTIONS.salesOrders).filter(d => d.type === 'PEDIDO' && !d.cancelled);
+
+  // Valor inventario en USD
+  const totalRMValueUSD = db.getAll(db.COLLECTIONS.rmLots).filter(l => l.balance > 0).reduce((s, l) => {
     let usd = (l.balance||0) * (l.unitCost||0);
     if (l.costCurrency === 'VES') {
-      const r = currency.getActiveRate();
-      usd = r && r.value ? usd / r.value : 0;
+      usd = activeRate?.value ? usd / activeRate.value : 0;
     }
     return s + usd;
   }, 0);
-  const totalFGValue = fgLots.reduce((s,l) => s + ((l.balance||0) * (l.unitCost||0)), 0);
+  const totalFGValueUSD = fgLots.reduce((s,l) => s + ((l.balance||0) * (l.unitCost||0)), 0);
 
-  // Alertas
+  // === HELPER PARA KPIs MULTI-MONEDA ===
+  const renderMultiKPI = (byCcy, color) => {
+    const parts = [];
+    if (byCcy.VES > 0.01) parts.push(currency.format(byCcy.VES, 'VES'));
+    if (byCcy.USD > 0.01) parts.push(currency.format(byCcy.USD, 'USD'));
+    if (byCcy.EUR > 0.01) parts.push(currency.format(byCcy.EUR, 'EUR'));
+    if (!parts.length) return `<div class="kpi-value" style="color:${color};font-size:24px;">0,00</div>`;
+    if (parts.length === 1) return `<div class="kpi-value" style="color:${color};font-size:22px;">${parts[0]}</div>`;
+    return `<div style="display:flex;flex-direction:column;gap:2px;margin-top:4px;">${parts.map(p => `<div style="font-family:var(--font-display);font-size:15px;letter-spacing:-0.02em;color:${color};line-height:1.2;">${p}</div>`).join('')}</div>`;
+  };
+
+  // === ALERTAS ===
   const alerts = [];
-  if (!cfg?.companyName) alerts.push({ type: 'warning', text: 'Configura los datos fiscales de tu empresa', link: 'modules/configuracion.html' });
-  if (!activeRate || !activeRate.value) alerts.push({ type: 'warning', text: 'Aún no hay una tasa de cambio activa', link: 'modules/tasas-cambio.html' });
-  if (db.getAll(db.COLLECTIONS.users).length === 1) alerts.push({ type: 'warning', text: 'Solo existe el usuario admin. Crea cuentas para tu equipo', link: 'modules/usuarios.html' });
-  if (fgQuarantine > 0) alerts.push({ type: 'info', text: `${fgQuarantine} lote(s) de PT esperando control de calidad`, link: 'modules/calidad.html' });
-  if (expSoon > 0) alerts.push({ type: 'warning', text: `${expSoon} lote(s) próximos a vencer (en menos de ${cfg?.expiryAlertDays||60} días)`, link: 'modules/almacen.html' });
-  if (lowStockCount > 0) alerts.push({ type: 'warning', text: `${lowStockCount} materia(s) prima(s) con stock bajo`, link: 'modules/materias-primas.html' });
+  if (!cfg?.companyName) alerts.push({ severity: 'warning', text: 'Configura los datos fiscales de tu empresa', link: 'modules/configuracion.html' });
+  if (!activeRate || !activeRate.value) alerts.push({ severity: 'warning', text: 'Aún no hay una tasa de cambio activa', link: 'modules/tasas-cambio.html' });
+  if (db.getAll(db.COLLECTIONS.users).length === 1) alerts.push({ severity: 'info', text: 'Solo existe el usuario admin. Crea cuentas para tu equipo', link: 'modules/usuarios.html' });
+  if (cxcOverdue.length > 0) alerts.push({ severity: 'danger', text: `${cxcOverdue.length} factura(s) de venta vencidas sin cobrar`, link: 'modules/pagos.html' });
+  if (cxpOverdue.length > 0) alerts.push({ severity: 'danger', text: `${cxpOverdue.length} factura(s) de compra vencidas sin pagar`, link: 'modules/pagos.html' });
+  if (invoicesNoLots.length > 0) alerts.push({ severity: 'warning', text: `${invoicesNoLots.length} factura(s) de venta sin lotes asignados (inventario no descontado)`, link: 'modules/ventas.html' });
+  if (ocsToInvoice.length > 0) alerts.push({ severity: 'info', text: `${ocsToInvoice.length} orden(es) de compra recibidas sin factura`, link: 'modules/compras.html' });
+  if (fgQuarantine > 0) alerts.push({ severity: 'info', text: `${fgQuarantine} lote(s) de PT esperando control de calidad`, link: 'modules/calidad.html' });
+  if (expSoon > 0) alerts.push({ severity: 'warning', text: `${expSoon} lote(s) próximos a vencer (en menos de ${cfg?.expiryAlertDays||60} días)`, link: 'modules/almacen.html' });
+  if (lowStockCount > 0) alerts.push({ severity: 'warning', text: `${lowStockCount} materia(s) prima(s) con stock bajo`, link: 'modules/materias-primas.html' });
+
+  const sevColor = { danger: 'var(--danger)', warning: 'var(--warning)', info: 'var(--accent-ink)' };
+  const sevBg = { danger: 'var(--danger-soft)', warning: 'var(--warning-soft)', info: 'var(--accent-soft)' };
+  const sevBorder = { danger: '#e0b8b8', warning: '#e6d4a8', info: '#cdd9c8' };
+
+  // Agrupar alertas por severidad
+  const alertsByLevel = { danger: alerts.filter(a => a.severity==='danger'), warning: alerts.filter(a => a.severity==='warning'), info: alerts.filter(a => a.severity==='info') };
 
   const alertsHtml = alerts.length ? `
-    <div class="card" style="background:var(--warning-soft);border-color:#e6d4a8;margin-bottom:24px;">
-      <div class="section-title" style="color:var(--warning);margin-bottom:8px;">Atención requerida</div>
-      ${alerts.map(a => `
-        <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 0;border-bottom:1px solid rgba(184,134,11,0.15);">
-          <span style="font-size:13.5px;color:var(--ink-2);">${a.text}</span>
-          <a href="${a.link}" class="btn btn-sm btn-secondary">Ir →</a>
-        </div>
-      `).join('')}
-    </div>
+    ${['danger','warning','info'].filter(lvl => alertsByLevel[lvl].length).map(lvl => `
+      <div class="card" style="background:${sevBg[lvl]};border-color:${sevBorder[lvl]};margin-bottom:12px;padding:0;">
+        <div style="padding:10px 18px;border-bottom:1px solid ${sevBorder[lvl]};font-size:11px;letter-spacing:0.12em;text-transform:uppercase;font-weight:600;color:${sevColor[lvl]};">${lvl==='danger'?'Urgente':lvl==='warning'?'Atención':'Información'}</div>
+        ${alertsByLevel[lvl].map(a => `
+          <div style="display:flex;align-items:center;justify-content:space-between;padding:10px 18px;border-bottom:1px solid ${sevBorder[lvl]};gap:12px;">
+            <span style="font-size:13.5px;color:var(--ink-2);">${a.text}</span>
+            <a href="${a.link}" class="btn btn-sm btn-secondary" style="white-space:nowrap;">Ir →</a>
+          </div>
+        `).join('')}
+      </div>
+    `).join('')}
   ` : '';
-
-  // Próximos a vencer (lista corta)
-  const expiringList = [...expiring.mp, ...expiring.fg].sort((a,b) => (a.expiryDate||'').localeCompare(b.expiryDate||'')).slice(0, 5);
 
   // OFs activas
   const activeOFs = ofs.filter(o => o.status === 'PLANNED' || o.status === 'IN_PROCESS').slice(0, 5);
 
+  // Próximos vencimientos
+  const expiringList = [...expiring.mp, ...expiring.fg].sort((a,b) => (a.expiryDate||'').localeCompare(b.expiryDate||'')).slice(0, 5);
+
+  // Próximas facturas a cobrar (las más urgentes)
+  const upcomingCXC = [...cxcPending].sort((a,b) => (a.dueDate||a.issueDate).localeCompare(b.dueDate||b.issueDate)).slice(0, 5);
+
+  // Próximas facturas a pagar
+  const upcomingCXP = [...cxpPending].sort((a,b) => (a.dueDate||a.issueDate).localeCompare(b.dueDate||b.issueDate)).slice(0, 5);
+
   const content = `
     ${alertsHtml}
 
+    <!-- KPIs Comerciales -->
+    <div class="divider-section"><span class="section-title" style="margin:0;">Situación financiera</span></div>
     <div class="grid grid-4 mb-24">
-      <div class="kpi">
-        <div class="kpi-mark">${ui.icon('flask')}</div>
-        <div class="kpi-label">OFs activas</div>
-        <div class="kpi-value">${ofsPlanned + ofsInProcess}</div>
-        <div class="kpi-value-sub">${ofsInProcess} en proceso · ${ofsPlanned} planificadas</div>
-      </div>
-      <div class="kpi">
-        <div class="kpi-mark">${ui.icon('box')}</div>
-        <div class="kpi-label">Lotes PT activos</div>
-        <div class="kpi-value">${fgLots.length}</div>
-        <div class="kpi-value-sub">${fgQuarantine} en cuarentena</div>
-      </div>
-      <div class="kpi">
-        <div class="kpi-mark">${ui.icon('currency')}</div>
-        <div class="kpi-label">Valor MP</div>
-        <div class="kpi-value" style="font-size:26px;">$${totalRMValue.toLocaleString('en-US',{minimumFractionDigits:0,maximumFractionDigits:0})}</div>
-        <div class="kpi-value-sub">en almacén</div>
-      </div>
-      <div class="kpi">
-        <div class="kpi-mark">${ui.icon('currency')}</div>
-        <div class="kpi-label">Valor PT</div>
-        <div class="kpi-value" style="font-size:26px;">$${totalFGValue.toLocaleString('en-US',{minimumFractionDigits:0,maximumFractionDigits:0})}</div>
-        <div class="kpi-value-sub">a costo de fabricación</div>
-      </div>
+      <div class="kpi"><div class="kpi-label">Por cobrar</div>${renderMultiKPI(cxcByCcy, 'var(--accent-ink)')}<div class="kpi-value-sub">${cxcPending.length} factura${cxcPending.length!==1?'s':''}${cxcOverdue.length?` · <span style="color:var(--danger);">${cxcOverdue.length} vencida${cxcOverdue.length!==1?'s':''}</span>`:''}</div></div>
+      <div class="kpi"><div class="kpi-label">Por pagar</div>${renderMultiKPI(cxpByCcy, 'var(--danger)')}<div class="kpi-value-sub">${cxpPending.length} factura${cxpPending.length!==1?'s':''}${cxpOverdue.length?` · <span style="color:var(--danger);">${cxpOverdue.length} vencida${cxpOverdue.length!==1?'s':''}</span>`:''}</div></div>
+      <div class="kpi"><div class="kpi-label">Disponible en bancos</div>${renderMultiKPI(bankByCcy, 'var(--success)')}<div class="kpi-value-sub">${db.getAll(db.COLLECTIONS.bankAccounts).filter(a=>a.active!==false).length} cuenta${db.getAll(db.COLLECTIONS.bankAccounts).filter(a=>a.active!==false).length!==1?'s':''}</div></div>
+      <div class="kpi"><div class="kpi-label">Pedidos abiertos</div><div class="kpi-value">${openOrders.length}</div><div class="kpi-value-sub">en gestión</div></div>
     </div>
 
-    <div class="grid" style="grid-template-columns:1fr 1fr;gap:16px;">
+    <!-- KPIs Operativos -->
+    <div class="divider-section"><span class="section-title" style="margin:0;">Operaciones</span></div>
+    <div class="grid grid-4 mb-24">
+      <div class="kpi"><div class="kpi-mark">${ui.icon('flask')}</div><div class="kpi-label">OFs activas</div><div class="kpi-value">${ofsPlanned + ofsInProcess}</div><div class="kpi-value-sub">${ofsInProcess} en proceso · ${ofsPlanned} planificadas</div></div>
+      <div class="kpi"><div class="kpi-mark">${ui.icon('box')}</div><div class="kpi-label">Lotes PT activos</div><div class="kpi-value">${fgLots.length}</div><div class="kpi-value-sub">${fgQuarantine} en cuarentena</div></div>
+      <div class="kpi"><div class="kpi-mark">${ui.icon('currency')}</div><div class="kpi-label">Valor MP</div><div class="kpi-value" style="font-size:24px;color:var(--accent-ink);">$${totalRMValueUSD.toLocaleString('en-US',{minimumFractionDigits:0,maximumFractionDigits:0})}</div><div class="kpi-value-sub">en almacén</div></div>
+      <div class="kpi"><div class="kpi-mark">${ui.icon('currency')}</div><div class="kpi-label">Valor PT</div><div class="kpi-value" style="font-size:24px;color:var(--accent-ink);">$${totalFGValueUSD.toLocaleString('en-US',{minimumFractionDigits:0,maximumFractionDigits:0})}</div><div class="kpi-value-sub">a costo de fabricación</div></div>
+    </div>
+
+    <!-- Listas comerciales -->
+    <div class="grid" style="grid-template-columns:1fr 1fr;gap:16px;margin-bottom:24px;">
+
+      <div class="card" style="padding:0;">
+        <div style="padding:18px 20px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center;">
+          <div>
+            <div class="card-title">Próximas facturas por cobrar</div>
+            <div class="text-muted" style="font-size:12px;margin-top:2px;">${cxcPending.length} pendiente${cxcPending.length!==1?'s':''}</div>
+          </div>
+          <a href="modules/pagos.html" class="btn btn-secondary btn-sm">Ver todas</a>
+        </div>
+        ${upcomingCXC.length ? upcomingCXC.map(d => {
+          const overdue = d.dueDate && d.dueDate < today;
+          const remaining = d.total - (d.paidAmount||0);
+          return `<a href="modules/ventas.html" class="list-row" style="grid-template-columns:1fr auto auto;text-decoration:none;color:inherit;">
+            <div>
+              <div class="td-strong" style="font-size:13px;">${ui.escape(d.customerName)}</div>
+              <div class="text-muted" style="font-size:11px;">${ui.escape(d.invoiceNumber||d.code)}${d.dueDate?' · vence '+ui.formatDate(d.dueDate):''}</div>
+            </div>
+            ${overdue ? '<span class="badge badge-danger" style="font-size:10px;">Vencida</span>' : '<span></span>'}
+            <span class="td-mono td-strong">${currency.format(remaining, d.currency)}</span>
+          </a>`;
+        }).join('') : '<div style="padding:32px;text-align:center;color:var(--ink-3);font-size:13px;">Todo cobrado ✓</div>'}
+      </div>
+
+      <div class="card" style="padding:0;">
+        <div style="padding:18px 20px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center;">
+          <div>
+            <div class="card-title">Próximas facturas por pagar</div>
+            <div class="text-muted" style="font-size:12px;margin-top:2px;">${cxpPending.length} pendiente${cxpPending.length!==1?'s':''}</div>
+          </div>
+          <a href="modules/pagos.html" class="btn btn-secondary btn-sm">Ver todas</a>
+        </div>
+        ${upcomingCXP.length ? upcomingCXP.map(i => {
+          const overdue = i.dueDate && i.dueDate < today;
+          const remaining = i.totalToPay - (i.paidAmount||0);
+          return `<a href="modules/compras.html" class="list-row" style="grid-template-columns:1fr auto auto;text-decoration:none;color:inherit;">
+            <div>
+              <div class="td-strong" style="font-size:13px;">${ui.escape(i.supplierName)}</div>
+              <div class="text-muted" style="font-size:11px;">${ui.escape(i.code)}${i.dueDate?' · vence '+ui.formatDate(i.dueDate):''}</div>
+            </div>
+            ${overdue ? '<span class="badge badge-danger" style="font-size:10px;">Vencida</span>' : '<span></span>'}
+            <span class="td-mono td-strong">${currency.format(remaining, i.currency)}</span>
+          </a>`;
+        }).join('') : '<div style="padding:32px;text-align:center;color:var(--ink-3);font-size:13px;">Sin deudas ✓</div>'}
+      </div>
+
+    </div>
+
+    <!-- Listas operativas -->
+    <div class="grid" style="grid-template-columns:1fr 1fr;gap:16px;margin-bottom:24px;">
 
       <div class="card" style="padding:0;">
         <div style="padding:18px 20px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center;">
@@ -212,28 +317,28 @@ function renderDashboard() {
 
     </div>
 
+    <!-- Acciones rápidas -->
     <div class="divider-section"><span class="section-title" style="margin:0;">Acciones rápidas</span></div>
-
-    <div class="grid grid-4">
+    <div class="grid grid-4 mb-24">
+      <a href="modules/ventas.html" class="card" style="cursor:pointer;text-decoration:none;color:inherit;">
+        <div class="kpi-mark">${ui.icon('plus')}</div>
+        <div class="td-strong">Nueva venta</div>
+        <div class="text-muted" style="font-size:12px;margin-top:4px;">Pedido / Cotización / Factura</div>
+      </a>
+      <a href="modules/compras.html" class="card" style="cursor:pointer;text-decoration:none;color:inherit;">
+        <div class="kpi-mark">${ui.icon('plus')}</div>
+        <div class="td-strong">Nueva OC</div>
+        <div class="text-muted" style="font-size:12px;margin-top:4px;">Orden de compra</div>
+      </a>
       <a href="modules/produccion.html" class="card" style="cursor:pointer;text-decoration:none;color:inherit;">
         <div class="kpi-mark">${ui.icon('flask')}</div>
         <div class="td-strong">Nueva OF</div>
-        <div class="text-muted" style="font-size:12px;margin-top:4px;">Programar producción</div>
+        <div class="text-muted" style="font-size:12px;margin-top:4px;">Orden de fabricación</div>
       </a>
-      <a href="modules/materias-primas.html" class="card" style="cursor:pointer;text-decoration:none;color:inherit;">
+      <a href="modules/reportes.html" class="card" style="cursor:pointer;text-decoration:none;color:inherit;">
         <div class="kpi-mark">${ui.icon('download')}</div>
-        <div class="td-strong">Recibir MP</div>
-        <div class="text-muted" style="font-size:12px;margin-top:4px;">Registrar entrada</div>
-      </a>
-      <a href="modules/calidad.html" class="card" style="cursor:pointer;text-decoration:none;color:inherit;">
-        <div class="kpi-mark">${ui.icon('check')}</div>
-        <div class="td-strong">Control QC</div>
-        <div class="text-muted" style="font-size:12px;margin-top:4px;">Aprobar lotes</div>
-      </a>
-      <a href="modules/trazabilidad.html" class="card" style="cursor:pointer;text-decoration:none;color:inherit;">
-        <div class="kpi-mark">${ui.icon('search')}</div>
-        <div class="td-strong">Trazar lote</div>
-        <div class="text-muted" style="font-size:12px;margin-top:4px;">Ver historial</div>
+        <div class="td-strong">Reportes</div>
+        <div class="text-muted" style="font-size:12px;margin-top:4px;">Libros SENIAT, márgenes, etc</div>
       </a>
     </div>
   `;
