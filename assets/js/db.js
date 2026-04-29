@@ -5,22 +5,31 @@
    sistema sigue llamando db.getAll(), db.save(), etc.
    ============================================ */
 
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 const DB_PREFIX = 'altcare_';
 
 const COLLECTIONS = {
   users: 'users',
   config: 'config',
-  rates: 'rates',                 // tasas de cambio
-  rawMaterials: 'rawMaterials',
+  rates: 'rates',
+  // Inventario
+  rawMaterials: 'rawMaterials',           // catálogo de MP
+  rmLots: 'rmLots',                        // lotes de recepción de MP
+  warehouses: 'warehouses',                // almacenes físicos
+  locations: 'locations',                  // ubicaciones dentro de almacenes
+  // Comercial
   suppliers: 'suppliers',
   customers: 'customers',
-  formulas: 'formulas',
+  // Producción
+  formulas: 'formulas',                    // fórmulas (cabecera + versión activa)
+  formulaVersions: 'formulaVersions',      // historial de versiones de cada fórmula
   productionOrders: 'productionOrders',
   qcTests: 'qcTests',
-  finishedGoods: 'finishedGoods',
+  finishedGoods: 'finishedGoods',          // lotes de producto terminado
   packaging: 'packaging',
-  warehouseMoves: 'warehouseMoves',
+  // Movimientos
+  warehouseMoves: 'warehouseMoves',        // kardex — todos los movimientos
+  // Comercial Fase 3
   purchaseOrders: 'purchaseOrders',
   salesOrders: 'salesOrders',
   invoices: 'invoices',
@@ -181,7 +190,21 @@ db.COLLECTIONS = COLLECTIONS;
       ivaWithholdingRate: 75,    // % de retención de IVA como agente
       currency: 'VES',
       defaultRateType: 'BCV_USD',
-      logoDataUrl: null
+      logoDataUrl: null,
+      // Alertas
+      expiryAlertDays: 60,        // alertar lotes que vencen en X días
+      lotNumberFormat: 'L-{YYYY}-{####}'  // formato auto de lote PT
+    });
+  }
+  // Almacén principal por defecto
+  if (db.getAll(COLLECTIONS.warehouses).length === 0) {
+    db.save(COLLECTIONS.warehouses, {
+      id: 'wh_main',
+      code: 'PRINCIPAL',
+      name: 'Almacén Principal',
+      address: '',
+      isDefault: true,
+      active: true
     });
   }
   // Tasas iniciales (vacías, el usuario las llena)

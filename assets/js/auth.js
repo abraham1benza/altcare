@@ -20,6 +20,7 @@ const ROLES = {
 const PERMISSIONS = {
   dashboard:        ['admin','gerente','produccion','calidad','almacen','ventas','compras'],
   configuracion:    ['admin'],
+  almacenes:        ['admin','gerente','almacen'],
   usuarios:         ['admin'],
   'tasas-cambio':   ['admin','gerente','ventas','compras'],
   'materias-primas':['admin','gerente','produccion','calidad','almacen','compras'],

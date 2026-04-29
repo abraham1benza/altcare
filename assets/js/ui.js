@@ -43,6 +43,7 @@ const NAV_STRUCTURE = [
     title: 'Sistema',
     items: [
       { id: 'reportes',          label: 'Reportes',          href: 'modules/reportes.html' },
+      { id: 'almacenes',         label: 'Almacenes',         href: 'modules/almacenes.html' },
       { id: 'usuarios',          label: 'Usuarios',          href: 'modules/usuarios.html' },
       { id: 'configuracion',     label: 'Configuración',     href: 'modules/configuracion.html' }
     ]
