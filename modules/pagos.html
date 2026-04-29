@@ -113,6 +113,9 @@ function renderList() {
           <h2 class="action-bar-title">Pagos</h2>
           <span class="action-bar-count">Cuentas por pagar y por cobrar</span>
         </div>
+        <div class="action-bar-right">
+          <button class="btn btn-secondary btn-sm" onclick="recalcStatuses()" title="Recalcula el estado de las facturas según los pagos reales registrados">${ui.icon('refresh')} Recalcular estados</button>
+        </div>
       </div>
 
       <div class="grid grid-4 mb-24">
@@ -428,6 +431,27 @@ function cancelCreate() { creating = null; render(); }
 
 function savePayment() {
   const c = creating;
+
+  // CRITICAL: leer el monto directamente del input por si el usuario no salió del campo (onchange no se disparó)
+  const amountInput = document.getElementById('amount');
+  if (amountInput) {
+    const inputVal = parseFloat(amountInput.value) || 0;
+    if (Math.abs(inputVal - c.amount) > 0.001) {
+      c.amount = inputVal;
+      // Recalcular amountInDocCurrency
+      if (c.currency === c.docCurrency) {
+        c.amountInDocCurrency = inputVal;
+      } else {
+        const rate = currency.getActiveRate();
+        if (rate && rate.value) {
+          if (c.docCurrency === 'VES' && c.currency !== 'VES') c.amountInDocCurrency = Math.round(inputVal * rate.value * 100) / 100;
+          else if (c.docCurrency !== 'VES' && c.currency === 'VES') c.amountInDocCurrency = Math.round((inputVal / rate.value) * 100) / 100;
+          else c.amountInDocCurrency = inputVal;
+        }
+      }
+    }
+  }
+
   if (!c.amount || c.amount <= 0) { ui.toast('Monto inválido', 'error'); return; }
   if (!c.paymentMethodId) { ui.toast('Selecciona un método de pago', 'error'); return; }
   const m = db.getById(db.COLLECTIONS.paymentMethods, c.paymentMethodId);
@@ -449,12 +473,29 @@ function savePayment() {
 
   try {
     payments.createPayment(c);
-    ui.toast(`${c.direction==='OUT'?'Pago':'Cobro'} registrado`, 'success');
+    ui.toast(`${c.direction==='OUT'?'Pago':'Cobro'} registrado · ${currency.format(c.amountInDocCurrency, c.docCurrency)} aplicado`, 'success');
     creating = null;
     render();
   } catch (err) {
     ui.toast(err.message, 'error');
   }
+}
+
+function recalcStatuses() {
+  ui.confirm(
+    '¿Recalcular el estado de todas las facturas según los pagos reales registrados? Útil si hay facturas marcadas como pagadas pero con saldo pendiente.',
+    () => {
+      const { salesFixed, purchasesFixed } = payments.recalcAllInvoiceStatuses();
+      const total = salesFixed + purchasesFixed;
+      if (total > 0) {
+        ui.toast(`${total} factura(s) corregida(s): ${salesFixed} de venta, ${purchasesFixed} de compra`, 'success');
+      } else {
+        ui.toast('Todos los estados están correctos', 'success');
+      }
+      render();
+    },
+    { confirmLabel: 'Recalcular' }
+  );
 }
 
 render();
