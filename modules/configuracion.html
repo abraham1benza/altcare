@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Configuración · altcare</title>
+<link rel="stylesheet" href="../assets/css/styles.css">
+</head>
+<body>
+<script src="../assets/js/db.js"></script>
+<script src="../assets/js/auth.js"></script>
+<script src="../assets/js/currency.js"></script>
+<script src="../assets/js/tax.js"></script>
+<script src="../assets/js/ui.js"></script>
+<script>
+if (!auth.guard('configuracion')) throw new Error('blocked');
+
+function render() {
+  const cfg = db.getById(db.COLLECTIONS.config, 'main') || {};
+
+  const content = `
+    <div class="action-bar">
+      <div class="action-bar-left">
+        <h2 class="action-bar-title">Configuración</h2>
+        <span class="action-bar-count">Datos fiscales y parámetros del sistema</span>
+      </div>
+    </div>
+
+    <form id="cfg-form" onsubmit="saveConfig(event)">
+      <div class="card mb-24">
+        <div class="card-header">
+          <div>
+            <div class="card-title">Datos de la empresa</div>
+            <div class="text-muted" style="font-size:12px;margin-top:2px;">Aparecen en facturas, comprobantes y reportes</div>
+          </div>
+        </div>
+        <div class="form-grid form-grid-2">
+          <div class="field">
+            <label class="field-label">Razón social</label>
+            <input class="input" type="text" name="companyName" value="${ui.escape(cfg.companyName || '')}" placeholder="Alternative Care, C.A.">
+          </div>
+          <div class="field">
+            <label class="field-label">RIF</label>
+            <input class="input" type="text" name="rif" value="${ui.escape(cfg.rif || '')}" placeholder="J-12345678-9">
+          </div>
+          <div class="field" style="grid-column:1 / -1;">
+            <label class="field-label">Dirección fiscal</label>
+            <input class="input" type="text" name="address" value="${ui.escape(cfg.address || '')}" placeholder="Av. ..., Caracas, Venezuela">
+          </div>
+          <div class="field">
+            <label class="field-label">Teléfono</label>
+            <input class="input" type="text" name="phone" value="${ui.escape(cfg.phone || '')}" placeholder="+58 212 ...">
+          </div>
+          <div class="field">
+            <label class="field-label">Email</label>
+            <input class="input" type="email" name="email" value="${ui.escape(cfg.email || '')}" placeholder="info@altcare.com">
+          </div>
+          <div class="field" style="grid-column:1 / -1;">
+            <label class="field-label">Sitio web</label>
+            <input class="input" type="text" name="website" value="${ui.escape(cfg.website || '')}" placeholder="www.altcare.com">
+          </div>
+        </div>
+      </div>
+
+      <div class="card mb-24">
+        <div class="card-header">
+          <div>
+            <div class="card-title">Parámetros fiscales</div>
+            <div class="text-muted" style="font-size:12px;margin-top:2px;">IVA y retenciones según normativa SENIAT</div>
+          </div>
+        </div>
+        <div class="form-grid form-grid-2">
+          <div class="field">
+            <label class="field-label">Alícuota IVA (%)</label>
+            <input class="input" type="number" step="0.01" name="ivaRate" value="${cfg.ivaRate ?? 16}">
+            <div class="field-hint">Tasa general actual: 16%</div>
+          </div>
+          <div class="field">
+            <label class="field-label">% Retención IVA (agente)</label>
+            <input class="input" type="number" step="0.01" name="ivaWithholdingRate" value="${cfg.ivaWithholdingRate ?? 75}">
+            <div class="field-hint">Como agente de retención: 75% (general) o 100%</div>
+          </div>
+        </div>
+        <div style="margin-top:16px;padding:12px 16px;background:var(--accent-soft);border-radius:var(--r-md);font-size:12.5px;color:var(--accent-ink);">
+          <strong>Calculadora de ejemplo:</strong> Una compra de Bs 1.000 + IVA al ${cfg.ivaRate ?? 16}% = ${(1000*(1+(cfg.ivaRate??16)/100)).toFixed(2)} Bs.
+          Como agente, retienes ${(1000*((cfg.ivaRate??16)/100)*((cfg.ivaWithholdingRate??75)/100)).toFixed(2)} Bs de IVA.
+          Pagas al proveedor: ${(1000*(1+(cfg.ivaRate??16)/100) - 1000*((cfg.ivaRate??16)/100)*((cfg.ivaWithholdingRate??75)/100)).toFixed(2)} Bs.
+        </div>
+      </div>
+
+      <div class="card mb-24">
+        <div class="card-header">
+          <div>
+            <div class="card-title">Respaldo de datos</div>
+            <div class="text-muted" style="font-size:12px;margin-top:2px;">Exporta o restaura todos los datos del sistema</div>
+          </div>
+        </div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;">
+          <button type="button" class="btn btn-secondary" onclick="exportData()">${ui.icon('download')} Exportar todo (JSON)</button>
+          <label class="btn btn-secondary" style="cursor:pointer;">
+            ${ui.icon('upload')} Importar respaldo
+            <input type="file" accept=".json" style="display:none;" onchange="importData(this)">
+          </label>
+          <button type="button" class="btn btn-danger" onclick="resetSystem()">${ui.icon('trash')} Reiniciar sistema</button>
+        </div>
+        <div class="text-muted" style="font-size:12px;margin-top:12px;">
+          ⚠️ La opción "Reiniciar" elimina TODOS los datos y deja el sistema como recién instalado. Solo el admin puede hacerlo.
+        </div>
+      </div>
+
+      <div style="display:flex;justify-content:flex-end;gap:8px;">
+        <button type="submit" class="btn btn-primary">${ui.icon('check')} Guardar configuración</button>
+      </div>
+    </form>
+  `;
+
+  ui.renderLayout({
+    activeModule: 'configuracion',
+    pageEyebrow: 'Sistema',
+    pageTitle: 'Configuración',
+    contentHtml: content
+  });
+}
+
+function saveConfig(e) {
+  e.preventDefault();
+  const data = ui.formData(e.target);
+  data.id = 'main';
+  db.save(db.COLLECTIONS.config, data);
+  ui.toast('Configuración guardada', 'success');
+  setTimeout(render, 300);
+}
+
+function exportData() {
+  const dump = db.exportAll();
+  const blob = new Blob([JSON.stringify(dump, null, 2)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `altcare-backup-${new Date().toISOString().slice(0,10)}.json`;
+  a.click();
+  URL.revokeObjectURL(url);
+  ui.toast('Respaldo exportado', 'success');
+}
+
+function importData(input) {
+  const file = input.files[0];
+  if (!file) return;
+  ui.confirm(
+    `¿Importar ${file.name}? Esto sobrescribirá los datos actuales.`,
+    () => {
+      const reader = new FileReader();
+      reader.onload = e => {
+        try {
+          const dump = JSON.parse(e.target.result);
+          db.importAll(dump);
+          ui.toast('Datos importados. Recargando...', 'success');
+          setTimeout(() => location.reload(), 1000);
+        } catch (err) {
+          ui.toast('Archivo inválido', 'error');
+        }
+      };
+      reader.readAsText(file);
+    },
+    { danger: true, confirmLabel: 'Importar' }
+  );
+}
+
+function resetSystem() {
+  ui.confirm(
+    '¿Estás seguro de reiniciar todo el sistema? Esto eliminará TODOS los datos: materias primas, proveedores, clientes, usuarios, configuración, tasas, etc. Esta acción no se puede deshacer.',
+    () => {
+      db.nuke();
+      sessionStorage.clear();
+      alert('Sistema reiniciado. Serás redirigido al login.');
+      location.href = '../index.html';
+    },
+    { danger: true, confirmLabel: 'Sí, reiniciar todo' }
+  );
+}
+
+render();
+</script>
+</body>
+</html>

@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Usuarios · altcare</title>
+<link rel="stylesheet" href="../assets/css/styles.css">
+</head>
+<body>
+<script src="../assets/js/db.js"></script>
+<script src="../assets/js/auth.js"></script>
+<script src="../assets/js/currency.js"></script>
+<script src="../assets/js/tax.js"></script>
+<script src="../assets/js/ui.js"></script>
+<script>
+if (!auth.guard('usuarios')) throw new Error('blocked');
+
+function render() {
+  const items = db.getAll(db.COLLECTIONS.users);
+  const me = auth.currentUser();
+
+  const tableHtml = `<table>
+    <thead><tr>
+      <th>Usuario</th>
+      <th>Nombre completo</th>
+      <th>Rol</th>
+      <th>Estado</th>
+      <th>Creado</th>
+      <th style="text-align:right;width:110px;">Acciones</th>
+    </tr></thead>
+    <tbody>
+      ${items.map(r => {
+        const role = auth.ROLES[r.role] || { label: r.role };
+        const isMe = r.username === me.username;
+        return `
+          <tr>
+            <td>
+              <div class="td-strong td-mono">${ui.escape(r.username)}</div>
+              ${isMe ? '<span class="badge badge-accent" style="margin-top:4px;">Tú</span>' : ''}
+            </td>
+            <td>${ui.escape(r.fullName||'—')}</td>
+            <td><span class="badge" style="background:${role.color}15;color:${role.color};">${role.label}</span></td>
+            <td>${r.active ? '<span class="badge badge-success">Activo</span>' : '<span class="badge badge-danger">Inactivo</span>'}</td>
+            <td><span class="text-muted">${ui.formatDate(r.createdAt)}</span></td>
+            <td class="td-actions">
+              <button class="btn-icon" onclick="editItem('${r.id}')" title="Editar">${ui.icon('edit')}</button>
+              ${!isMe ? `<button class="btn-icon" onclick="deleteItem('${r.id}')" title="Eliminar">${ui.icon('trash')}</button>` : ''}
+            </td>
+          </tr>
+        `;
+      }).join('')}
+    </tbody>
+  </table>`;
+
+  // Roles overview
+  const rolesHtml = Object.entries(auth.ROLES).map(([key, r]) => {
+    const allowedModules = Object.entries(auth.PERMISSIONS).filter(([m, roles]) => roles.includes(key)).length;
+    return `
+      <div class="card" style="padding:16px;">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
+          <div style="width:8px;height:8px;border-radius:50%;background:${r.color};"></div>
+          <div class="td-strong">${r.label}</div>
+        </div>
+        <div class="text-muted" style="font-size:12px;">Acceso a ${allowedModules} módulos</div>
+      </div>
+    `;
+  }).join('');
+
+  const content = `
+    <div class="action-bar">
+      <div class="action-bar-left">
+        <h2 class="action-bar-title">Usuarios</h2>
+        <span class="action-bar-count">${items.length} cuentas</span>
+      </div>
+      <div class="action-bar-right">
+        <button class="btn btn-primary" onclick="newItem()">${ui.icon('plus')} Nuevo usuario</button>
+      </div>
+    </div>
+
+    <div class="table-wrap mb-24">${tableHtml}</div>
+
+    <div class="divider-section"><span class="section-title" style="margin:0;">Roles del sistema</span></div>
+    <div class="grid grid-4">${rolesHtml}</div>
+  `;
+
+  ui.renderLayout({
+    activeModule: 'usuarios',
+    pageEyebrow: 'Sistema',
+    pageTitle: 'Usuarios y Permisos',
+    contentHtml: content
+  });
+}
+
+function newItem() {
+  openForm({ active: true, role: 'produccion' });
+}
+
+function editItem(id) {
+  const r = db.getById(db.COLLECTIONS.users, id);
+  if (r) openForm(r);
+}
+
+function openForm(item) {
+  const isNew = !item.id;
+  const me = auth.currentUser();
+  const isMe = item.username === me.username;
+
+  ui.openModal({
+    title: isNew ? 'Nuevo usuario' : 'Editar usuario',
+    body: `
+      <form id="usr-form" onsubmit="saveItem(event, '${item.id || ''}')">
+        <div class="form-grid form-grid-2">
+          <div class="field">
+            <label class="field-label">Usuario *</label>
+            <input class="input" name="username" required value="${ui.escape(item.username||'')}" ${!isNew?'readonly':''} placeholder="ej: maria.lopez">
+            ${!isNew ? '<div class="field-hint">El nombre de usuario no se puede cambiar</div>' : ''}
+          </div>
+          <div class="field">
+            <label class="field-label">Nombre completo *</label>
+            <input class="input" name="fullName" required value="${ui.escape(item.fullName||'')}">
+          </div>
+          <div class="field" style="grid-column:1/-1;">
+            <label class="field-label">Contraseña ${isNew?'*':'(dejar en blanco para mantener)'}</label>
+            <input class="input" type="password" name="password" ${isNew?'required':''} placeholder="${isNew?'':'••••••••'}">
+            <div class="field-hint">⚠️ En esta fase las contraseñas se guardan localmente. Con Firebase usaremos autenticación segura.</div>
+          </div>
+          <div class="field">
+            <label class="field-label">Rol *</label>
+            <select class="select" name="role" required ${isMe?'disabled':''}>
+              ${Object.entries(auth.ROLES).map(([k, r]) => `<option value="${k}" ${k===item.role?'selected':''}>${r.label}</option>`).join('')}
+            </select>
+            ${isMe ? '<div class="field-hint">No puedes cambiar tu propio rol</div>' : ''}
+            ${isMe ? `<input type="hidden" name="role" value="${item.role}">` : ''}
+          </div>
+          <div class="field">
+            <label class="field-label">Estado</label>
+            <select class="select" name="active" ${isMe?'disabled':''}>
+              <option value="true" ${item.active?'selected':''}>Activo</option>
+              <option value="false" ${!item.active?'selected':''}>Inactivo</option>
+            </select>
+            ${isMe ? `<input type="hidden" name="active" value="true">` : ''}
+          </div>
+        </div>
+      </form>
+    `,
+    footer: `
+      <button class="btn btn-secondary" onclick="ui.closeModal()">Cancelar</button>
+      <button class="btn btn-primary" onclick="document.getElementById('usr-form').requestSubmit()">${ui.icon('check')} Guardar</button>
+    `
+  });
+}
+
+function saveItem(e, id) {
+  e.preventDefault();
+  const data = ui.formData(e.target);
+  data.active = data.active === true || data.active === 'true';
+  if (!data.username || !data.fullName) { ui.toast('Completa los campos obligatorios', 'error'); return; }
+
+  // Validar usuario único en creación
+  if (!id) {
+    const existing = db.query(db.COLLECTIONS.users, u => u.username === data.username);
+    if (existing.length) { ui.toast('Ya existe un usuario con ese nombre', 'error'); return; }
+    if (!data.password) { ui.toast('La contraseña es obligatoria', 'error'); return; }
+  } else {
+    // Si no se cambió la contraseña, conservar la anterior
+    if (!data.password) {
+      const old = db.getById(db.COLLECTIONS.users, id);
+      data.password = old.password;
+    }
+    data.id = id;
+  }
+
+  db.save(db.COLLECTIONS.users, data);
+  ui.closeModal();
+  ui.toast(id ? 'Usuario actualizado' : 'Usuario creado', 'success');
+  render();
+}
+
+function deleteItem(id) {
+  const r = db.getById(db.COLLECTIONS.users, id);
+  const me = auth.currentUser();
+  if (r.username === me.username) { ui.toast('No puedes eliminarte a ti mismo', 'error'); return; }
+  ui.confirm(
+    `¿Eliminar al usuario "${r.fullName || r.username}"? Perderá acceso al sistema inmediatamente.`,
+    () => {
+      db.remove(db.COLLECTIONS.users, id);
+      ui.toast('Usuario eliminado', 'success');
+      render();
+    },
+    { danger: true, confirmLabel: 'Eliminar' }
+  );
+}
+
+render();
+</script>
+</body>
+</html>

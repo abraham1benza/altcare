@@ -1,0 +1,267 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Proveedores · altcare</title>
+<link rel="stylesheet" href="../assets/css/styles.css">
+</head>
+<body>
+<script src="../assets/js/db.js"></script>
+<script src="../assets/js/auth.js"></script>
+<script src="../assets/js/currency.js"></script>
+<script src="../assets/js/tax.js"></script>
+<script src="../assets/js/ui.js"></script>
+<script>
+if (!auth.guard('proveedores')) throw new Error('blocked');
+
+const PAYMENT_TERMS = ['Contado', '7 días', '15 días', '30 días', '45 días', '60 días', '90 días'];
+const TAXPAYER_TYPES = ['Contribuyente Ordinario', 'Contribuyente Formal', 'Contribuyente Especial', 'No Contribuyente', 'Persona Natural'];
+
+let searchTerm = '';
+
+function render() {
+  let items = db.getAll(db.COLLECTIONS.suppliers);
+  const allItems = items;
+
+  if (searchTerm) {
+    const q = searchTerm.toLowerCase();
+    items = items.filter(i =>
+      (i.name||'').toLowerCase().includes(q) ||
+      (i.rif||'').toLowerCase().includes(q) ||
+      (i.contactName||'').toLowerCase().includes(q)
+    );
+  }
+
+  const tableHtml = items.length
+    ? `<table>
+        <thead><tr>
+          <th>Código</th>
+          <th>Razón social</th>
+          <th>RIF</th>
+          <th>Tipo</th>
+          <th>Contacto</th>
+          <th>Términos</th>
+          <th>Moneda</th>
+          <th style="text-align:right;width:110px;">Acciones</th>
+        </tr></thead>
+        <tbody>
+          ${items.map(r => `
+            <tr>
+              <td><span class="td-mono td-strong">${r.code || '—'}</span></td>
+              <td>
+                <div class="td-strong">${ui.escape(r.name)}</div>
+                ${r.tradename ? `<div class="text-muted" style="font-size:11px;">${ui.escape(r.tradename)}</div>` : ''}
+              </td>
+              <td><span class="td-mono">${ui.escape(r.rif||'—')}</span></td>
+              <td>${r.taxpayerType ? `<span class="badge badge-plain">${ui.escape(r.taxpayerType)}</span>` : '<span class="td-muted">—</span>'}</td>
+              <td>
+                ${r.contactName ? ui.escape(r.contactName) : '<span class="td-muted">—</span>'}
+                ${r.phone ? `<div class="text-muted" style="font-size:11px;">${ui.escape(r.phone)}</div>` : ''}
+              </td>
+              <td>${r.paymentTerms ? `<span class="td-mono">${ui.escape(r.paymentTerms)}</span>` : '<span class="td-muted">—</span>'}</td>
+              <td><span class="badge ${r.preferredCurrency==='USD'?'badge-accent':'badge-plain'}">${r.preferredCurrency || 'VES'}</span></td>
+              <td class="td-actions">
+                <button class="btn-icon" onclick="editItem('${r.id}')" title="Editar">${ui.icon('edit')}</button>
+                <button class="btn-icon" onclick="deleteItem('${r.id}')" title="Eliminar">${ui.icon('trash')}</button>
+              </td>
+            </tr>
+          `).join('')}
+        </tbody>
+      </table>`
+    : (allItems.length === 0
+      ? `<div class="empty-state">
+          <div class="empty-state-icon">${ui.icon('users')}</div>
+          <div class="empty-state-title">Sin proveedores</div>
+          <div class="empty-state-text">Registra a tus proveedores para vincularlos a materias primas, órdenes de compra y retenciones.</div>
+          <button class="btn btn-primary" onclick="newItem()">${ui.icon('plus')} Crear el primero</button>
+        </div>`
+      : `<div class="empty-state"><div class="empty-state-title">Sin resultados</div><div class="empty-state-text">Ningún proveedor coincide con tu búsqueda.</div></div>`);
+
+  const content = `
+    <div class="action-bar">
+      <div class="action-bar-left">
+        <h2 class="action-bar-title">Proveedores</h2>
+        <span class="action-bar-count">${allItems.length} registrados</span>
+      </div>
+      <div class="action-bar-right">
+        <button class="btn btn-primary" onclick="newItem()">${ui.icon('plus')} Nuevo proveedor</button>
+      </div>
+    </div>
+
+    <div class="table-wrap">
+      <div class="table-toolbar">
+        <div class="search-box">
+          ${ui.icon('search')}
+          <input class="input" type="search" placeholder="Buscar por nombre, RIF o contacto..." value="${ui.escape(searchTerm)}" oninput="onSearch(this.value)">
+        </div>
+      </div>
+      ${tableHtml}
+    </div>
+  `;
+
+  ui.renderLayout({
+    activeModule: 'proveedores',
+    pageEyebrow: 'Comercial',
+    pageTitle: 'Proveedores',
+    contentHtml: content
+  });
+}
+
+function onSearch(v) { searchTerm = v; render(); }
+
+function newItem() {
+  const code = db.nextCode(db.COLLECTIONS.suppliers, 'PROV');
+  openForm({ code, paymentTerms: 'Contado', preferredCurrency: 'VES', taxpayerType: 'Contribuyente Ordinario', applyIVAWithholding: true });
+}
+
+function editItem(id) {
+  const r = db.getById(db.COLLECTIONS.suppliers, id);
+  if (r) openForm(r);
+}
+
+function openForm(item) {
+  const isNew = !item.id;
+  ui.openModal({
+    size: 'lg',
+    title: isNew ? 'Nuevo proveedor' : 'Editar proveedor',
+    subtitle: isNew ? `Código asignado: ${item.code}` : `Código: ${item.code}`,
+    body: `
+      <form id="sup-form" onsubmit="saveItem(event, '${item.id || ''}')">
+        <input type="hidden" name="code" value="${item.code}">
+
+        <div class="section-title">Datos fiscales</div>
+        <div class="form-grid form-grid-2 mb-24">
+          <div class="field">
+            <label class="field-label">Razón social *</label>
+            <input class="input" name="name" required value="${ui.escape(item.name||'')}">
+          </div>
+          <div class="field">
+            <label class="field-label">Nombre comercial</label>
+            <input class="input" name="tradename" value="${ui.escape(item.tradename||'')}">
+          </div>
+          <div class="field">
+            <label class="field-label">RIF *</label>
+            <input class="input" name="rif" required value="${ui.escape(item.rif||'')}" placeholder="J-12345678-9">
+          </div>
+          <div class="field">
+            <label class="field-label">Tipo de contribuyente</label>
+            <select class="select" name="taxpayerType">
+              ${TAXPAYER_TYPES.map(t => `<option ${t===item.taxpayerType?'selected':''}>${t}</option>`).join('')}
+            </select>
+          </div>
+          <div class="field" style="grid-column:1 / -1;">
+            <label class="field-label">Dirección fiscal</label>
+            <input class="input" name="address" value="${ui.escape(item.address||'')}">
+          </div>
+        </div>
+
+        <div class="section-title">Contacto</div>
+        <div class="form-grid form-grid-2 mb-24">
+          <div class="field">
+            <label class="field-label">Persona de contacto</label>
+            <input class="input" name="contactName" value="${ui.escape(item.contactName||'')}">
+          </div>
+          <div class="field">
+            <label class="field-label">Cargo</label>
+            <input class="input" name="contactRole" value="${ui.escape(item.contactRole||'')}">
+          </div>
+          <div class="field">
+            <label class="field-label">Teléfono</label>
+            <input class="input" name="phone" value="${ui.escape(item.phone||'')}">
+          </div>
+          <div class="field">
+            <label class="field-label">Email</label>
+            <input class="input" type="email" name="email" value="${ui.escape(item.email||'')}">
+          </div>
+          <div class="field" style="grid-column:1 / -1;">
+            <label class="field-label">Sitio web</label>
+            <input class="input" name="website" value="${ui.escape(item.website||'')}">
+          </div>
+        </div>
+
+        <div class="section-title">Comercial</div>
+        <div class="form-grid form-grid-3 mb-24">
+          <div class="field">
+            <label class="field-label">Términos de pago</label>
+            <select class="select" name="paymentTerms">
+              ${PAYMENT_TERMS.map(t => `<option ${t===item.paymentTerms?'selected':''}>${t}</option>`).join('')}
+            </select>
+          </div>
+          <div class="field">
+            <label class="field-label">Moneda preferida</label>
+            <select class="select" name="preferredCurrency">
+              <option value="VES" ${item.preferredCurrency==='VES'?'selected':''}>Bolívares (VES)</option>
+              <option value="USD" ${item.preferredCurrency==='USD'?'selected':''}>Dólares (USD)</option>
+              <option value="EUR" ${item.preferredCurrency==='EUR'?'selected':''}>Euros (EUR)</option>
+            </select>
+          </div>
+          <div class="field">
+            <label class="field-label">Tipo de bien/servicio</label>
+            <input class="input" name="productType" value="${ui.escape(item.productType||'')}" placeholder="Ej: Materias primas químicas">
+          </div>
+        </div>
+
+        <div class="section-title">Retenciones</div>
+        <div class="form-grid form-grid-2 mb-24">
+          <div class="field">
+            <div class="checkbox-row">
+              <input type="checkbox" id="apply-iva" name="applyIVAWithholding" ${item.applyIVAWithholding!==false?'checked':''}>
+              <label for="apply-iva" style="font-size:13px;">Aplicar retención de IVA en compras</label>
+            </div>
+            <div class="field-hint">Activa si eres agente y este proveedor está sujeto a retención (75% por defecto)</div>
+          </div>
+          <div class="field">
+            <label class="field-label">% ISLR aplicable</label>
+            <input class="input" type="number" step="0.01" name="islrRate" value="${item.islrRate||0}">
+            <div class="field-hint">0 si no aplica. Ej: 2% para servicios profesionales</div>
+          </div>
+        </div>
+
+        <div class="section-title">Notas</div>
+        <div class="field">
+          <textarea class="textarea" name="notes" placeholder="Observaciones, datos bancarios, etc.">${ui.escape(item.notes||'')}</textarea>
+        </div>
+      </form>
+    `,
+    footer: `
+      <button class="btn btn-secondary" onclick="ui.closeModal()">Cancelar</button>
+      <button class="btn btn-primary" onclick="document.getElementById('sup-form').requestSubmit()">${ui.icon('check')} Guardar</button>
+    `
+  });
+}
+
+function saveItem(e, id) {
+  e.preventDefault();
+  const data = ui.formData(e.target);
+  if (!data.name || !data.rif) { ui.toast('Razón social y RIF son obligatorios', 'error'); return; }
+  if (id) data.id = id;
+  db.save(db.COLLECTIONS.suppliers, data);
+  ui.closeModal();
+  ui.toast(id ? 'Proveedor actualizado' : 'Proveedor creado', 'success');
+  render();
+}
+
+function deleteItem(id) {
+  const r = db.getById(db.COLLECTIONS.suppliers, id);
+  // Check if used in raw materials
+  const linked = db.query(db.COLLECTIONS.rawMaterials, m => m.supplierId === id);
+  if (linked.length > 0) {
+    ui.toast(`No se puede eliminar: hay ${linked.length} materia(s) prima(s) vinculada(s) a este proveedor`, 'error', 4000);
+    return;
+  }
+  ui.confirm(
+    `¿Eliminar al proveedor "${r.name}"?`,
+    () => {
+      db.remove(db.COLLECTIONS.suppliers, id);
+      ui.toast('Proveedor eliminado', 'success');
+      render();
+    },
+    { danger: true, confirmLabel: 'Eliminar' }
+  );
+}
+
+render();
+</script>
+</body>
+</html>

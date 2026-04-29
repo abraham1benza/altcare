@@ -1,0 +1,299 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Materias Primas · altcare</title>
+<link rel="stylesheet" href="../assets/css/styles.css">
+</head>
+<body>
+<script src="../assets/js/db.js"></script>
+<script src="../assets/js/auth.js"></script>
+<script src="../assets/js/currency.js"></script>
+<script src="../assets/js/tax.js"></script>
+<script src="../assets/js/ui.js"></script>
+<script>
+if (!auth.guard('materias-primas')) throw new Error('blocked');
+
+// Categorías típicas para cuidado capilar
+const CATEGORIES = [
+  'Tensoactivo aniónico',
+  'Tensoactivo no iónico',
+  'Tensoactivo anfótero',
+  'Acondicionador catiónico',
+  'Espesante',
+  'Emoliente',
+  'Humectante',
+  'Conservante',
+  'Quelante',
+  'Regulador de pH',
+  'Fragancia',
+  'Colorante',
+  'Activo capilar',
+  'Solvente',
+  'Otro'
+];
+const UNITS = ['kg', 'g', 'L', 'mL', 'unidad'];
+const STATES = ['Líquido', 'Sólido', 'Pasta', 'Polvo', 'Granular'];
+
+let searchTerm = '';
+let categoryFilter = '';
+
+function render() {
+  let items = db.getAll(db.COLLECTIONS.rawMaterials);
+  const allItems = items;
+
+  if (searchTerm) {
+    const q = searchTerm.toLowerCase();
+    items = items.filter(i =>
+      (i.name||'').toLowerCase().includes(q) ||
+      (i.code||'').toLowerCase().includes(q) ||
+      (i.inci||'').toLowerCase().includes(q)
+    );
+  }
+  if (categoryFilter) items = items.filter(i => i.category === categoryFilter);
+
+  const suppliers = db.getAll(db.COLLECTIONS.suppliers);
+  const supplierMap = Object.fromEntries(suppliers.map(s => [s.id, s.name]));
+
+  const cols = [
+    { key: 'code', label: 'Código', render: r => `<span class="td-mono td-strong">${r.code || '—'}</span>` },
+    { key: 'name', label: 'Nombre', render: r => `<div class="td-strong">${ui.escape(r.name)}</div>${r.inci ? `<div class="text-muted" style="font-size:11px;font-style:italic;">${ui.escape(r.inci)}</div>` : ''}` },
+    { key: 'category', label: 'Categoría', render: r => r.category ? `<span class="badge badge-plain">${ui.escape(r.category)}</span>` : '<span class="td-muted">—</span>' },
+    { key: 'stock', label: 'Stock', align: 'right', render: r => `<span class="td-mono">${(r.stock||0).toLocaleString('es-VE',{minimumFractionDigits:2,maximumFractionDigits:3})}</span> <span class="td-muted">${r.unit||''}</span>` },
+    { key: 'minStock', label: 'Mínimo', align: 'right', render: r => {
+        const min = r.minStock || 0;
+        const low = (r.stock || 0) < min && min > 0;
+        return `<span class="${low ? 'text-mono' : 'text-mono td-muted'}" ${low?'style="color:var(--danger);"':''}>${min.toLocaleString('es-VE')}</span> ${low ? '<span class="badge badge-danger" style="margin-left:6px;">Bajo</span>' : ''}`;
+      }},
+    { key: 'supplier', label: 'Proveedor', render: r => r.supplierId ? ui.escape(supplierMap[r.supplierId] || '—') : '<span class="td-muted">—</span>' },
+    { key: 'lastCost', label: 'Último costo', align: 'right', render: r => {
+        if (!r.lastCost) return '<span class="td-muted">—</span>';
+        return `<span class="td-mono">${currency.format(r.lastCost, r.lastCostCurrency || 'USD')}</span>`;
+      }}
+  ];
+
+  const tableHtml = items.length
+    ? `<table>
+        <thead><tr>${cols.map(c => `<th style="${c.align?'text-align:'+c.align:''}">${c.label}</th>`).join('')}<th style="text-align:right;width:110px;">Acciones</th></tr></thead>
+        <tbody>
+          ${items.map(r => `
+            <tr>
+              ${cols.map(c => `<td style="${c.align?'text-align:'+c.align:''}">${c.render ? c.render(r) : (r[c.key]||'')}</td>`).join('')}
+              <td class="td-actions">
+                <button class="btn-icon" onclick="editItem('${r.id}')" title="Editar">${ui.icon('edit')}</button>
+                <button class="btn-icon" onclick="deleteItem('${r.id}')" title="Eliminar">${ui.icon('trash')}</button>
+              </td>
+            </tr>
+          `).join('')}
+        </tbody>
+      </table>`
+    : (allItems.length === 0
+      ? `<div class="empty-state">
+          <div class="empty-state-icon">${ui.icon('box')}</div>
+          <div class="empty-state-title">Sin materias primas</div>
+          <div class="empty-state-text">Aún no has registrado materias primas. Comienza agregando los insumos que usas en tus fórmulas.</div>
+          <button class="btn btn-primary" onclick="newItem()">${ui.icon('plus')} Crear la primera</button>
+        </div>`
+      : `<div class="empty-state">
+          <div class="empty-state-title">Sin resultados</div>
+          <div class="empty-state-text">Ninguna materia prima coincide con tu búsqueda.</div>
+        </div>`);
+
+  const lowStock = allItems.filter(i => (i.minStock || 0) > 0 && (i.stock || 0) < i.minStock).length;
+
+  const content = `
+    <div class="action-bar">
+      <div class="action-bar-left">
+        <h2 class="action-bar-title">Materias primas</h2>
+        <span class="action-bar-count">${allItems.length} referencias${lowStock ? ` · <span style="color:var(--danger);">${lowStock} con stock bajo</span>` : ''}</span>
+      </div>
+      <div class="action-bar-right">
+        <button class="btn btn-primary" onclick="newItem()">${ui.icon('plus')} Nueva materia prima</button>
+      </div>
+    </div>
+
+    <div class="table-wrap">
+      <div class="table-toolbar">
+        <div class="search-box">
+          ${ui.icon('search')}
+          <input class="input" type="search" placeholder="Buscar por nombre, código o INCI..." value="${ui.escape(searchTerm)}" oninput="onSearch(this.value)">
+        </div>
+        <select class="select" style="max-width:240px;" onchange="onCategoryFilter(this.value)">
+          <option value="">Todas las categorías</option>
+          ${CATEGORIES.map(c => `<option ${c===categoryFilter?'selected':''}>${c}</option>`).join('')}
+        </select>
+      </div>
+      ${tableHtml}
+    </div>
+  `;
+
+  ui.renderLayout({
+    activeModule: 'materias-primas',
+    pageEyebrow: 'Inventario',
+    pageTitle: 'Materias Primas',
+    contentHtml: content
+  });
+}
+
+function onSearch(v) { searchTerm = v; render(); }
+function onCategoryFilter(v) { categoryFilter = v; render(); }
+
+function newItem() {
+  const code = db.nextCode(db.COLLECTIONS.rawMaterials, 'MP');
+  openForm({ code, unit: 'kg', state: 'Líquido', stock: 0, minStock: 0 });
+}
+
+function editItem(id) {
+  const r = db.getById(db.COLLECTIONS.rawMaterials, id);
+  if (r) openForm(r);
+}
+
+function openForm(item) {
+  const isNew = !item.id;
+  const suppliers = db.getAll(db.COLLECTIONS.suppliers);
+
+  ui.openModal({
+    size: 'lg',
+    title: isNew ? 'Nueva materia prima' : 'Editar materia prima',
+    subtitle: isNew ? 'Código asignado automáticamente: ' + item.code : `Código: ${item.code}`,
+    body: `
+      <form id="rm-form" onsubmit="saveItem(event, '${item.id || ''}')">
+        <input type="hidden" name="code" value="${item.code}">
+
+        <div class="section-title">Identificación</div>
+        <div class="form-grid form-grid-2 mb-24">
+          <div class="field">
+            <label class="field-label">Nombre comercial *</label>
+            <input class="input" name="name" required value="${ui.escape(item.name||'')}" placeholder="Ej: Lauril éter sulfato de sodio">
+          </div>
+          <div class="field">
+            <label class="field-label">Nombre INCI</label>
+            <input class="input" name="inci" value="${ui.escape(item.inci||'')}" placeholder="Sodium Laureth Sulfate">
+            <div class="field-hint">Nombre internacional para etiquetado</div>
+          </div>
+          <div class="field">
+            <label class="field-label">CAS</label>
+            <input class="input" name="cas" value="${ui.escape(item.cas||'')}" placeholder="68585-34-2">
+          </div>
+          <div class="field">
+            <label class="field-label">Categoría *</label>
+            <select class="select" name="category" required>
+              <option value="">— Selecciona —</option>
+              ${CATEGORIES.map(c => `<option ${c===item.category?'selected':''}>${c}</option>`).join('')}
+            </select>
+          </div>
+        </div>
+
+        <div class="section-title">Características técnicas</div>
+        <div class="form-grid form-grid-3 mb-24">
+          <div class="field">
+            <label class="field-label">Estado físico</label>
+            <select class="select" name="state">
+              ${STATES.map(s => `<option ${s===item.state?'selected':''}>${s}</option>`).join('')}
+            </select>
+          </div>
+          <div class="field">
+            <label class="field-label">Unidad de medida *</label>
+            <select class="select" name="unit" required>
+              ${UNITS.map(u => `<option ${u===item.unit?'selected':''}>${u}</option>`).join('')}
+            </select>
+          </div>
+          <div class="field">
+            <label class="field-label">Densidad (g/mL)</label>
+            <input class="input" type="number" step="0.001" name="density" value="${item.density||''}">
+          </div>
+          <div class="field">
+            <label class="field-label">pH típico</label>
+            <input class="input" type="number" step="0.1" name="ph" value="${item.ph||''}">
+          </div>
+          <div class="field">
+            <label class="field-label">% Activo</label>
+            <input class="input" type="number" step="0.1" name="activeContent" value="${item.activeContent||''}" placeholder="Ej: 70 (para SLES 70%)">
+          </div>
+          <div class="field">
+            <label class="field-label">Vida útil (meses)</label>
+            <input class="input" type="number" name="shelfLifeMonths" value="${item.shelfLifeMonths||''}">
+          </div>
+        </div>
+
+        <div class="section-title">Inventario y costos</div>
+        <div class="form-grid form-grid-3 mb-24">
+          <div class="field">
+            <label class="field-label">Stock actual</label>
+            <input class="input" type="number" step="0.001" name="stock" value="${item.stock||0}">
+          </div>
+          <div class="field">
+            <label class="field-label">Stock mínimo</label>
+            <input class="input" type="number" step="0.001" name="minStock" value="${item.minStock||0}">
+            <div class="field-hint">Alerta si baja de este valor</div>
+          </div>
+          <div class="field">
+            <label class="field-label">Ubicación en almacén</label>
+            <input class="input" name="location" value="${ui.escape(item.location||'')}" placeholder="A-01-03">
+          </div>
+          <div class="field">
+            <label class="field-label">Último costo</label>
+            <input class="input" type="number" step="0.0001" name="lastCost" value="${item.lastCost||''}">
+          </div>
+          <div class="field">
+            <label class="field-label">Moneda</label>
+            <select class="select" name="lastCostCurrency">
+              <option value="USD" ${item.lastCostCurrency==='USD'?'selected':''}>USD ($)</option>
+              <option value="VES" ${item.lastCostCurrency==='VES'?'selected':''}>VES (Bs)</option>
+              <option value="EUR" ${item.lastCostCurrency==='EUR'?'selected':''}>EUR (€)</option>
+            </select>
+          </div>
+          <div class="field">
+            <label class="field-label">Proveedor habitual</label>
+            <select class="select" name="supplierId">
+              <option value="">—</option>
+              ${suppliers.map(s => `<option value="${s.id}" ${s.id===item.supplierId?'selected':''}>${ui.escape(s.name)}</option>`).join('')}
+            </select>
+          </div>
+        </div>
+
+        <div class="section-title">Notas</div>
+        <div class="field">
+          <textarea class="textarea" name="notes" placeholder="Observaciones, condiciones de almacenamiento, advertencias...">${ui.escape(item.notes||'')}</textarea>
+        </div>
+      </form>
+    `,
+    footer: `
+      <button class="btn btn-secondary" onclick="ui.closeModal()">Cancelar</button>
+      <button class="btn btn-primary" onclick="document.getElementById('rm-form').requestSubmit()">${ui.icon('check')} Guardar</button>
+    `
+  });
+}
+
+function saveItem(e, id) {
+  e.preventDefault();
+  const data = ui.formData(e.target);
+  if (!data.name || !data.category) {
+    ui.toast('Completa los campos obligatorios', 'error');
+    return;
+  }
+  if (id) data.id = id;
+  db.save(db.COLLECTIONS.rawMaterials, data);
+  ui.closeModal();
+  ui.toast(id ? 'Materia prima actualizada' : 'Materia prima creada', 'success');
+  render();
+}
+
+function deleteItem(id) {
+  const r = db.getById(db.COLLECTIONS.rawMaterials, id);
+  ui.confirm(
+    `¿Eliminar "${r.name}"? Esta acción no se puede deshacer.`,
+    () => {
+      db.remove(db.COLLECTIONS.rawMaterials, id);
+      ui.toast('Materia prima eliminada', 'success');
+      render();
+    },
+    { danger: true, confirmLabel: 'Eliminar' }
+  );
+}
+
+render();
+</script>
+</body>
+</html>

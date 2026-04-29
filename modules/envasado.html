@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Envasado · altcare</title>
+<link rel="stylesheet" href="../assets/css/styles.css">
+</head>
+<body>
+<script src="../assets/js/db.js"></script>
+<script src="../assets/js/auth.js"></script>
+<script src="../assets/js/currency.js"></script>
+<script src="../assets/js/tax.js"></script>
+<script src="../assets/js/ui.js"></script>
+<script>
+if (!auth.guard('envasado')) throw new Error('blocked');
+ui.renderLayout({
+  activeModule: 'envasado',
+  pageEyebrow: 'Inventario',
+  pageTitle: 'Envasado',
+  contentHtml: `
+    <div class="card" style="text-align:center;padding:64px 32px;">
+      <div style="font-size:48px;margin-bottom:16px;">🧴</div>
+      <h3 style="font-family:var(--font-display);font-style:italic;font-size:24px;margin-bottom:8px;">Próximamente</h3>
+      <p class="text-muted" style="max-width:520px;margin:0 auto;">Control de envases, etiquetas, tapas y otros materiales de empaque. Asignación a lotes de producción — Fase 2.</p>
+    </div>
+  `
+});
+</script>
+</body></html>
