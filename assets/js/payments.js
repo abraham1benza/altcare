@@ -17,9 +17,9 @@ const payments = {
     const account = {
       name, bank, accountNumber: accountNumber || '',
       currency: ccy || 'VES',
-      type: type || 'Corriente',     // Corriente, Ahorro, USD, Custodia, etc.
+      type: type || 'Corriente',
       openingBalance: parseFloat(openingBalance) || 0,
-      balance: parseFloat(openingBalance) || 0,
+      balance: 0,    // ← arranca en 0; el movimiento OPENING se encarga de subirlo
       active: true
     };
     const saved = db.save(db.COLLECTIONS.bankAccounts, account);
@@ -166,5 +166,34 @@ const payments = {
       total += usd;
     });
     return total;
+  },
+
+  /**
+   * Repara cuentas bancarias que tengan saldo duplicado por bug viejo.
+   * Recalcula el balance real desde los movimientos.
+   * Devuelve cuántas cuentas se repararon.
+   */
+  recalcAllBalances() {
+    let fixed = 0;
+    db.getAll(db.COLLECTIONS.bankAccounts).forEach(a => {
+      const moves = db.query(db.COLLECTIONS.bankMoves, m => m.accountId === a.id);
+      let realBalance = 0;
+      // Ordenar por fecha+timestamp y recalcular
+      moves.sort((x,y) => (x.timestamp||'').localeCompare(y.timestamp||''));
+      moves.forEach(m => {
+        const isCredit = ['DEPOSIT','OPENING','TRANSFER_IN','PAYMENT_IN'].includes(m.type);
+        const isDebit = ['WITHDRAWAL','TRANSFER_OUT','PAYMENT_OUT','FEE'].includes(m.type);
+        const sign = isCredit ? 1 : (isDebit ? -1 : 1);
+        realBalance += (parseFloat(m.amount) || 0) * sign;
+        m.runningBalance = realBalance;
+        db.save(db.COLLECTIONS.bankMoves, m);
+      });
+      if (Math.abs((a.balance||0) - realBalance) > 0.01) {
+        a.balance = realBalance;
+        db.save(db.COLLECTIONS.bankAccounts, a);
+        fixed++;
+      }
+    });
+    return fixed;
   }
 };
