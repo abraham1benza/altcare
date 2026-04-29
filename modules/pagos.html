@@ -58,25 +58,42 @@ function renderList() {
   // Histórico de pagos
   const allPayments = db.getAll(db.COLLECTIONS.payments).sort((a,b) => (b.date||'').localeCompare(a.date||''));
 
-  // Totales en USD
-  const cxpUSD = supplierInvoices.reduce((s, i) => {
+  // Totales POR MONEDA (más útil que solo USD si no hay tasa)
+  const cxpByCcy = { VES: 0, USD: 0, EUR: 0 };
+  supplierInvoices.forEach(i => {
     const remaining = i.totalToPay - (i.paidAmount||0);
-    let usd = remaining;
-    if (i.currency === 'VES') {
-      const r = currency.getActiveRate();
-      usd = r && r.value ? remaining / r.value : 0;
-    }
-    return s + usd;
-  }, 0);
-  const cxcUSD = salesDocs.reduce((s, d) => {
+    cxpByCcy[i.currency] = (cxpByCcy[i.currency] || 0) + remaining;
+  });
+  const cxcByCcy = { VES: 0, USD: 0, EUR: 0 };
+  salesDocs.forEach(d => {
     const remaining = d.total - (d.paidAmount||0);
-    let usd = remaining;
-    if (d.currency === 'VES') {
-      const r = currency.getActiveRate();
-      usd = r && r.value ? remaining / r.value : 0;
-    }
-    return s + usd;
-  }, 0);
+    cxcByCcy[d.currency] = (cxcByCcy[d.currency] || 0) + remaining;
+  });
+
+  // Saldo bancario por moneda
+  const bankByCcy = { VES: 0, USD: 0, EUR: 0 };
+  db.getAll(db.COLLECTIONS.bankAccounts).filter(a => a.active !== false).forEach(a => {
+    bankByCcy[a.currency] = (bankByCcy[a.currency] || 0) + (a.balance || 0);
+  });
+
+  // Helper: formatea KPI multi-moneda
+  const fmtMulti = (byCcy) => {
+    const parts = [];
+    if (byCcy.VES > 0.01) parts.push(currency.format(byCcy.VES, 'VES'));
+    if (byCcy.USD > 0.01) parts.push(currency.format(byCcy.USD, 'USD'));
+    if (byCcy.EUR > 0.01) parts.push(currency.format(byCcy.EUR, 'EUR'));
+    if (!parts.length) return '0,00';
+    return parts;
+  };
+  const renderMultiKPI = (byCcy, color) => {
+    const parts = fmtMulti(byCcy);
+    if (typeof parts === 'string') return `<div class="kpi-value" style="color:${color};">${parts}</div>`;
+    if (parts.length === 1) return `<div class="kpi-value" style="color:${color};font-size:24px;">${parts[0]}</div>`;
+    // Múltiples monedas: mostrar cada una más chica
+    return `<div style="display:flex;flex-direction:column;gap:2px;margin-top:4px;">
+      ${parts.map(p => `<div style="font-family:var(--font-display);font-size:18px;letter-spacing:-0.02em;color:${color};line-height:1.1;">${p}</div>`).join('')}
+    </div>`;
+  };
 
   // Vencidas
   const today = new Date().toISOString().slice(0,10);
@@ -99,10 +116,26 @@ function renderList() {
       </div>
 
       <div class="grid grid-4 mb-24">
-        <div class="kpi"><div class="kpi-label">Por pagar</div><div class="kpi-value" style="color:var(--danger);">$${cxpUSD.toLocaleString('en-US',{minimumFractionDigits:0,maximumFractionDigits:0})}</div><div class="kpi-value-sub">${supplierInvoices.length} factura${supplierInvoices.length!==1?'s':''}${cxpOverdue?` · ${cxpOverdue} vencida${cxpOverdue!==1?'s':''}`:''}</div></div>
-        <div class="kpi"><div class="kpi-label">Por cobrar</div><div class="kpi-value" style="color:var(--accent-ink);">$${cxcUSD.toLocaleString('en-US',{minimumFractionDigits:0,maximumFractionDigits:0})}</div><div class="kpi-value-sub">${salesDocs.length} factura${salesDocs.length!==1?'s':''}${cxcOverdue?` · ${cxcOverdue} vencida${cxcOverdue!==1?'s':''}`:''}</div></div>
-        <div class="kpi"><div class="kpi-label">Disponible</div><div class="kpi-value" style="color:var(--success);">$${payments.totalBalanceUSD().toLocaleString('en-US',{minimumFractionDigits:0,maximumFractionDigits:0})}</div><div class="kpi-value-sub">en cuentas bancarias</div></div>
-        <div class="kpi"><div class="kpi-label">Pagos registrados</div><div class="kpi-value">${allPayments.length}</div><div class="kpi-value-sub">total histórico</div></div>
+        <div class="kpi">
+          <div class="kpi-label">Por pagar</div>
+          ${renderMultiKPI(cxpByCcy, 'var(--danger)')}
+          <div class="kpi-value-sub">${supplierInvoices.length} factura${supplierInvoices.length!==1?'s':''}${cxpOverdue?` · ${cxpOverdue} vencida${cxpOverdue!==1?'s':''}`:''}</div>
+        </div>
+        <div class="kpi">
+          <div class="kpi-label">Por cobrar</div>
+          ${renderMultiKPI(cxcByCcy, 'var(--accent-ink)')}
+          <div class="kpi-value-sub">${salesDocs.length} factura${salesDocs.length!==1?'s':''}${cxcOverdue?` · ${cxcOverdue} vencida${cxcOverdue!==1?'s':''}`:''}</div>
+        </div>
+        <div class="kpi">
+          <div class="kpi-label">Disponible en bancos</div>
+          ${renderMultiKPI(bankByCcy, 'var(--success)')}
+          <div class="kpi-value-sub">${db.getAll(db.COLLECTIONS.bankAccounts).filter(a=>a.active!==false).length} cuenta(s)</div>
+        </div>
+        <div class="kpi">
+          <div class="kpi-label">Pagos registrados</div>
+          <div class="kpi-value">${allPayments.length}</div>
+          <div class="kpi-value-sub">total histórico</div>
+        </div>
       </div>
 
       <div style="display:flex;border-bottom:1px solid var(--border);margin-bottom:24px;gap:0;">
