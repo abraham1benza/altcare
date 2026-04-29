@@ -53,6 +53,8 @@
 <script src="assets/js/auth.js"></script>
 <script src="assets/js/currency.js"></script>
 <script src="assets/js/tax.js"></script>
+<script src="assets/js/inventory.js"></script>
+<script src="assets/js/formulas.js"></script>
 <script src="assets/js/ui.js"></script>
 <script>
 (function() {
@@ -77,24 +79,50 @@
 function renderDashboard() {
   document.getElementById('login-view')?.classList.add('hidden');
 
-  // KPIs
+  // KPIs base
   const rmCount = db.getAll(db.COLLECTIONS.rawMaterials).length;
-  const supplierCount = db.getAll(db.COLLECTIONS.suppliers).length;
-  const customerCount = db.getAll(db.COLLECTIONS.customers).length;
   const formulaCount = db.getAll(db.COLLECTIONS.formulas).length;
+  const ofs = db.getAll(db.COLLECTIONS.productionOrders);
+  const ofsInProcess = ofs.filter(o => o.status === 'IN_PROCESS').length;
+  const ofsPlanned = ofs.filter(o => o.status === 'PLANNED').length;
+  const fgLots = db.getAll(db.COLLECTIONS.finishedGoods).filter(l => l.balance > 0);
+  const fgQuarantine = db.getAll(db.COLLECTIONS.finishedGoods).filter(l => l.status === 'CUARENTENA' && !l.qcTestId).length;
   const activeRate = currency.getActiveRate();
-  const rates = currency.getRates();
   const cfg = db.getById(db.COLLECTIONS.config, 'main');
+
+  // Stock bajo
+  const lowStockCount = db.getAll(db.COLLECTIONS.rawMaterials).filter(rm => {
+    const min = rm.minStock || 0;
+    return min > 0 && inventory.getStockForRM(rm.id) < min;
+  }).length;
+
+  // Vencimientos
+  const expiring = inventory.getExpiringLots();
+  const expSoon = expiring.mp.length + expiring.fg.length;
+
+  // Valor inventario
+  const totalRMValue = db.getAll(db.COLLECTIONS.rmLots).filter(l => l.balance > 0).reduce((s, l) => {
+    let usd = (l.balance||0) * (l.unitCost||0);
+    if (l.costCurrency === 'VES') {
+      const r = currency.getActiveRate();
+      usd = r && r.value ? usd / r.value : 0;
+    }
+    return s + usd;
+  }, 0);
+  const totalFGValue = fgLots.reduce((s,l) => s + ((l.balance||0) * (l.unitCost||0)), 0);
 
   // Alertas
   const alerts = [];
   if (!cfg?.companyName) alerts.push({ type: 'warning', text: 'Configura los datos fiscales de tu empresa', link: 'modules/configuracion.html' });
   if (!activeRate || !activeRate.value) alerts.push({ type: 'warning', text: 'Aún no hay una tasa de cambio activa', link: 'modules/tasas-cambio.html' });
   if (db.getAll(db.COLLECTIONS.users).length === 1) alerts.push({ type: 'warning', text: 'Solo existe el usuario admin. Crea cuentas para tu equipo', link: 'modules/usuarios.html' });
+  if (fgQuarantine > 0) alerts.push({ type: 'info', text: `${fgQuarantine} lote(s) de PT esperando control de calidad`, link: 'modules/calidad.html' });
+  if (expSoon > 0) alerts.push({ type: 'warning', text: `${expSoon} lote(s) próximos a vencer (en menos de ${cfg?.expiryAlertDays||60} días)`, link: 'modules/almacen.html' });
+  if (lowStockCount > 0) alerts.push({ type: 'warning', text: `${lowStockCount} materia(s) prima(s) con stock bajo`, link: 'modules/materias-primas.html' });
 
   const alertsHtml = alerts.length ? `
     <div class="card" style="background:var(--warning-soft);border-color:#e6d4a8;margin-bottom:24px;">
-      <div class="section-title" style="color:var(--warning);margin-bottom:8px;">Pendientes de configuración</div>
+      <div class="section-title" style="color:var(--warning);margin-bottom:8px;">Atención requerida</div>
       ${alerts.map(a => `
         <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 0;border-bottom:1px solid rgba(184,134,11,0.15);">
           <span style="font-size:13.5px;color:var(--ink-2);">${a.text}</span>
@@ -104,87 +132,109 @@ function renderDashboard() {
     </div>
   ` : '';
 
-  const ratesHtml = rates.map(r => `
-    <div class="list-row" style="grid-template-columns:1fr auto auto;">
-      <div>
-        <div class="list-row-title">${r.label}</div>
-        <div class="list-row-meta">Actualizada ${ui.formatDate(r.updatedDate)}</div>
-      </div>
-      <div class="text-mono text-strong" style="font-size:15px;">
-        ${r.value > 0 ? r.value.toFixed(2) + ' Bs' : '—'}
-      </div>
-      <div>${r.active ? '<span class="badge badge-accent">Activa</span>' : ''}</div>
-    </div>
-  `).join('');
+  // Próximos a vencer (lista corta)
+  const expiringList = [...expiring.mp, ...expiring.fg].sort((a,b) => (a.expiryDate||'').localeCompare(b.expiryDate||'')).slice(0, 5);
+
+  // OFs activas
+  const activeOFs = ofs.filter(o => o.status === 'PLANNED' || o.status === 'IN_PROCESS').slice(0, 5);
 
   const content = `
     ${alertsHtml}
 
     <div class="grid grid-4 mb-24">
       <div class="kpi">
-        <div class="kpi-mark">${ui.icon('box')}</div>
-        <div class="kpi-label">Materias primas</div>
-        <div class="kpi-value">${rmCount}</div>
-        <div class="kpi-value-sub">referencias activas</div>
-      </div>
-      <div class="kpi">
         <div class="kpi-mark">${ui.icon('flask')}</div>
-        <div class="kpi-label">Fórmulas</div>
-        <div class="kpi-value">${formulaCount}</div>
-        <div class="kpi-value-sub">recetas registradas</div>
+        <div class="kpi-label">OFs activas</div>
+        <div class="kpi-value">${ofsPlanned + ofsInProcess}</div>
+        <div class="kpi-value-sub">${ofsInProcess} en proceso · ${ofsPlanned} planificadas</div>
       </div>
       <div class="kpi">
-        <div class="kpi-mark">${ui.icon('users')}</div>
-        <div class="kpi-label">Proveedores</div>
-        <div class="kpi-value">${supplierCount}</div>
-        <div class="kpi-value-sub">socios activos</div>
+        <div class="kpi-mark">${ui.icon('box')}</div>
+        <div class="kpi-label">Lotes PT activos</div>
+        <div class="kpi-value">${fgLots.length}</div>
+        <div class="kpi-value-sub">${fgQuarantine} en cuarentena</div>
       </div>
       <div class="kpi">
-        <div class="kpi-mark">${ui.icon('users')}</div>
-        <div class="kpi-label">Clientes</div>
-        <div class="kpi-value">${customerCount}</div>
-        <div class="kpi-value-sub">cuentas registradas</div>
+        <div class="kpi-mark">${ui.icon('currency')}</div>
+        <div class="kpi-label">Valor MP</div>
+        <div class="kpi-value" style="font-size:26px;">$${totalRMValue.toLocaleString('en-US',{minimumFractionDigits:0,maximumFractionDigits:0})}</div>
+        <div class="kpi-value-sub">en almacén</div>
+      </div>
+      <div class="kpi">
+        <div class="kpi-mark">${ui.icon('currency')}</div>
+        <div class="kpi-label">Valor PT</div>
+        <div class="kpi-value" style="font-size:26px;">$${totalFGValue.toLocaleString('en-US',{minimumFractionDigits:0,maximumFractionDigits:0})}</div>
+        <div class="kpi-value-sub">a costo de fabricación</div>
       </div>
     </div>
 
-    <div class="grid" style="grid-template-columns:2fr 1fr;gap:16px;">
+    <div class="grid" style="grid-template-columns:1fr 1fr;gap:16px;">
+
       <div class="card" style="padding:0;">
-        <div style="padding:20px 24px 16px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center;">
+        <div style="padding:18px 20px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center;">
           <div>
-            <div class="card-title">Tasas de cambio</div>
-            <div class="text-muted" style="font-size:12px;margin-top:2px;">Selecciona la tasa activa desde el módulo Tasas de Cambio</div>
+            <div class="card-title">OFs activas</div>
+            <div class="text-muted" style="font-size:12px;margin-top:2px;">Órdenes en curso o planificadas</div>
           </div>
-          <a href="modules/tasas-cambio.html" class="btn btn-secondary btn-sm">Gestionar</a>
+          <a href="modules/produccion.html" class="btn btn-secondary btn-sm">Ver todas</a>
         </div>
-        <div>${ratesHtml}</div>
+        ${activeOFs.length ? activeOFs.map(o => `
+          <a href="modules/produccion.html" class="list-row" style="grid-template-columns:auto 1fr auto;text-decoration:none;color:inherit;">
+            <span class="td-mono td-strong" style="font-size:12px;">${ui.escape(o.code)}</span>
+            <div>
+              <div class="td-strong" style="font-size:13px;">${ui.escape(o.formulaName||'—')}</div>
+              <div class="text-muted" style="font-size:11px;">${o.batchSize} ${o.batchUnit} · ${ui.formatDate(o.scheduledDate)}</div>
+            </div>
+            <span class="badge ${o.status==='IN_PROCESS'?'badge-warning':'badge-plain'}">${o.status==='IN_PROCESS'?'En proceso':'Planificada'}</span>
+          </a>
+        `).join('') : '<div style="padding:32px;text-align:center;color:var(--ink-3);font-size:13px;">Sin órdenes activas</div>'}
       </div>
 
-      <div class="card">
-        <div class="card-title mb-16">Acciones rápidas</div>
-        <div style="display:flex;flex-direction:column;gap:8px;">
-          <a href="modules/materias-primas.html" class="btn btn-secondary" style="justify-content:flex-start;">${ui.icon('plus')} Registrar materia prima</a>
-          <a href="modules/proveedores.html" class="btn btn-secondary" style="justify-content:flex-start;">${ui.icon('plus')} Agregar proveedor</a>
-          <a href="modules/clientes.html" class="btn btn-secondary" style="justify-content:flex-start;">${ui.icon('plus')} Agregar cliente</a>
-          <a href="modules/tasas-cambio.html" class="btn btn-secondary" style="justify-content:flex-start;">${ui.icon('refresh')} Actualizar tasas</a>
-          <a href="modules/configuracion.html" class="btn btn-secondary" style="justify-content:flex-start;">${ui.icon('settings')} Configuración</a>
+      <div class="card" style="padding:0;">
+        <div style="padding:18px 20px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center;">
+          <div>
+            <div class="card-title">Próximos vencimientos</div>
+            <div class="text-muted" style="font-size:12px;margin-top:2px;">Lotes que vencen en menos de ${cfg?.expiryAlertDays||60} días</div>
+          </div>
+          <a href="modules/almacen.html" class="btn btn-secondary btn-sm">Almacén</a>
         </div>
+        ${expiringList.length ? expiringList.map(l => `
+          <div class="list-row" style="grid-template-columns:auto 1fr auto;">
+            <span class="badge ${l.kind==='MP'?'badge-plain':'badge-accent'}" style="font-size:10px;">${l.kind}</span>
+            <div>
+              <div class="td-strong" style="font-size:13px;">${ui.escape(l.code||'')} · ${ui.escape(l.rawMaterialName||l.formulaName||'')}</div>
+              <div class="text-muted" style="font-size:11px;">${l.balance||0} ${l.unit||''}</div>
+            </div>
+            <span class="badge ${l.daysToExpiry<30?'badge-danger':'badge-warning'}">${l.daysToExpiry}d</span>
+          </div>
+        `).join('') : '<div style="padding:32px;text-align:center;color:var(--ink-3);font-size:13px;">Sin vencimientos próximos</div>'}
       </div>
+
     </div>
 
-    <div class="divider-section">
-      <span class="section-title" style="margin:0;">Estado del sistema</span>
-    </div>
+    <div class="divider-section"><span class="section-title" style="margin:0;">Acciones rápidas</span></div>
 
-    <div class="card" style="background:var(--surface-2);border-style:dashed;">
-      <div style="display:flex;gap:24px;align-items:center;flex-wrap:wrap;">
-        <div style="flex:1;min-width:200px;">
-          <div class="card-title" style="font-size:16px;">Fase 1 activa · Núcleo operativo</div>
-          <div class="text-muted" style="font-size:13px;margin-top:4px;">
-            Configuración, multi-moneda, materias primas, proveedores, clientes y usuarios listos. Próximas fases: Fórmulas → Producción → Calidad → Compras/Ventas con IVA.
-          </div>
-        </div>
-        <div class="badge badge-accent">v1.0</div>
-      </div>
+    <div class="grid grid-4">
+      <a href="modules/produccion.html" class="card" style="cursor:pointer;text-decoration:none;color:inherit;">
+        <div class="kpi-mark">${ui.icon('flask')}</div>
+        <div class="td-strong">Nueva OF</div>
+        <div class="text-muted" style="font-size:12px;margin-top:4px;">Programar producción</div>
+      </a>
+      <a href="modules/materias-primas.html" class="card" style="cursor:pointer;text-decoration:none;color:inherit;">
+        <div class="kpi-mark">${ui.icon('download')}</div>
+        <div class="td-strong">Recibir MP</div>
+        <div class="text-muted" style="font-size:12px;margin-top:4px;">Registrar entrada</div>
+      </a>
+      <a href="modules/calidad.html" class="card" style="cursor:pointer;text-decoration:none;color:inherit;">
+        <div class="kpi-mark">${ui.icon('check')}</div>
+        <div class="td-strong">Control QC</div>
+        <div class="text-muted" style="font-size:12px;margin-top:4px;">Aprobar lotes</div>
+      </a>
+      <a href="modules/trazabilidad.html" class="card" style="cursor:pointer;text-decoration:none;color:inherit;">
+        <div class="kpi-mark">${ui.icon('search')}</div>
+        <div class="td-strong">Trazar lote</div>
+        <div class="text-muted" style="font-size:12px;margin-top:4px;">Ver historial</div>
+      </a>
     </div>
   `;
 
