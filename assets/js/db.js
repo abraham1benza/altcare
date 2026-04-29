@@ -5,7 +5,7 @@
    sistema sigue llamando db.getAll(), db.save(), etc.
    ============================================ */
 
-const DB_VERSION = 2;
+const DB_VERSION = 3;
 const DB_PREFIX = 'altcare_';
 
 const COLLECTIONS = {
@@ -13,27 +13,37 @@ const COLLECTIONS = {
   config: 'config',
   rates: 'rates',
   // Inventario
-  rawMaterials: 'rawMaterials',           // catálogo de MP
-  rmLots: 'rmLots',                        // lotes de recepción de MP
-  warehouses: 'warehouses',                // almacenes físicos
-  locations: 'locations',                  // ubicaciones dentro de almacenes
-  // Comercial
+  rawMaterials: 'rawMaterials',
+  rmLots: 'rmLots',
+  warehouses: 'warehouses',
+  locations: 'locations',
+  // Comercial - master data
   suppliers: 'suppliers',
   customers: 'customers',
   // Producción
-  formulas: 'formulas',                    // fórmulas (cabecera + versión activa)
-  formulaVersions: 'formulaVersions',      // historial de versiones de cada fórmula
+  formulas: 'formulas',
+  formulaVersions: 'formulaVersions',
   productionOrders: 'productionOrders',
   qcTests: 'qcTests',
-  finishedGoods: 'finishedGoods',          // lotes de producto terminado
+  finishedGoods: 'finishedGoods',
   packaging: 'packaging',
   // Movimientos
-  warehouseMoves: 'warehouseMoves',        // kardex — todos los movimientos
-  // Comercial Fase 3
-  purchaseOrders: 'purchaseOrders',
-  salesOrders: 'salesOrders',
-  invoices: 'invoices',
-  payments: 'payments',
+  warehouseMoves: 'warehouseMoves',
+  // ===== COMERCIAL FASE 3 =====
+  // Compras
+  purchaseOrders: 'purchaseOrders',           // OCs
+  purchaseReceipts: 'purchaseReceipts',       // recepciones contra OC
+  supplierInvoices: 'supplierInvoices',       // facturas de proveedor con IVA y retenciones
+  withholdingVouchers: 'withholdingVouchers', // comprobantes de retención emitidos
+  // Ventas
+  salesOrders: 'salesOrders',                 // pedidos / cotizaciones / facturas (estado en doc)
+  salesInvoices: 'salesInvoices',             // facturas emitidas (cuando un pedido se convierte)
+  // Pagos
+  paymentMethods: 'paymentMethods',           // efectivo, transferencia, zelle, etc.
+  bankAccounts: 'bankAccounts',               // cuentas bancarias propias con saldo
+  payments: 'payments',                        // pagos (a proveedores o de clientes)
+  bankMoves: 'bankMoves',                     // movimientos por cuenta bancaria (kardex bancario)
+  // Sistema
   auditLog: 'auditLog'
 };
 
@@ -187,25 +197,39 @@ db.COLLECTIONS = COLLECTIONS;
       email: '',
       website: '',
       ivaRate: 16,
-      ivaWithholdingRate: 75,    // % de retención de IVA como agente
+      ivaWithholdingRate: 75,
       currency: 'VES',
       defaultRateType: 'BCV_USD',
       logoDataUrl: null,
-      // Alertas
-      expiryAlertDays: 60,        // alertar lotes que vencen en X días
-      lotNumberFormat: 'L-{YYYY}-{####}'  // formato auto de lote PT
+      expiryAlertDays: 60,
+      lotNumberFormat: 'L-{YYYY}-{####}',
+      // Fase 3
+      invoiceMode: 'SENIAT',                       // SENIAT | SIMPLE
+      invoiceControlNumberPrefix: '00',           // ej: 00-00000001
+      invoiceNumberPrefix: 'F',                   // ej: F-00000001
+      invoicePaymentTermsDefault: 'Contado',
+      defaultISLRRate: 0,                          // % ISLR a aplicar por defecto si proveedor no tiene
+      receiptNumberPrefix: 'REC',
+      withholdingVoucherPrefix: 'CR'
     });
   }
   // Almacén principal por defecto
   if (db.getAll(COLLECTIONS.warehouses).length === 0) {
     db.save(COLLECTIONS.warehouses, {
-      id: 'wh_main',
-      code: 'PRINCIPAL',
-      name: 'Almacén Principal',
-      address: '',
-      isDefault: true,
-      active: true
+      id: 'wh_main', code: 'PRINCIPAL', name: 'Almacén Principal',
+      address: '', isDefault: true, active: true
     });
+  }
+  // Métodos de pago por defecto
+  if (db.getAll(COLLECTIONS.paymentMethods).length === 0) {
+    [
+      { id: 'pm_efectivo',     name: 'Efectivo',           requiresBank: false, requiresReference: false },
+      { id: 'pm_transferencia',name: 'Transferencia',      requiresBank: true,  requiresReference: true },
+      { id: 'pm_zelle',        name: 'Zelle',              requiresBank: true,  requiresReference: true },
+      { id: 'pm_pagomovil',    name: 'Pago Móvil',         requiresBank: true,  requiresReference: true },
+      { id: 'pm_cheque',       name: 'Cheque',             requiresBank: true,  requiresReference: true },
+      { id: 'pm_cripto',       name: 'Criptomoneda',       requiresBank: false, requiresReference: true }
+    ].forEach(pm => db.save(COLLECTIONS.paymentMethods, { ...pm, active: true }));
   }
   // Tasas iniciales (vacías, el usuario las llena)
   if (db.getAll(COLLECTIONS.rates).length === 0) {
