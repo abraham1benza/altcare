@@ -1,7 +1,8 @@
 <!DOCTYPE html>
 <html lang="es">
 <head>
-<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Compras · altcare</title>
 <link rel="stylesheet" href="../assets/css/styles.css">
 </head>
@@ -10,20 +11,812 @@
 <script src="../assets/js/auth.js"></script>
 <script src="../assets/js/currency.js"></script>
 <script src="../assets/js/tax.js"></script>
+<script src="../assets/js/inventory.js"></script>
+<script src="../assets/js/formulas.js"></script>
+<script src="../assets/js/purchases.js"></script>
+<script src="../assets/js/sales.js"></script>
+<script src="../assets/js/payments.js"></script>
 <script src="../assets/js/ui.js"></script>
 <script>
 if (!auth.guard('compras')) throw new Error('blocked');
-ui.renderLayout({
-  activeModule: 'compras',
-  pageEyebrow: 'Comercial',
-  pageTitle: 'Compras',
-  contentHtml: `
-    <div class="card" style="text-align:center;padding:64px 32px;">
-      <div style="font-size:48px;margin-bottom:16px;">🛒</div>
-      <h3 style="font-family:var(--font-display);font-style:italic;font-size:24px;margin-bottom:8px;">Próximamente</h3>
-      <p class="text-muted" style="max-width:520px;margin:0 auto;">Órdenes de compra a proveedores con cálculo automático de IVA y retenciones (75% de IVA + ISLR si aplica). Generación de comprobantes de retención — Fase 3.</p>
+
+let view = 'list';     // list | poDetail | poCreate | invoiceDetail | invoiceCreate | receipt
+let tab = 'pos';       // pos | invoices
+let selectedId = null;
+let editing = null;
+let receiving = null;
+
+function render() {
+  if (view === 'poDetail') return renderPODetail();
+  if (view === 'poCreate') return renderPOCreate();
+  if (view === 'invoiceDetail') return renderInvoiceDetail();
+  if (view === 'invoiceCreate') return renderInvoiceCreate();
+  if (view === 'receipt') return renderReceipt();
+  return renderList();
+}
+
+// ====== LISTA ======
+
+function renderList() {
+  const pos = db.getAll(db.COLLECTIONS.purchaseOrders).sort((a,b)=>(b.issueDate||'').localeCompare(a.issueDate||''));
+  const invoices = db.getAll(db.COLLECTIONS.supplierInvoices).sort((a,b)=>(b.issueDate||'').localeCompare(a.issueDate||''));
+
+  const counts = {
+    posActive: pos.filter(p => p.status === 'DRAFT' || p.status === 'SENT' || p.status === 'PARTIAL').length,
+    posReceived: pos.filter(p => p.status === 'RECEIVED').length,
+    invPending: invoices.filter(i => i.status === 'PENDING' || i.status === 'PARTIAL').length,
+    invPaid: invoices.filter(i => i.status === 'PAID').length
+  };
+
+  // Total por pagar
+  const pendingTotal = invoices.filter(i => i.status === 'PENDING' || i.status === 'PARTIAL').reduce((s, i) => {
+    let usd = (i.totalToPay - (i.paidAmount||0));
+    if (i.currency === 'VES') {
+      const r = currency.getActiveRate();
+      usd = r && r.value ? usd / r.value : 0;
+    }
+    return s + usd;
+  }, 0);
+
+  const tabContent = tab === 'pos' ? renderPOTable(pos) : renderInvoiceTable(invoices);
+
+  ui.renderLayout({
+    activeModule: 'compras', pageEyebrow: 'Comercial', pageTitle: 'Compras',
+    contentHtml: `
+      <div class="action-bar">
+        <div class="action-bar-left">
+          <h2 class="action-bar-title">Compras</h2>
+          <span class="action-bar-count">${counts.posActive} OC activas · ${counts.invPending} factura(s) por pagar · $${pendingTotal.toFixed(2)} adeudados</span>
+        </div>
+        <div class="action-bar-right">
+          ${tab === 'pos' ? `<button class="btn btn-primary" onclick="newPO()">${ui.icon('plus')} Nueva OC</button>` : `<button class="btn btn-primary" onclick="newInvoice()">${ui.icon('plus')} Nueva factura</button>`}
+        </div>
+      </div>
+
+      <div style="display:flex;border-bottom:1px solid var(--border);margin-bottom:24px;gap:0;">
+        <button class="btn btn-ghost" style="border-radius:0;border-bottom:2px solid ${tab==='pos'?'var(--ink)':'transparent'};color:${tab==='pos'?'var(--ink)':'var(--ink-3)'};" onclick="changeTab('pos')">Órdenes de compra (${pos.length})</button>
+        <button class="btn btn-ghost" style="border-radius:0;border-bottom:2px solid ${tab==='invoices'?'var(--ink)':'transparent'};color:${tab==='invoices'?'var(--ink)':'var(--ink-3)'};" onclick="changeTab('invoices')">Facturas (${invoices.length})</button>
+      </div>
+
+      ${tabContent}
+    `
+  });
+}
+
+function changeTab(t) { tab = t; render(); }
+
+function renderPOTable(pos) {
+  if (!pos.length) return `<div class="empty-state"><div class="empty-state-icon">${ui.icon('box')}</div><div class="empty-state-title">Sin órdenes de compra</div><div class="empty-state-text">Crea tu primera OC para empezar a gestionar compras a proveedores.</div><button class="btn btn-primary" onclick="newPO()">${ui.icon('plus')} Nueva OC</button></div>`;
+  return `<div class="table-wrap"><table>
+    <thead><tr><th>Código</th><th>Proveedor</th><th>Fecha</th><th>Esperada</th><th style="text-align:right;">Total</th><th>Moneda</th><th>Estado</th><th style="text-align:right;width:100px;">Acciones</th></tr></thead>
+    <tbody>${pos.map(p => {
+      const s = purchases.PO_STATUS[p.status] || { label: p.status, color: 'badge-plain' };
+      return `<tr style="cursor:pointer;" onclick="openPO('${p.id}')">
+        <td><span class="td-mono td-strong">${p.code}</span></td>
+        <td><div class="td-strong">${ui.escape(p.supplierName)}</div><div class="text-muted" style="font-size:11px;">${ui.escape(p.supplierRif||'')}</div></td>
+        <td><span class="text-muted">${ui.formatDate(p.issueDate)}</span></td>
+        <td><span class="text-muted">${p.expectedDate ? ui.formatDate(p.expectedDate) : '—'}</span></td>
+        <td style="text-align:right;"><span class="td-mono td-strong">${currency.format(p.subtotal, p.currency)}</span></td>
+        <td><span class="badge ${p.currency==='USD'?'badge-accent':'badge-plain'}">${p.currency}</span></td>
+        <td><span class="badge ${s.color}">${s.label}</span></td>
+        <td class="td-actions" onclick="event.stopPropagation()">
+          <button class="btn-icon" onclick="openPO('${p.id}')">${ui.icon('edit')}</button>
+        </td>
+      </tr>`;
+    }).join('')}</tbody></table></div>`;
+}
+
+function renderInvoiceTable(invoices) {
+  if (!invoices.length) return `<div class="empty-state"><div class="empty-state-title">Sin facturas registradas</div><div class="empty-state-text">Las facturas se crean desde una OC recibida o directamente.</div><button class="btn btn-primary" onclick="newInvoice()">${ui.icon('plus')} Nueva factura</button></div>`;
+  return `<div class="table-wrap"><table>
+    <thead><tr><th>Código</th><th>N° Factura prov.</th><th>Proveedor</th><th>Fecha</th><th style="text-align:right;">Total</th><th style="text-align:right;">A pagar</th><th>Moneda</th><th>Estado</th><th style="text-align:right;width:120px;">Acciones</th></tr></thead>
+    <tbody>${invoices.map(inv => {
+      const s = purchases.INV_STATUS[inv.status] || { label: inv.status, color: 'badge-plain' };
+      return `<tr style="cursor:pointer;" onclick="openInvoice('${inv.id}')">
+        <td><span class="td-mono td-strong">${inv.code}</span></td>
+        <td><span class="td-mono">${ui.escape(inv.supplierInvoiceNumber||'—')}</span></td>
+        <td>${ui.escape(inv.supplierName)}</td>
+        <td><span class="text-muted">${ui.formatDate(inv.issueDate)}</span></td>
+        <td style="text-align:right;"><span class="td-mono">${currency.format(inv.total, inv.currency)}</span></td>
+        <td style="text-align:right;"><span class="td-mono td-strong">${currency.format(inv.totalToPay, inv.currency)}</span></td>
+        <td><span class="badge ${inv.currency==='USD'?'badge-accent':'badge-plain'}">${inv.currency}</span></td>
+        <td><span class="badge ${s.color}">${s.label}</span></td>
+        <td class="td-actions" onclick="event.stopPropagation()">
+          <button class="btn-icon" onclick="openInvoice('${inv.id}')">${ui.icon('edit')}</button>
+          ${inv.voucherId ? `<button class="btn-icon" onclick="downloadVoucher('${inv.voucherId}')" title="Descargar comprobante">${ui.icon('download')}</button>` : ''}
+        </td>
+      </tr>`;
+    }).join('')}</tbody></table></div>`;
+}
+
+// ====== CREAR OC ======
+
+function newPO() {
+  const suppliers = db.getAll(db.COLLECTIONS.suppliers);
+  if (!suppliers.length) { ui.toast('Primero crea un proveedor', 'error'); return; }
+  editing = {
+    code: db.nextCode(db.COLLECTIONS.purchaseOrders, 'OC'),
+    supplierId: '', supplierName: '',
+    currency: 'USD', rateType: 'BCV_USD',
+    issueDate: new Date().toISOString().slice(0,10),
+    expectedDate: '',
+    items: [],
+    notes: ''
+  };
+  view = 'poCreate'; render();
+}
+
+function renderPOCreate() {
+  const e = editing;
+  const suppliers = db.getAll(db.COLLECTIONS.suppliers);
+  const rms = db.getAll(db.COLLECTIONS.rawMaterials);
+  const subtotal = e.items.reduce((s, it) => s + ((parseFloat(it.quantity)||0) * (parseFloat(it.unitPrice)||0)), 0);
+
+  const itemsHtml = `<div class="card mb-24" style="padding:0;">
+    <div style="padding:14px 20px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center;">
+      <div class="card-title" style="font-size:15px;">Ítems</div>
+      <button class="btn btn-secondary btn-sm" onclick="addPOItem()">${ui.icon('plus')} Agregar ítem</button>
     </div>
-  `
-});
+    ${e.items.length ? `<table>
+      <thead><tr><th style="width:35%;">Materia prima</th><th style="text-align:right;">Cantidad</th><th>Unidad</th><th style="text-align:right;">Precio unit.</th><th style="text-align:right;">Subtotal</th><th style="width:40px;"></th></tr></thead>
+      <tbody>${e.items.map((it, idx) => `<tr>
+        <td><select class="select" onchange="updatePOItem(${idx}, 'rawMaterialId', this.value)">
+          <option value="">— MP —</option>
+          ${rms.map(rm => `<option value="${rm.id}" ${rm.id===it.rawMaterialId?'selected':''}>${ui.escape(rm.code)} · ${ui.escape(rm.name)}</option>`).join('')}
+        </select></td>
+        <td style="text-align:right;"><input class="input" type="number" step="0.001" value="${it.quantity||''}" style="text-align:right;font-family:var(--font-mono);" oninput="updatePOItem(${idx},'quantity',this.value)"></td>
+        <td><span class="text-muted">${it.unit||'—'}</span></td>
+        <td style="text-align:right;"><input class="input" type="number" step="0.0001" value="${it.unitPrice||''}" style="text-align:right;font-family:var(--font-mono);" oninput="updatePOItem(${idx},'unitPrice',this.value)"></td>
+        <td style="text-align:right;"><span class="td-mono td-strong">${currency.format((it.quantity||0)*(it.unitPrice||0), e.currency)}</span></td>
+        <td><button class="btn-icon" onclick="removePOItem(${idx})">${ui.icon('trash')}</button></td>
+      </tr>`).join('')}</tbody>
+    </table>` : '<div style="padding:32px;text-align:center;color:var(--ink-3);">Sin ítems. Agregá al menos uno.</div>'}
+  </div>`;
+
+  ui.renderLayout({
+    activeModule: 'compras', pageEyebrow: 'Nueva OC', pageTitle: e.code,
+    contentHtml: `
+      <div class="action-bar">
+        <div class="action-bar-left"><button class="btn btn-ghost btn-sm" onclick="cancelEdit()">← Cancelar</button></div>
+        <div class="action-bar-right"><button class="btn btn-primary" onclick="savePO()">${ui.icon('check')} Crear OC</button></div>
+      </div>
+      <div class="card mb-24">
+        <div class="card-header"><div class="card-title">Información</div></div>
+        <div class="form-grid form-grid-2">
+          <div class="field"><label class="field-label">Código</label><input class="input" value="${e.code}" disabled style="font-family:var(--font-mono);"></div>
+          <div class="field"><label class="field-label">Proveedor *</label><select class="select" onchange="onSupplierChange(this.value)"><option value="">— Selecciona —</option>${suppliers.map(s => `<option value="${s.id}" ${s.id===e.supplierId?'selected':''}>${ui.escape(s.name)} · ${ui.escape(s.rif||'')}</option>`).join('')}</select></div>
+          <div class="field"><label class="field-label">Fecha emisión</label><input class="input" type="date" value="${e.issueDate}" oninput="editing.issueDate=this.value"></div>
+          <div class="field"><label class="field-label">Fecha esperada</label><input class="input" type="date" value="${e.expectedDate||''}" oninput="editing.expectedDate=this.value"></div>
+          <div class="field"><label class="field-label">Moneda</label><select class="select" onchange="editing.currency=this.value;render()"><option value="USD" ${e.currency==='USD'?'selected':''}>USD ($)</option><option value="VES" ${e.currency==='VES'?'selected':''}>VES (Bs)</option><option value="EUR" ${e.currency==='EUR'?'selected':''}>EUR (€)</option></select></div>
+          <div class="field"><label class="field-label">Tasa de referencia</label><select class="select" onchange="editing.rateType=this.value">${currency.getRates().map(r => `<option value="${r.type}" ${r.type===e.rateType?'selected':''}>${r.label} (${r.value.toFixed(2)})</option>`).join('')}</select></div>
+        </div>
+      </div>
+
+      ${itemsHtml}
+
+      <div class="card mb-24" style="padding:16px 24px;background:var(--accent-soft);border-color:#cdd9c8;">
+        <div style="display:flex;justify-content:space-between;align-items:center;">
+          <div class="kpi-label">Subtotal de la OC</div>
+          <div style="font-family:var(--font-display);font-size:28px;letter-spacing:-0.02em;">${currency.format(subtotal, e.currency)}</div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-header"><div class="card-title">Notas</div></div>
+        <textarea class="textarea" oninput="editing.notes=this.value">${ui.escape(e.notes||'')}</textarea>
+      </div>
+      <div style="height:80px;"></div>
+    `
+  });
+}
+
+function onSupplierChange(sid) {
+  editing.supplierId = sid;
+  const s = db.getById(db.COLLECTIONS.suppliers, sid);
+  if (s) {
+    editing.supplierName = s.name;
+    if (s.preferredCurrency) editing.currency = s.preferredCurrency;
+  }
+  render();
+}
+
+function addPOItem() {
+  editing.items.push({ rawMaterialId: '', quantity: 0, unit: '', unitPrice: 0 });
+  render();
+}
+
+function updatePOItem(idx, field, val) {
+  if (field === 'quantity' || field === 'unitPrice') val = parseFloat(val) || 0;
+  editing.items[idx][field] = val;
+  // Si cambió la MP, actualizar nombre y unidad
+  if (field === 'rawMaterialId' && val) {
+    const rm = db.getById(db.COLLECTIONS.rawMaterials, val);
+    if (rm) {
+      editing.items[idx].rawMaterialCode = rm.code;
+      editing.items[idx].rawMaterialName = rm.name;
+      editing.items[idx].unit = rm.unit;
+      editing.items[idx].unitPrice = rm.lastCost || 0;
+    }
+  }
+  render();
+}
+
+function removePOItem(idx) {
+  editing.items.splice(idx, 1);
+  render();
+}
+
+function cancelEdit() {
+  editing = null; receiving = null;
+  view = 'list'; render();
+}
+
+function savePO() {
+  const e = editing;
+  if (!e.supplierId) { ui.toast('Selecciona proveedor', 'error'); return; }
+  if (!e.items.length) { ui.toast('Agrega al menos un ítem', 'error'); return; }
+  for (const it of e.items) {
+    if (!it.rawMaterialId || !it.quantity || it.quantity <= 0) { ui.toast('Hay items incompletos', 'error'); return; }
+  }
+  const po = purchases.createPO({
+    supplierId: e.supplierId, currency: e.currency, rateType: e.rateType,
+    items: e.items, notes: e.notes, expectedDate: e.expectedDate
+  });
+  ui.toast('OC creada', 'success');
+  selectedId = po.id; view = 'poDetail'; editing = null;
+  render();
+}
+
+// ====== DETALLE OC ======
+
+function openPO(id) { selectedId = id; view = 'poDetail'; render(); }
+function backToList() { view = 'list'; selectedId = null; render(); }
+
+function renderPODetail() {
+  const po = db.getById(db.COLLECTIONS.purchaseOrders, selectedId);
+  if (!po) { backToList(); return; }
+  const s = purchases.PO_STATUS[po.status] || { label: po.status, color: 'badge-plain' };
+
+  let actions = '';
+  if (po.status === 'DRAFT') {
+    actions = `<button class="btn btn-secondary" onclick="changePOStatus('${po.id}','SENT')">Marcar como enviada</button>`;
+  }
+  if (po.status === 'SENT' || po.status === 'PARTIAL' || po.status === 'DRAFT') {
+    actions += `<button class="btn btn-primary" onclick="newReceipt('${po.id}')">${ui.icon('download')} Recibir mercancía</button>`;
+  }
+  if (po.status === 'RECEIVED' || po.status === 'PARTIAL') {
+    actions += `<button class="btn btn-primary" onclick="newInvoiceFromPO('${po.id}')">${ui.icon('plus')} Crear factura</button>`;
+  }
+  if (po.status !== 'CANCELLED' && po.status !== 'INVOICED') {
+    actions += `<button class="btn btn-danger" onclick="cancelPO('${po.id}')">${ui.icon('x')} Cancelar</button>`;
+  }
+
+  const itemsTable = `<table>
+    <thead><tr><th>MP</th><th style="text-align:right;">Pedido</th><th style="text-align:right;">Recibido</th><th style="text-align:right;">Pendiente</th><th style="text-align:right;">Precio unit.</th><th style="text-align:right;">Subtotal</th></tr></thead>
+    <tbody>${po.items.map(it => {
+      const pending = it.quantity - (it.receivedQuantity || 0);
+      return `<tr>
+        <td><div class="td-strong">${ui.escape(it.rawMaterialName)}</div><div class="text-muted" style="font-size:11px;">${ui.escape(it.rawMaterialCode||'')}</div></td>
+        <td style="text-align:right;"><span class="td-mono">${it.quantity.toFixed(3)}</span> <span class="text-muted">${it.unit||''}</span></td>
+        <td style="text-align:right;"><span class="td-mono ${(it.receivedQuantity||0)>0?'td-strong':'td-muted'}">${(it.receivedQuantity||0).toFixed(3)}</span></td>
+        <td style="text-align:right;"><span class="td-mono ${pending>0?'':'td-muted'}" ${pending>0?'style="color:var(--warning);"':''}>${pending.toFixed(3)}</span></td>
+        <td style="text-align:right;"><span class="td-mono">${currency.format(it.unitPrice, po.currency)}</span></td>
+        <td style="text-align:right;"><span class="td-mono td-strong">${currency.format(it.subtotal, po.currency)}</span></td>
+      </tr>`;
+    }).join('')}</tbody>
+  </table>`;
+
+  // Recepciones asociadas
+  const receipts = db.query(db.COLLECTIONS.purchaseReceipts, r => r.poId === po.id);
+
+  ui.renderLayout({
+    activeModule: 'compras', pageEyebrow: 'Orden de Compra', pageTitle: po.code,
+    contentHtml: `
+      <div class="action-bar">
+        <div class="action-bar-left">
+          <button class="btn btn-ghost btn-sm" onclick="backToList()">← Volver</button>
+          <span style="margin-left:16px;"><span class="badge ${s.color}">${s.label}</span></span>
+        </div>
+        <div class="action-bar-right">${actions}</div>
+      </div>
+
+      <div class="grid grid-4 mb-24">
+        <div class="kpi"><div class="kpi-label">Proveedor</div><div class="kpi-value" style="font-size:18px;">${ui.escape(po.supplierName)}</div><div class="kpi-value-sub">${ui.escape(po.supplierRif||'')}</div></div>
+        <div class="kpi"><div class="kpi-label">Emitida</div><div class="kpi-value" style="font-size:20px;">${ui.formatDate(po.issueDate)}</div></div>
+        <div class="kpi"><div class="kpi-label">Esperada</div><div class="kpi-value" style="font-size:20px;">${po.expectedDate?ui.formatDate(po.expectedDate):'—'}</div></div>
+        <div class="kpi"><div class="kpi-label">Total</div><div class="kpi-value" style="color:var(--accent-ink);">${currency.format(po.subtotal, po.currency)}</div></div>
+      </div>
+
+      ${po.notes ? `<div class="card mb-24" style="padding:16px;"><div class="kpi-label">Notas</div><div style="margin-top:6px;">${ui.escape(po.notes)}</div></div>` : ''}
+
+      <div class="card mb-24" style="padding:0;">
+        <div style="padding:14px 20px;border-bottom:1px solid var(--border);"><div class="card-title" style="font-size:15px;">Ítems</div></div>
+        ${itemsTable}
+      </div>
+
+      ${receipts.length ? `
+        <div class="divider-section"><span class="section-title" style="margin:0;">Recepciones (${receipts.length})</span></div>
+        <div class="card" style="padding:0;">
+          <table>
+            <thead><tr><th>Recepción</th><th>Fecha</th><th style="text-align:right;">Items</th><th>Notas</th></tr></thead>
+            <tbody>${receipts.map(r => `<tr>
+              <td><span class="td-mono td-strong">${r.code}</span></td>
+              <td><span class="text-muted">${ui.formatDate(r.receiptDate)}</span></td>
+              <td style="text-align:right;"><span class="td-mono">${r.items.length}</span></td>
+              <td><span class="text-muted" style="font-size:12px;">${ui.escape(r.notes||'')}</span></td>
+            </tr>`).join('')}</tbody>
+          </table>
+        </div>
+      ` : ''}
+    `
+  });
+}
+
+function changePOStatus(id, status) {
+  purchases.changePOStatus(id, status);
+  ui.toast('Estado actualizado', 'success');
+  render();
+}
+
+function cancelPO(id) {
+  ui.confirm('¿Cancelar esta OC?', () => {
+    purchases.changePOStatus(id, 'CANCELLED');
+    ui.toast('OC cancelada', 'success');
+    render();
+  }, { danger: true, confirmLabel: 'Cancelar OC' });
+}
+
+// ====== RECEPCIÓN ======
+
+function newReceipt(poId) {
+  const po = db.getById(db.COLLECTIONS.purchaseOrders, poId);
+  if (!po) return;
+  const warehouses = db.getAll(db.COLLECTIONS.warehouses);
+  const defaultWh = warehouses.find(w => w.isDefault) || warehouses[0];
+  receiving = {
+    poId, poCode: po.code,
+    receiptDate: new Date().toISOString().slice(0,10),
+    notes: '',
+    items: po.items.map((it, idx) => ({
+      poItemIdx: idx,
+      rawMaterialName: it.rawMaterialName,
+      rawMaterialId: it.rawMaterialId,
+      pending: it.quantity - (it.receivedQuantity || 0),
+      unit: it.unit,
+      quantity: it.quantity - (it.receivedQuantity || 0),  // por defecto recibo todo lo pendiente
+      lotNumber: '',
+      expiryDate: '',
+      warehouseId: defaultWh?.id,
+      locationId: ''
+    }))
+  };
+  view = 'receipt'; render();
+}
+
+function renderReceipt() {
+  const r = receiving;
+  const warehouses = db.getAll(db.COLLECTIONS.warehouses);
+
+  const itemsHtml = `<div class="card" style="padding:0;">
+    <div style="padding:14px 20px;border-bottom:1px solid var(--border);"><div class="card-title" style="font-size:15px;">Items a recibir</div><div class="text-muted" style="font-size:12px;margin-top:2px;">Indicá cantidad recibida y datos del lote. Pon 0 si no recibís ahora.</div></div>
+    <table>
+      <thead><tr><th>MP</th><th style="text-align:right;">Pendiente</th><th style="text-align:right;">A recibir</th><th>Lote prov.</th><th>Vence</th><th>Almacén</th><th>Ubicación</th></tr></thead>
+      <tbody>${r.items.map((it, idx) => {
+        const locs = inventory.getLocationsForWarehouse(it.warehouseId || warehouses[0]?.id);
+        return `<tr>
+          <td><div class="td-strong">${ui.escape(it.rawMaterialName)}</div></td>
+          <td style="text-align:right;"><span class="td-mono">${it.pending.toFixed(3)}</span> <span class="text-muted">${it.unit}</span></td>
+          <td style="text-align:right;"><input class="input" type="number" step="0.001" max="${it.pending}" value="${it.quantity||0}" style="text-align:right;font-family:var(--font-mono);width:120px;" oninput="updateReceiveItem(${idx},'quantity',this.value)"></td>
+          <td><input class="input" value="${it.lotNumber||''}" oninput="updateReceiveItem(${idx},'lotNumber',this.value)" placeholder="Nº lote"></td>
+          <td><input class="input" type="date" value="${it.expiryDate||''}" oninput="updateReceiveItem(${idx},'expiryDate',this.value)"></td>
+          <td><select class="select" onchange="updateReceiveItem(${idx},'warehouseId',this.value);render()">${warehouses.map(w => `<option value="${w.id}" ${w.id===it.warehouseId?'selected':''}>${ui.escape(w.name)}</option>`).join('')}</select></td>
+          <td><select class="select" onchange="updateReceiveItem(${idx},'locationId',this.value)"><option value="">—</option>${locs.map(l => `<option value="${l.id}" ${l.id===it.locationId?'selected':''}>${ui.escape(l.code)}</option>`).join('')}</select></td>
+        </tr>`;
+      }).join('')}</tbody>
+    </table>
+  </div>`;
+
+  ui.renderLayout({
+    activeModule: 'compras', pageEyebrow: 'Recepción', pageTitle: 'Contra OC ' + r.poCode,
+    contentHtml: `
+      <div class="action-bar">
+        <div class="action-bar-left"><button class="btn btn-ghost btn-sm" onclick="cancelEdit()">← Cancelar</button></div>
+        <div class="action-bar-right"><button class="btn btn-primary" onclick="saveReceipt()">${ui.icon('check')} Confirmar recepción</button></div>
+      </div>
+      <div class="card mb-24">
+        <div class="form-grid form-grid-2">
+          <div class="field"><label class="field-label">Fecha de recepción *</label><input class="input" type="date" value="${r.receiptDate}" oninput="receiving.receiptDate=this.value"></div>
+          <div class="field"><label class="field-label">Notas</label><input class="input" value="${ui.escape(r.notes||'')}" oninput="receiving.notes=this.value"></div>
+        </div>
+      </div>
+      ${itemsHtml}
+      <div class="card mt-24" style="padding:16px;background:var(--accent-soft);border-color:#cdd9c8;">
+        <div style="font-size:12.5px;color:var(--accent-ink);">Al confirmar, se crearán automáticamente los lotes de MP en inventario, se actualizarán los costos de las MPs, y la OC pasará a estado "Recibida" o "Parcial".</div>
+      </div>
+      <div style="height:80px;"></div>
+    `
+  });
+}
+
+function updateReceiveItem(idx, field, val) {
+  if (field === 'quantity') val = Math.max(0, Math.min(receiving.items[idx].pending, parseFloat(val) || 0));
+  receiving.items[idx][field] = val;
+}
+
+function saveReceipt() {
+  const r = receiving;
+  const itemsToReceive = r.items.filter(it => it.quantity > 0);
+  if (!itemsToReceive.length) { ui.toast('Indica al menos una cantidad a recibir', 'error'); return; }
+  try {
+    purchases.registerReceipt({
+      poId: r.poId,
+      receiptDate: r.receiptDate,
+      receivedItems: itemsToReceive,
+      notes: r.notes
+    });
+    ui.toast('Recepción registrada · lotes creados', 'success');
+    selectedId = r.poId; view = 'poDetail'; receiving = null;
+    render();
+  } catch (err) {
+    ui.toast(err.message, 'error');
+  }
+}
+
+// ====== FACTURA DE PROVEEDOR ======
+
+function newInvoice() {
+  ui.toast('Crea factura desde una OC recibida', 'error');
+}
+
+function newInvoiceFromPO(poId) {
+  const po = db.getById(db.COLLECTIONS.purchaseOrders, poId);
+  if (!po) return;
+  const supplier = db.getById(db.COLLECTIONS.suppliers, po.supplierId);
+  editing = {
+    poId,
+    poCode: po.code,
+    supplierId: po.supplierId,
+    supplierName: po.supplierName,
+    supplierRif: po.supplierRif,
+    supplierInvoiceNumber: '',
+    supplierInvoiceControl: '',
+    issueDate: new Date().toISOString().slice(0,10),
+    dueDate: '',
+    currency: po.currency,
+    items: po.items.map(it => ({
+      rawMaterialId: it.rawMaterialId,
+      rawMaterialName: it.rawMaterialName,
+      description: it.rawMaterialName,
+      quantity: it.receivedQuantity || it.quantity,
+      unit: it.unit,
+      unitPrice: it.unitPrice
+    })),
+    exempt: false,
+    applyIVAWithholding: supplier?.applyIVAWithholding !== false,
+    islrRate: supplier?.islrRate || 0,
+    notes: ''
+  };
+  view = 'invoiceCreate'; render();
+}
+
+function renderInvoiceCreate() {
+  const e = editing;
+  const cfg = db.getById(db.COLLECTIONS.config, 'main') || {};
+
+  const subtotal = e.items.reduce((s, it) => s + (parseFloat(it.quantity) * parseFloat(it.unitPrice)), 0);
+  const calc = tax.computeInvoiceWithWithholdings({
+    subtotal, exempt: e.exempt,
+    applyIVAWithholding: e.applyIVAWithholding,
+    islrRate: parseFloat(e.islrRate) || 0
+  });
+
+  const itemsHtml = `<div class="card mb-24" style="padding:0;">
+    <div style="padding:14px 20px;border-bottom:1px solid var(--border);"><div class="card-title" style="font-size:15px;">Ítems de la factura</div></div>
+    <table>
+      <thead><tr><th>Descripción</th><th style="text-align:right;">Cantidad</th><th>Unidad</th><th style="text-align:right;">Precio unit.</th><th style="text-align:right;">Subtotal</th></tr></thead>
+      <tbody>${e.items.map((it, idx) => `<tr>
+        <td><input class="input" value="${ui.escape(it.description||'')}" oninput="updateInvItem(${idx},'description',this.value)"></td>
+        <td style="text-align:right;"><input class="input" type="number" step="0.001" value="${it.quantity}" style="text-align:right;font-family:var(--font-mono);" oninput="updateInvItem(${idx},'quantity',this.value);render()"></td>
+        <td><span class="text-muted">${it.unit||'—'}</span></td>
+        <td style="text-align:right;"><input class="input" type="number" step="0.0001" value="${it.unitPrice}" style="text-align:right;font-family:var(--font-mono);" oninput="updateInvItem(${idx},'unitPrice',this.value);render()"></td>
+        <td style="text-align:right;"><span class="td-mono td-strong">${currency.format(it.quantity*it.unitPrice, e.currency)}</span></td>
+      </tr>`).join('')}</tbody>
+    </table>
+  </div>`;
+
+  ui.renderLayout({
+    activeModule: 'compras', pageEyebrow: 'Nueva factura', pageTitle: e.poCode ? 'Factura de OC ' + e.poCode : 'Nueva factura',
+    contentHtml: `
+      <div class="action-bar">
+        <div class="action-bar-left"><button class="btn btn-ghost btn-sm" onclick="cancelEdit()">← Cancelar</button></div>
+        <div class="action-bar-right"><button class="btn btn-primary" onclick="saveInvoice()">${ui.icon('check')} Crear factura</button></div>
+      </div>
+      <div class="card mb-24">
+        <div class="card-header"><div class="card-title">Datos de la factura del proveedor</div></div>
+        <div class="form-grid form-grid-2">
+          <div class="field"><label class="field-label">Proveedor</label><input class="input" value="${ui.escape(e.supplierName)}" disabled></div>
+          <div class="field"><label class="field-label">RIF</label><input class="input" value="${ui.escape(e.supplierRif||'')}" disabled></div>
+          <div class="field"><label class="field-label">N° Factura del proveedor *</label><input class="input" value="${ui.escape(e.supplierInvoiceNumber||'')}" oninput="editing.supplierInvoiceNumber=this.value" placeholder="Ej: 00001234"></div>
+          <div class="field"><label class="field-label">N° de Control *</label><input class="input" value="${ui.escape(e.supplierInvoiceControl||'')}" oninput="editing.supplierInvoiceControl=this.value" placeholder="Ej: 00-12345678"></div>
+          <div class="field"><label class="field-label">Fecha emisión *</label><input class="input" type="date" value="${e.issueDate}" oninput="editing.issueDate=this.value"></div>
+          <div class="field"><label class="field-label">Vencimiento</label><input class="input" type="date" value="${e.dueDate||''}" oninput="editing.dueDate=this.value"></div>
+        </div>
+      </div>
+
+      ${itemsHtml}
+
+      <div class="card mb-24">
+        <div class="card-header"><div class="card-title">Impuestos y retenciones</div></div>
+        <div class="form-grid form-grid-3">
+          <div class="field" style="grid-column:1/-1;">
+            <div class="checkbox-row"><input type="checkbox" id="exempt-cb" ${e.exempt?'checked':''} onchange="editing.exempt=this.checked;render()"><label for="exempt-cb" style="font-size:13px;">Operación exenta de IVA</label></div>
+          </div>
+          ${!e.exempt ? `
+            <div class="field" style="grid-column:1/-1;">
+              <div class="checkbox-row"><input type="checkbox" id="ret-iva-cb" ${e.applyIVAWithholding?'checked':''} onchange="editing.applyIVAWithholding=this.checked;render()"><label for="ret-iva-cb" style="font-size:13px;">Aplicar retención de IVA (${cfg.ivaWithholdingRate||75}% como agente)</label></div>
+            </div>
+          ` : ''}
+          <div class="field"><label class="field-label">% Retención ISLR</label><input class="input" type="number" step="0.01" value="${e.islrRate||0}" oninput="editing.islrRate=this.value;render()"><div class="field-hint">0 si no aplica</div></div>
+        </div>
+      </div>
+
+      <!-- Resumen fiscal -->
+      <div class="card mb-24" style="padding:0;">
+        <div style="padding:14px 20px;border-bottom:1px solid var(--border);"><div class="card-title" style="font-size:15px;">Resumen</div></div>
+        <div style="padding:0 20px;">
+          ${[
+            ['Subtotal', currency.format(calc.subtotal, e.currency), false],
+            [e.exempt ? 'Exento de IVA' : `IVA ${calc.ivaRate}%`, currency.format(calc.ivaAmount, e.currency), false],
+            ['Total facturado', currency.format(calc.total, e.currency), true],
+            ...(calc.ivaWithheld > 0 ? [[`(-) Retención IVA ${calc.ivaWithholdingRate}%`, '−' + currency.format(calc.ivaWithheld, e.currency).replace('Bs.','Bs.'), false]] : []),
+            ...(calc.islrWithheld > 0 ? [[`(-) Retención ISLR ${calc.islrRate}%`, '−' + currency.format(calc.islrWithheld, e.currency), false]] : []),
+            ['Total a pagar al proveedor', currency.format(calc.totalToPay, e.currency), true, true]
+          ].map(([label, val, strong, accent]) => `
+            <div class="list-row" style="grid-template-columns:1fr auto;border:none;padding:10px 0;${accent?'border-top:1px solid var(--border);background:var(--accent-soft);margin:0 -20px;padding:14px 20px;':''}">
+              <span style="font-size:13px;${strong?'font-weight:600;':''}${accent?'color:var(--accent-ink);font-weight:600;':''}">${label}</span>
+              <span class="${strong?'td-mono td-strong':'td-mono'}" style="font-size:14px;${accent?'color:var(--accent-ink);font-size:18px;font-family:var(--font-display);font-style:italic;':''}">${val}</span>
+            </div>
+          `).join('')}
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-header"><div class="card-title">Notas</div></div>
+        <textarea class="textarea" oninput="editing.notes=this.value">${ui.escape(e.notes||'')}</textarea>
+      </div>
+      <div style="height:80px;"></div>
+    `
+  });
+}
+
+function updateInvItem(idx, field, val) {
+  if (field === 'quantity' || field === 'unitPrice') val = parseFloat(val) || 0;
+  editing.items[idx][field] = val;
+}
+
+function saveInvoice() {
+  const e = editing;
+  if (!e.supplierInvoiceNumber || !e.supplierInvoiceControl) { ui.toast('Número de factura y control son obligatorios', 'error'); return; }
+  try {
+    const inv = purchases.createSupplierInvoice({
+      poId: e.poId,
+      supplierInvoiceNumber: e.supplierInvoiceNumber,
+      supplierInvoiceControl: e.supplierInvoiceControl,
+      issueDate: e.issueDate,
+      dueDate: e.dueDate,
+      items: e.items,
+      exempt: e.exempt,
+      applyIVAWithholding: e.applyIVAWithholding,
+      islrRate: e.islrRate,
+      notes: e.notes
+    });
+    ui.toast('Factura registrada' + (inv.voucherId ? ' · comprobante de retención generado' : ''), 'success');
+    selectedId = inv.id; view = 'invoiceDetail'; editing = null;
+    render();
+  } catch (err) {
+    ui.toast(err.message, 'error');
+  }
+}
+
+// ====== DETALLE FACTURA ======
+
+function openInvoice(id) { selectedId = id; view = 'invoiceDetail'; render(); }
+
+function renderInvoiceDetail() {
+  const inv = db.getById(db.COLLECTIONS.supplierInvoices, selectedId);
+  if (!inv) { backToList(); return; }
+  const s = purchases.INV_STATUS[inv.status] || { label: inv.status, color: 'badge-plain' };
+  const paymentsForInv = payments.getPaymentsForDoc('OUT', inv.id);
+  const remaining = inv.totalToPay - (inv.paidAmount || 0);
+
+  ui.renderLayout({
+    activeModule: 'compras', pageEyebrow: 'Factura de proveedor', pageTitle: inv.code,
+    contentHtml: `
+      <div class="action-bar">
+        <div class="action-bar-left">
+          <button class="btn btn-ghost btn-sm" onclick="backToList()">← Volver</button>
+          <span style="margin-left:16px;"><span class="badge ${s.color}">${s.label}</span></span>
+        </div>
+        <div class="action-bar-right">
+          ${inv.voucherId ? `<button class="btn btn-secondary" onclick="downloadVoucher('${inv.voucherId}')">${ui.icon('download')} Comprobante retención</button>` : ''}
+          ${remaining > 0.01 && inv.status !== 'CANCELLED' ? `<a href="pagos.html?invoice=${inv.id}" class="btn btn-primary">${ui.icon('plus')} Registrar pago</a>` : ''}
+        </div>
+      </div>
+
+      <div class="grid grid-4 mb-24">
+        <div class="kpi"><div class="kpi-label">Proveedor</div><div class="kpi-value" style="font-size:18px;">${ui.escape(inv.supplierName)}</div><div class="kpi-value-sub">${ui.escape(inv.supplierRif||'')}</div></div>
+        <div class="kpi"><div class="kpi-label">Factura proveedor</div><div class="kpi-value td-mono" style="font-size:16px;">${ui.escape(inv.supplierInvoiceNumber||'—')}</div><div class="kpi-value-sub">Ctrl: ${ui.escape(inv.supplierInvoiceControl||'—')}</div></div>
+        <div class="kpi"><div class="kpi-label">Total facturado</div><div class="kpi-value">${currency.formatCompact(inv.total, inv.currency)}</div><div class="kpi-value-sub">${inv.currency}</div></div>
+        <div class="kpi"><div class="kpi-label">A pagar</div><div class="kpi-value" style="color:var(--accent-ink);">${currency.formatCompact(inv.totalToPay, inv.currency)}</div><div class="kpi-value-sub">restante: ${currency.format(remaining, inv.currency)}</div></div>
+      </div>
+
+      <div class="grid grid-2 mb-24">
+        <div class="card">
+          <div class="card-header"><div class="card-title">Detalle fiscal</div></div>
+          <div style="font-size:13px;line-height:2;">
+            <div class="flex-between"><span class="text-muted">Subtotal</span><span class="td-mono">${currency.format(inv.subtotal, inv.currency)}</span></div>
+            <div class="flex-between"><span class="text-muted">${inv.exempt ? 'Exento de IVA' : `IVA ${inv.ivaRate}%`}</span><span class="td-mono">${currency.format(inv.ivaAmount, inv.currency)}</span></div>
+            <div class="flex-between" style="border-top:1px solid var(--border);padding-top:8px;margin-top:8px;"><span class="text-strong">Total</span><span class="td-mono td-strong">${currency.format(inv.total, inv.currency)}</span></div>
+            ${inv.ivaWithheld > 0 ? `<div class="flex-between" style="color:var(--danger);"><span>(-) Retención IVA ${inv.ivaWithholdingRate}%</span><span class="td-mono">−${currency.format(inv.ivaWithheld, inv.currency)}</span></div>` : ''}
+            ${inv.islrWithheld > 0 ? `<div class="flex-between" style="color:var(--danger);"><span>(-) Retención ISLR ${inv.islrRate}%</span><span class="td-mono">−${currency.format(inv.islrWithheld, inv.currency)}</span></div>` : ''}
+            <div class="flex-between" style="border-top:1px solid var(--border);padding-top:8px;margin-top:8px;background:var(--accent-soft);padding:8px 12px;border-radius:6px;"><span class="text-strong" style="color:var(--accent-ink);">Total a pagar</span><span class="td-mono td-strong" style="color:var(--accent-ink);font-size:16px;">${currency.format(inv.totalToPay, inv.currency)}</span></div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-header"><div class="card-title">Pagos (${paymentsForInv.length})</div></div>
+          ${paymentsForInv.length ? paymentsForInv.map(p => `
+            <div class="list-row" style="grid-template-columns:1fr auto;padding:10px 0;border-bottom:1px solid var(--border);">
+              <div>
+                <div class="td-strong" style="font-size:13px;">${ui.escape(p.paymentMethodName)}</div>
+                <div class="text-muted" style="font-size:11px;">${ui.formatDate(p.date)} · ${ui.escape(p.reference||'')}</div>
+              </div>
+              <div class="td-mono td-strong">${currency.format(p.amountInDocCurrency, inv.currency)}</div>
+            </div>
+          `).join('') : '<div class="text-muted" style="font-size:13px;padding:16px 0;">Sin pagos registrados</div>'}
+          ${inv.paidAmount > 0 ? `
+            <div style="margin-top:12px;padding:10px;background:var(--surface-2);border-radius:6px;font-size:12px;">
+              Pagado: <strong>${currency.format(inv.paidAmount, inv.currency)}</strong> de ${currency.format(inv.totalToPay, inv.currency)} (${inv.paidPercent.toFixed(1)}%)
+            </div>
+          ` : ''}
+        </div>
+      </div>
+
+      <div class="card" style="padding:0;">
+        <div style="padding:14px 20px;border-bottom:1px solid var(--border);"><div class="card-title" style="font-size:15px;">Items</div></div>
+        <table>
+          <thead><tr><th>Descripción</th><th style="text-align:right;">Cantidad</th><th>Unidad</th><th style="text-align:right;">Precio</th><th style="text-align:right;">Subtotal</th></tr></thead>
+          <tbody>${inv.items.map(it => `<tr>
+            <td>${ui.escape(it.description)}</td>
+            <td style="text-align:right;"><span class="td-mono">${it.quantity.toFixed(3)}</span></td>
+            <td><span class="text-muted">${it.unit||'—'}</span></td>
+            <td style="text-align:right;"><span class="td-mono">${currency.format(it.unitPrice, inv.currency)}</span></td>
+            <td style="text-align:right;"><span class="td-mono td-strong">${currency.format(it.subtotal, inv.currency)}</span></td>
+          </tr>`).join('')}</tbody>
+        </table>
+      </div>
+    `
+  });
+}
+
+// ====== COMPROBANTE DE RETENCIÓN PDF ======
+
+function downloadVoucher(voucherId) {
+  const v = db.getById(db.COLLECTIONS.withholdingVouchers, voucherId);
+  if (!v) return;
+  const cfg = db.getById(db.COLLECTIONS.config, 'main') || {};
+
+  const html = `<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Comprobante ${v.code}</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500&family=Inter+Tight:wght@400;500;600&display=swap');
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'Inter Tight', sans-serif; font-size: 11pt; color: #1a1a18; padding: 40px 50px; line-height: 1.5; }
+  .header { display: flex; justify-content: space-between; align-items: flex-start; padding-bottom: 24px; border-bottom: 2px solid #1a1a18; margin-bottom: 24px; }
+  .brand { font-family: 'Fraunces', serif; font-size: 24pt; font-style: italic; letter-spacing: -1px; line-height: 1; }
+  .brand span { color: #5b7a5a; }
+  .company-info { text-align: right; font-size: 10pt; color: #4a4a45; line-height: 1.6; }
+  .doc-title { font-family: 'Fraunces', serif; font-size: 22pt; font-style: italic; margin-bottom: 4px; }
+  .doc-sub { font-size: 10pt; letter-spacing: 0.16em; text-transform: uppercase; color: #8a8a82; font-weight: 600; }
+  .info-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; margin: 24px 0; padding: 20px; background: #f4f3ef; border-radius: 8px; }
+  .info-box h3 { font-size: 9pt; letter-spacing: 0.12em; text-transform: uppercase; color: #8a8a82; font-weight: 600; margin-bottom: 8px; }
+  .info-line { font-size: 11pt; margin-bottom: 4px; }
+  .info-line strong { font-weight: 600; }
+  table { width: 100%; border-collapse: collapse; margin: 16px 0; }
+  th { text-align: left; font-size: 9pt; letter-spacing: 0.12em; text-transform: uppercase; color: #8a8a82; font-weight: 600; padding: 10px 12px; border-bottom: 2px solid #1a1a18; }
+  td { padding: 12px; border-bottom: 1px solid #e7e5df; }
+  .num { text-align: right; font-family: monospace; }
+  .total-row { background: #5b7a5a; color: white; font-size: 14pt; font-weight: 600; }
+  .total-row td { border: none; padding: 16px 12px; }
+  .toolbar { background: #1a1a18; color: white; padding: 12px 20px; margin: -40px -50px 32px -50px; display: flex; justify-content: space-between; align-items: center; }
+  .btn-print { background: #5b7a5a; color: white; padding: 8px 16px; border: none; border-radius: 4px; cursor: pointer; font-family: inherit; font-size: 11pt; font-weight: 500; }
+  .footer { margin-top: 32px; font-size: 9pt; color: #8a8a82; text-align: center; padding-top: 12px; border-top: 1px solid #e7e5df; }
+  .signatures { display: grid; grid-template-columns: 1fr 1fr; gap: 48px; margin-top: 64px; }
+  .signature { text-align: center; }
+  .signature-line { border-top: 1px solid #1a1a18; padding-top: 8px; }
+  @media print { body { padding: 20mm; } .no-print { display: none; } @page { margin: 0; size: A4; } }
+</style></head><body>
+<div class="toolbar no-print"><span>Comprobante ${v.code} · Vista previa</span><button class="btn-print" onclick="window.print()">Imprimir / Guardar como PDF</button></div>
+
+<div class="header">
+  <div>
+    <div class="brand"><span>alt</span>care</div>
+    <div style="font-size: 9pt; letter-spacing: 0.16em; text-transform: uppercase; color: #8a8a82; font-weight: 600; margin-top: 4px;">Comprobante de Retención</div>
+  </div>
+  <div class="company-info">
+    ${cfg.companyName ? `<div style="font-weight:600;color:#1a1a18;">${escapeHtml(cfg.companyName)}</div>` : ''}
+    ${cfg.rif ? `<div>RIF: ${escapeHtml(cfg.rif)}</div>` : ''}
+    ${cfg.address ? `<div>${escapeHtml(cfg.address)}</div>` : ''}
+  </div>
+</div>
+
+<div class="doc-sub">Comprobante</div>
+<h1 class="doc-title">Comprobante de Retención de Impuestos</h1>
+<div style="font-size:11pt;color:#4a4a45;margin-top:8px;">N°: <strong style="font-family:monospace;">${escapeHtml(v.code)}</strong> · Emitido: ${formatDate(v.issueDate)}</div>
+
+<div class="info-grid">
+  <div class="info-box">
+    <h3>Agente de Retención</h3>
+    <div class="info-line"><strong>${escapeHtml(cfg.companyName||'—')}</strong></div>
+    <div class="info-line">RIF: ${escapeHtml(cfg.rif||'—')}</div>
+    <div class="info-line">${escapeHtml(cfg.address||'')}</div>
+  </div>
+  <div class="info-box">
+    <h3>Sujeto Retenido (Proveedor)</h3>
+    <div class="info-line"><strong>${escapeHtml(v.supplierName)}</strong></div>
+    <div class="info-line">RIF: ${escapeHtml(v.supplierRif||'—')}</div>
+    <div class="info-line">Factura: ${escapeHtml(v.supplierInvoiceNumber||'—')}</div>
+    <div class="info-line">Control: ${escapeHtml(v.supplierInvoiceControl||'—')}</div>
+  </div>
+</div>
+
+<h2 style="font-family:'Fraunces',serif;font-size:16pt;font-style:italic;margin:24px 0 8px 0;">Detalle de retenciones</h2>
+<table>
+  <thead><tr><th>Concepto</th><th>Base imponible</th><th>%</th><th class="num">Monto retenido</th></tr></thead>
+  <tbody>
+    ${v.ivaWithheld > 0 ? `<tr>
+      <td><strong>Retención de IVA</strong><br><span style="font-size:9pt;color:#8a8a82;">Sobre IVA facturado: ${formatMoney(v.ivaAmount, v.currency)}</span></td>
+      <td>${formatMoney(v.taxableBase, v.currency)}</td>
+      <td>${v.ivaWithholdingRate}%</td>
+      <td class="num"><strong>${formatMoney(v.ivaWithheld, v.currency)}</strong></td>
+    </tr>` : ''}
+    ${v.islrWithheld > 0 ? `<tr>
+      <td><strong>Retención de ISLR</strong></td>
+      <td>${formatMoney(v.taxableBase, v.currency)}</td>
+      <td>${v.islrRate}%</td>
+      <td class="num"><strong>${formatMoney(v.islrWithheld, v.currency)}</strong></td>
+    </tr>` : ''}
+    <tr class="total-row">
+      <td colspan="3">Total retenido</td>
+      <td class="num">${formatMoney(v.totalWithheld, v.currency)}</td>
+    </tr>
+  </tbody>
+</table>
+
+<div class="signatures">
+  <div class="signature"><div class="signature-line">${escapeHtml(cfg.companyName||'—')}<br><span style="font-size:9pt;color:#8a8a82;">Agente de Retención</span></div></div>
+  <div class="signature"><div class="signature-line">${escapeHtml(v.supplierName)}<br><span style="font-size:9pt;color:#8a8a82;">Sujeto Retenido</span></div></div>
+</div>
+
+<div class="footer">Este comprobante deja constancia de las retenciones efectuadas conforme a la normativa SENIAT vigente · ${formatDateTime(new Date().toISOString())}</div>
+</body></html>`;
+
+  const w = window.open('', '_blank');
+  if (!w) { ui.toast('Permite ventanas emergentes', 'error'); return; }
+  w.document.write(html);
+  w.document.close();
+}
+
+function escapeHtml(s) { return String(s ?? '').replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m])); }
+function formatDate(iso) { return iso ? new Date(iso).toLocaleDateString('es-VE', { day: '2-digit', month: 'long', year: 'numeric' }) : '—'; }
+function formatDateTime(iso) { return iso ? new Date(iso).toLocaleString('es-VE', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }) : '—'; }
+function formatMoney(amount, ccy) {
+  const n = parseFloat(amount) || 0;
+  if (ccy === 'USD') return '$ ' + n.toLocaleString('en-US', { minimumFractionDigits: 2 });
+  if (ccy === 'EUR') return '€ ' + n.toLocaleString('de-DE', { minimumFractionDigits: 2 });
+  return n.toLocaleString('es-VE', { minimumFractionDigits: 2 }) + ' Bs.';
+}
+
+render();
 </script>
-</body></html>
+</body>
+</html>
