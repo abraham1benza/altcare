@@ -7,6 +7,8 @@
 <link rel="stylesheet" href="../assets/css/styles.css">
 </head>
 <body>
+<script type="module" src="../assets/js/firebase-init.js"></script>
+<script src="../assets/js/module-init-v2.js"></script>
 <script src="../assets/js/db.js"></script>
 <script src="../assets/js/auth.js"></script>
 <script src="../assets/js/currency.js"></script>
@@ -18,7 +20,10 @@
 <script src="../assets/js/payments.js"></script>
 <script src="../assets/js/ui.js"></script>
 <script>
-if (!auth.guard('pagos')) throw new Error('blocked');
+(async function() {
+
+// Esperar a Firebase + Auth + DB lista
+await moduleInit('pagos');
 
 let tab = 'cxp';        // cxp | cxc | history
 let creating = null;     // borrador de pago
@@ -499,6 +504,8 @@ function recalcStatuses() {
 }
 
 render();
+
+})();
 </script>
 </body>
 </html>

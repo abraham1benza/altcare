@@ -6,13 +6,18 @@
 <link rel="stylesheet" href="../assets/css/styles.css">
 </head>
 <body>
+<script type="module" src="../assets/js/firebase-init.js"></script>
+<script src="../assets/js/module-init-v2.js"></script>
 <script src="../assets/js/db.js"></script>
 <script src="../assets/js/auth.js"></script>
 <script src="../assets/js/currency.js"></script>
 <script src="../assets/js/tax.js"></script>
 <script src="../assets/js/ui.js"></script>
 <script>
-if (!auth.guard('envasado')) throw new Error('blocked');
+(async function() {
+
+// Esperar a Firebase + Auth + DB lista
+await moduleInit('envasado');
 ui.renderLayout({
   activeModule: 'envasado',
   pageEyebrow: 'Inventario',
@@ -25,5 +30,7 @@ ui.renderLayout({
     </div>
   `
 });
+
+})();
 </script>
 </body></html>

@@ -7,6 +7,8 @@
 <link rel="stylesheet" href="../assets/css/styles.css">
 </head>
 <body>
+<script type="module" src="../assets/js/firebase-init.js"></script>
+<script src="../assets/js/module-init-v2.js"></script>
 <script src="../assets/js/db.js"></script>
 <script src="../assets/js/auth.js"></script>
 <script src="../assets/js/currency.js"></script>
@@ -15,7 +17,10 @@
 <script src="../assets/js/formulas.js"></script>
 <script src="../assets/js/ui.js"></script>
 <script>
-if (!auth.guard('calidad')) throw new Error('blocked');
+(async function() {
+
+// Esperar a Firebase + Auth + DB lista
+await moduleInit('calidad');
 
 const QC_STATUS = {
   PENDING:     { label: 'Pendiente',                color: 'badge-plain'   },
@@ -516,6 +521,8 @@ function formatDateTime(iso) {
 }
 
 render();
+
+})();
 </script>
 </body>
 </html>

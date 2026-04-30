@@ -7,6 +7,8 @@
 <link rel="stylesheet" href="../assets/css/styles.css">
 </head>
 <body>
+<script type="module" src="../assets/js/firebase-init.js"></script>
+<script src="../assets/js/module-init-v2.js"></script>
 <script src="../assets/js/db.js"></script>
 <script src="../assets/js/auth.js"></script>
 <script src="../assets/js/currency.js"></script>
@@ -18,7 +20,10 @@
 <script src="../assets/js/payments.js"></script>
 <script src="../assets/js/ui.js"></script>
 <script>
-if (!auth.guard('ventas')) throw new Error('blocked');
+(async function() {
+
+// Esperar a Firebase + Auth + DB lista
+await moduleInit('ventas');
 
 let view = 'list';        // list | detail | create | assignLots
 let selectedId = null;
@@ -899,6 +904,8 @@ function formatMoney(amount, ccy) {
 }
 
 render();
+
+})();
 </script>
 </body>
 </html>

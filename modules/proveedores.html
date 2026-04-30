@@ -7,13 +7,18 @@
 <link rel="stylesheet" href="../assets/css/styles.css">
 </head>
 <body>
+<script type="module" src="../assets/js/firebase-init.js"></script>
+<script src="../assets/js/module-init-v2.js"></script>
 <script src="../assets/js/db.js"></script>
 <script src="../assets/js/auth.js"></script>
 <script src="../assets/js/currency.js"></script>
 <script src="../assets/js/tax.js"></script>
 <script src="../assets/js/ui.js"></script>
 <script>
-if (!auth.guard('proveedores')) throw new Error('blocked');
+(async function() {
+
+// Esperar a Firebase + Auth + DB lista
+await moduleInit('proveedores');
 
 const PAYMENT_TERMS = ['Contado', '7 días', '15 días', '30 días', '45 días', '60 días', '90 días'];
 const TAXPAYER_TYPES = ['Contribuyente Ordinario', 'Contribuyente Formal', 'Contribuyente Especial', 'No Contribuyente', 'Persona Natural'];
@@ -262,6 +267,8 @@ function deleteItem(id) {
 }
 
 render();
+
+})();
 </script>
 </body>
 </html>
