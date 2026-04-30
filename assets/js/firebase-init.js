@@ -1,14 +1,15 @@
 /* ============================================
    firebase-init.js — Inicialización de Firebase
-   Carga Firebase v10 modular vía CDN.
-   Expone window.fb con todas las funciones que necesitamos.
+   CRÍTICO: usa initializeAuth() en vez de getAuth() para configurar
+   la persistencia DESDE EL INICIO de manera síncrona.
+   Esto evita que la sesión se pierda al navegar entre páginas.
    ============================================ */
 
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.13.2/firebase-app.js";
 import {
-  getAuth, signInWithEmailAndPassword, signOut, onAuthStateChanged,
+  initializeAuth, getAuth, signInWithEmailAndPassword, signOut, onAuthStateChanged,
   createUserWithEmailAndPassword, sendPasswordResetEmail, updatePassword,
-  setPersistence, browserLocalPersistence, indexedDBLocalPersistence
+  browserLocalPersistence, indexedDBLocalPersistence
 } from "https://www.gstatic.com/firebasejs/10.13.2/firebase-auth.js";
 import {
   getFirestore, collection, doc, getDoc, getDocs, setDoc, addDoc, updateDoc,
@@ -26,21 +27,24 @@ const firebaseConfig = {
 };
 
 const app = initializeApp(firebaseConfig);
-const auth = getAuth(app);
+
+// CRÍTICO: initializeAuth permite pasar persistencia DESDE EL INICIO
+// (a diferencia de getAuth + setPersistence que es async y crea race condition)
+let auth;
+try {
+  auth = initializeAuth(app, {
+    persistence: [indexedDBLocalPersistence, browserLocalPersistence]
+  });
+  console.log('[firebase] Auth inicializado con persistencia local');
+} catch (err) {
+  // Si ya estaba inicializado (otro script lo hizo), usar getAuth
+  console.warn('[firebase] initializeAuth falló, usando getAuth:', err.message);
+  auth = getAuth(app);
+}
+
 const dbFs = getFirestore(app);
 
-console.log('[firebase] Configurando persistencia...');
-
-// CRÍTICO: forzar persistencia local (IndexedDB) para que la sesión sobreviva recargas y navegación entre páginas
-setPersistence(auth, indexedDBLocalPersistence)
-  .then(() => console.log('[firebase] Persistencia: indexedDBLocalPersistence OK'))
-  .catch(err => {
-    console.warn('[firebase] indexedDBLocalPersistence falló, probando browserLocalPersistence:', err.message);
-    return setPersistence(auth, browserLocalPersistence);
-  })
-  .catch(err => console.error('[firebase] No se pudo configurar persistencia:', err.message));
-
-// Habilitar caché offline para Firestore
+// Habilitar caché offline para Firestore (no bloquea)
 enableIndexedDbPersistence(dbFs).catch(err => {
   if (err.code === 'failed-precondition') {
     console.warn('[firebase] Persistencia Firestore no disponible (múltiples pestañas)');
@@ -53,10 +57,10 @@ window.fb = {
   app, auth, db: dbFs,
   signInWithEmailAndPassword, signOut, onAuthStateChanged,
   createUserWithEmailAndPassword, sendPasswordResetEmail, updatePassword,
-  setPersistence, browserLocalPersistence, indexedDBLocalPersistence,
+  browserLocalPersistence, indexedDBLocalPersistence,
   collection, doc, getDoc, getDocs, setDoc, addDoc, updateDoc, deleteDoc,
   query, where, orderBy, limit, serverTimestamp, onSnapshot, writeBatch, Timestamp
 };
 
 window.dispatchEvent(new CustomEvent('firebase-ready'));
-console.log('[firebase] Inicializado · projectId: alternativecare · currentUser:', auth.currentUser?.email || '(no logueado todavía)');
+console.log('[firebase] Inicializado · projectId:', firebaseConfig.projectId);
