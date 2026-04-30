@@ -262,12 +262,15 @@ function openPresentationForm(item) {
     subtitle: `Fórmula: ${f.name}`,
     body: `
       <form id="pres-form" onsubmit="savePresentation(event, '${item.id||''}', '${item.formulaId}')">
+        <input type="hidden" id="pres-formula-id" value="${item.formulaId}">
+        <input type="hidden" id="pres-current-id" value="${item.id||''}">
+        <input type="hidden" id="pres-suggested-base" value="${ui.escape(item.suggestedSkuBase||'')}">
         <div class="section-title">Identificación</div>
         <div class="form-grid form-grid-2 mb-24">
           <div class="field"><label class="field-label">SKU *</label><input class="input" name="sku" id="sku-input" required value="${ui.escape(item.sku||'')}" placeholder="Ej: SHX-250" style="font-family:var(--font-mono);" oninput="onSkuManualEdit()"><div class="field-hint">Código único del producto envasado · se sugiere automáticamente al ingresar tamaño</div></div>
           <div class="field"><label class="field-label">Nombre comercial *</label><input class="input" name="name" id="name-input" required value="${ui.escape(item.name||'')}" placeholder="Ej: Shampoo X · 250mL"></div>
-          <div class="field"><label class="field-label">Tamaño *</label><input class="input" type="number" step="0.1" name="size" id="size-input" required value="${item.size||''}" placeholder="250" oninput="onSizeChange('${item.formulaId}', '${item.id||''}', '${ui.escape(item.suggestedSkuBase||'')}')"></div>
-          <div class="field"><label class="field-label">Unidad del tamaño *</label><select class="select" name="sizeUnit" id="size-unit-input" required onchange="onSizeChange('${item.formulaId}', '${item.id||''}', '${ui.escape(item.suggestedSkuBase||'')}')">
+          <div class="field"><label class="field-label">Tamaño *</label><input class="input" type="number" step="0.1" name="size" id="size-input" required value="${item.size||''}" placeholder="250" oninput="onSizeChange()"></div>
+          <div class="field"><label class="field-label">Unidad del tamaño *</label><select class="select" name="sizeUnit" id="size-unit-input" required onchange="onSizeChange()">
             <option value="mL" ${item.sizeUnit==='mL'?'selected':''}>mL</option>
             <option value="L" ${item.sizeUnit==='L'?'selected':''}>L</option>
             <option value="g" ${item.sizeUnit==='g'?'selected':''}>g</option>
@@ -275,7 +278,7 @@ function openPresentationForm(item) {
           </select></div>
         </div>
 
-        ${item.formulaId ? `<div id="size-warnings" style="margin-bottom:16px;"></div>` : ''}
+        <div id="size-warnings" style="margin-bottom:16px;"></div>
 
         <div class="section-title">Componentes de envasado</div>
         <p class="text-muted mb-16" style="font-size:12px;">Indicá cuántas unidades de cada envase/tapa/etiqueta se usan por unidad de producto envasado. Todos opcionales — agregá los que apliquen a esta presentación.</p>
@@ -336,33 +339,49 @@ function removeComponentRow(idx) {
 
 function savePresentation(e, id, formulaId) {
   e.preventDefault();
-  const fd = new FormData(e.target);
-  const components = JSON.parse(fd.get('_components') || '[]');
-  // Validar componentes
+
+  // Leer del DOM (más robusto que confiar en FormData de inputs hidden)
+  const sku = (document.getElementById('sku-input')?.value || '').trim();
+  const name = (document.getElementById('name-input')?.value || '').trim();
+  const size = parseFloat(document.getElementById('size-input')?.value) || 0;
+  const sizeUnit = document.getElementById('size-unit-input')?.value || 'mL';
+  let components = [];
+  try {
+    components = JSON.parse(document.getElementById('components-data')?.value || '[]');
+  } catch { components = []; }
+  // Filtrar componentes válidos
   const validComponents = components.filter(c => c.rawMaterialId && c.quantity > 0);
 
   const data = {
     formulaId,
-    formulaName: db.getById(db.COLLECTIONS.formulas, formulaId).name,
-    sku: fd.get('sku').trim(),
-    name: fd.get('name').trim(),
-    size: parseFloat(fd.get('size')),
-    sizeUnit: fd.get('sizeUnit'),
+    formulaName: db.getById(db.COLLECTIONS.formulas, formulaId)?.name || '',
+    sku,
+    name,
+    size,
+    sizeUnit,
     components: validComponents,
     active: true
   };
 
-  if (!data.sku || !data.name || !data.size) { ui.toast('Completa los campos obligatorios', 'error'); return; }
+  if (!data.sku || !data.name || !data.size) {
+    ui.toast('Completa SKU, nombre y tamaño', 'error');
+    return;
+  }
 
   // Validar SKU único
   const existing = db.query(db.COLLECTIONS.presentations, p => p.sku === data.sku && p.id !== id);
   if (existing.length) { ui.toast('Ese SKU ya está en uso', 'error'); return; }
 
   if (id) data.id = id;
-  db.save(db.COLLECTIONS.presentations, data);
-  ui.closeModal();
-  ui.toast(id ? 'Presentación actualizada' : 'Presentación creada', 'success');
-  render();
+  try {
+    db.save(db.COLLECTIONS.presentations, data);
+    ui.closeModal();
+    ui.toast(id ? 'Presentación actualizada' : 'Presentación creada', 'success');
+    render();
+  } catch (err) {
+    console.error('[savePresentation] Error:', err);
+    ui.toast('Error guardando: ' + err.message, 'error');
+  }
 }
 
 function deletePresentation(id) {
@@ -375,14 +394,20 @@ function deletePresentation(id) {
 }
 
 /** Cuando cambia el tamaño/unidad, sugerir SKU automático y alertar si hay duplicados */
-function onSizeChange(formulaId, currentId, suggestedSkuBase) {
+function onSizeChange() {
+  const formulaIdInput = document.getElementById('pres-formula-id');
+  const currentIdInput = document.getElementById('pres-current-id');
+  const suggestedBaseInput = document.getElementById('pres-suggested-base');
   const sizeInput = document.getElementById('size-input');
   const unitInput = document.getElementById('size-unit-input');
   const skuInput = document.getElementById('sku-input');
   const nameInput = document.getElementById('name-input');
   const warningsDiv = document.getElementById('size-warnings');
 
-  if (!sizeInput || !unitInput || !skuInput) return;
+  if (!sizeInput || !unitInput || !skuInput || !formulaIdInput) return;
+  const formulaId = formulaIdInput.value;
+  const currentId = currentIdInput ? currentIdInput.value : '';
+  const suggestedSkuBase = suggestedBaseInput ? suggestedBaseInput.value : '';
   const size = parseFloat(sizeInput.value) || 0;
   const unit = unitInput.value || 'mL';
 
@@ -395,7 +420,7 @@ function onSizeChange(formulaId, currentId, suggestedSkuBase) {
     }
     // Sugerir nombre si vacío
     const f = db.getById(db.COLLECTIONS.formulas, formulaId);
-    if (f && (!nameInput.value || nameInput.dataset.autoGenerated === 'true')) {
+    if (f && nameInput && (!nameInput.value || nameInput.dataset.autoGenerated === 'true')) {
       nameInput.value = `${f.name} · ${size}${unit}`;
       nameInput.dataset.autoGenerated = 'true';
     }
@@ -601,28 +626,42 @@ function renderEdit() {
   });
 }
 
-function changeMode(m) { editingVersion.mode = m; render(); }
+function changeMode(m) { syncFormulaFormFields(); editingVersion.mode = m; render(); }
 function updatePhaseName(idx, val) { editingVersion.phases[idx].name = val; }
-function addPhase() { editingVersion.phases.push({ name: 'Fase nueva', items: [] }); render(); }
+function addPhase() { syncFormulaFormFields(); editingVersion.phases.push({ name: 'Fase nueva', items: [] }); render(); }
 function removePhase(idx) {
-  ui.confirm('¿Eliminar fase?', () => { editingVersion.phases.splice(idx, 1); render(); }, { danger: true, confirmLabel: 'Eliminar' });
+  ui.confirm('¿Eliminar fase?', () => { syncFormulaFormFields(); editingVersion.phases.splice(idx, 1); render(); }, { danger: true, confirmLabel: 'Eliminar' });
 }
 function addItem(pIdx) {
+  syncFormulaFormFields();
   if (!editingVersion.phases[pIdx].items) editingVersion.phases[pIdx].items = [];
   editingVersion.phases[pIdx].items.push({ rawMaterialId: '', amount: 0, notes: '' });
   render();
+}
+
+/** Lee los inputs visibles y los guarda en editingVersion antes de un re-render */
+function syncFormulaFormFields() {
+  if (!editingVersion) return;
+  const nameInput = document.getElementById('formula-name-input');
+  const descInput = document.getElementById('formula-description-input');
+  const catInput = document.getElementById('formula-category-input');
+  const noteInput = document.getElementById('formula-changenote-input');
+  if (nameInput) editingVersion.name = nameInput.value;
+  if (descInput) editingVersion.description = descInput.value;
+  if (catInput) editingVersion.category = catInput.value;
+  if (noteInput) editingVersion.changeNote = noteInput.value;
 }
 function updateItem(pIdx, iIdx, field, val) {
   if (field === 'amount') val = parseFloat(val) || 0;
   editingVersion.phases[pIdx].items[iIdx][field] = val;
 }
-function removeItem(pIdx, iIdx) { editingVersion.phases[pIdx].items.splice(iIdx, 1); render(); }
-function addQC() { editingVersion.qcParams.push({ name: '', unit: '', min: '', max: '', method: '' }); render(); }
+function removeItem(pIdx, iIdx) { syncFormulaFormFields(); editingVersion.phases[pIdx].items.splice(iIdx, 1); render(); }
+function addQC() { syncFormulaFormFields(); editingVersion.qcParams.push({ name: '', unit: '', min: '', max: '', method: '' }); render(); }
 function updateQC(idx, field, val) {
   if (field === 'min' || field === 'max') val = val === '' ? '' : parseFloat(val);
   editingVersion.qcParams[idx][field] = val;
 }
-function removeQC(idx) { editingVersion.qcParams.splice(idx, 1); render(); }
+function removeQC(idx) { syncFormulaFormFields(); editingVersion.qcParams.splice(idx, 1); render(); }
 
 function saveFormula() {
   const e = editingVersion;
