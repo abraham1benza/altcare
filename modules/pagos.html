@@ -20,10 +20,8 @@
 <script src="../assets/js/payments.js"></script>
 <script src="../assets/js/ui.js"></script>
 <script>
-(async function() {
-
-// Esperar a Firebase + Auth + DB lista
-await moduleInit('pagos');
+moduleInit('pagos').then(async (ok) => {
+if (!ok) return;
 
 let tab = 'cxp';        // cxp | cxc | history
 let creating = null;     // borrador de pago
@@ -505,7 +503,26 @@ function recalcStatuses() {
 
 render();
 
-})();
+
+// Exponer funciones a window (para que onclick="" del HTML pueda llamarlas)
+Object.assign(window, {
+  render: typeof render !== 'undefined' ? render : undefined,
+  renderList: typeof renderList !== 'undefined' ? renderList : undefined,
+  changeTab: typeof changeTab !== 'undefined' ? changeTab : undefined,
+  renderCXPTable: typeof renderCXPTable !== 'undefined' ? renderCXPTable : undefined,
+  renderCXCTable: typeof renderCXCTable !== 'undefined' ? renderCXCTable : undefined,
+  renderHistoryTable: typeof renderHistoryTable !== 'undefined' ? renderHistoryTable : undefined,
+  newPaymentForInvoice: typeof newPaymentForInvoice !== 'undefined' ? newPaymentForInvoice : undefined,
+  newPaymentForDoc: typeof newPaymentForDoc !== 'undefined' ? newPaymentForDoc : undefined,
+  renderCreate: typeof renderCreate !== 'undefined' ? renderCreate : undefined,
+  updateAmount: typeof updateAmount !== 'undefined' ? updateAmount : undefined,
+  updateCurrency: typeof updateCurrency !== 'undefined' ? updateCurrency : undefined,
+  updateMethod: typeof updateMethod !== 'undefined' ? updateMethod : undefined,
+  cancelCreate: typeof cancelCreate !== 'undefined' ? cancelCreate : undefined,
+  savePayment: typeof savePayment !== 'undefined' ? savePayment : undefined,
+  recalcStatuses: typeof recalcStatuses !== 'undefined' ? recalcStatuses : undefined,
+});
+});
 </script>
 </body>
 </html>

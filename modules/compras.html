@@ -20,10 +20,8 @@
 <script src="../assets/js/payments.js"></script>
 <script src="../assets/js/ui.js"></script>
 <script>
-(async function() {
-
-// Esperar a Firebase + Auth + DB lista
-await moduleInit('compras');
+moduleInit('compras').then(async (ok) => {
+if (!ok) return;
 
 let view = 'list';     // list | poDetail | poCreate | invoiceDetail | invoiceCreate | receipt
 let tab = 'pos';       // pos | invoices
@@ -887,7 +885,48 @@ function formatMoney(amount, ccy) {
 
 render();
 
-})();
+
+// Exponer funciones a window (para que onclick="" del HTML pueda llamarlas)
+Object.assign(window, {
+  render: typeof render !== 'undefined' ? render : undefined,
+  renderList: typeof renderList !== 'undefined' ? renderList : undefined,
+  changeTab: typeof changeTab !== 'undefined' ? changeTab : undefined,
+  renderPOTable: typeof renderPOTable !== 'undefined' ? renderPOTable : undefined,
+  renderInvoiceTable: typeof renderInvoiceTable !== 'undefined' ? renderInvoiceTable : undefined,
+  newPO: typeof newPO !== 'undefined' ? newPO : undefined,
+  renderPOCreate: typeof renderPOCreate !== 'undefined' ? renderPOCreate : undefined,
+  onSupplierChange: typeof onSupplierChange !== 'undefined' ? onSupplierChange : undefined,
+  addPOItem: typeof addPOItem !== 'undefined' ? addPOItem : undefined,
+  updatePOItem: typeof updatePOItem !== 'undefined' ? updatePOItem : undefined,
+  updatePOItemFast: typeof updatePOItemFast !== 'undefined' ? updatePOItemFast : undefined,
+  removePOItem: typeof removePOItem !== 'undefined' ? removePOItem : undefined,
+  cancelEdit: typeof cancelEdit !== 'undefined' ? cancelEdit : undefined,
+  savePO: typeof savePO !== 'undefined' ? savePO : undefined,
+  openPO: typeof openPO !== 'undefined' ? openPO : undefined,
+  backToList: typeof backToList !== 'undefined' ? backToList : undefined,
+  renderPODetail: typeof renderPODetail !== 'undefined' ? renderPODetail : undefined,
+  changePOStatus: typeof changePOStatus !== 'undefined' ? changePOStatus : undefined,
+  cancelPO: typeof cancelPO !== 'undefined' ? cancelPO : undefined,
+  newReceipt: typeof newReceipt !== 'undefined' ? newReceipt : undefined,
+  renderReceipt: typeof renderReceipt !== 'undefined' ? renderReceipt : undefined,
+  updateReceiveItem: typeof updateReceiveItem !== 'undefined' ? updateReceiveItem : undefined,
+  saveReceipt: typeof saveReceipt !== 'undefined' ? saveReceipt : undefined,
+  newInvoice: typeof newInvoice !== 'undefined' ? newInvoice : undefined,
+  newInvoiceFromPO: typeof newInvoiceFromPO !== 'undefined' ? newInvoiceFromPO : undefined,
+  renderInvoiceCreate: typeof renderInvoiceCreate !== 'undefined' ? renderInvoiceCreate : undefined,
+  renderInvSummary: typeof renderInvSummary !== 'undefined' ? renderInvSummary : undefined,
+  updateInvItem: typeof updateInvItem !== 'undefined' ? updateInvItem : undefined,
+  updateInvItemFast: typeof updateInvItemFast !== 'undefined' ? updateInvItemFast : undefined,
+  saveInvoice: typeof saveInvoice !== 'undefined' ? saveInvoice : undefined,
+  openInvoice: typeof openInvoice !== 'undefined' ? openInvoice : undefined,
+  renderInvoiceDetail: typeof renderInvoiceDetail !== 'undefined' ? renderInvoiceDetail : undefined,
+  downloadVoucher: typeof downloadVoucher !== 'undefined' ? downloadVoucher : undefined,
+  escapeHtml: typeof escapeHtml !== 'undefined' ? escapeHtml : undefined,
+  formatDate: typeof formatDate !== 'undefined' ? formatDate : undefined,
+  formatDateTime: typeof formatDateTime !== 'undefined' ? formatDateTime : undefined,
+  formatMoney: typeof formatMoney !== 'undefined' ? formatMoney : undefined,
+});
+});
 </script>
 </body>
 </html>

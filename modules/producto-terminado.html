@@ -17,10 +17,8 @@
 <script src="../assets/js/formulas.js"></script>
 <script src="../assets/js/ui.js"></script>
 <script>
-(async function() {
-
-// Esperar a Firebase + Auth + DB lista
-await moduleInit('producto-terminado');
+moduleInit('producto-terminado').then(async (ok) => {
+if (!ok) return;
 
 const PT_STATUS = {
   CUARENTENA:    { label: 'Cuarentena',    color: 'badge-warning' },
@@ -147,7 +145,16 @@ function saveLot(e, id) {
 
 render();
 
-})();
+
+// Exponer funciones a window (para que onclick="" del HTML pueda llamarlas)
+Object.assign(window, {
+  render: typeof render !== 'undefined' ? render : undefined,
+  onSearch: typeof onSearch !== 'undefined' ? onSearch : undefined,
+  onStatusFilter: typeof onStatusFilter !== 'undefined' ? onStatusFilter : undefined,
+  editLot: typeof editLot !== 'undefined' ? editLot : undefined,
+  saveLot: typeof saveLot !== 'undefined' ? saveLot : undefined,
+});
+});
 </script>
 </body>
 </html>

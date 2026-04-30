@@ -17,10 +17,8 @@
 <script src="../assets/js/formulas.js"></script>
 <script src="../assets/js/ui.js"></script>
 <script>
-(async function() {
-
-// Esperar a Firebase + Auth + DB lista
-await moduleInit('materias-primas');
+moduleInit('materias-primas').then(async (ok) => {
+if (!ok) return;
 
 const KINDS = {
   INGREDIENT: { label: 'Ingrediente', color: 'badge-plain' },
@@ -407,7 +405,31 @@ function saveAdjust(e, lotId) {
 
 render();
 
-})();
+
+// Exponer funciones a window (para que onclick="" del HTML pueda llamarlas)
+Object.assign(window, {
+  render: typeof render !== 'undefined' ? render : undefined,
+  renderCatalog: typeof renderCatalog !== 'undefined' ? renderCatalog : undefined,
+  onSearch: typeof onSearch !== 'undefined' ? onSearch : undefined,
+  onCategoryFilter: typeof onCategoryFilter !== 'undefined' ? onCategoryFilter : undefined,
+  onKindFilter: typeof onKindFilter !== 'undefined' ? onKindFilter : undefined,
+  viewLots: typeof viewLots !== 'undefined' ? viewLots : undefined,
+  backToCatalog: typeof backToCatalog !== 'undefined' ? backToCatalog : undefined,
+  renderLots: typeof renderLots !== 'undefined' ? renderLots : undefined,
+  newItem: typeof newItem !== 'undefined' ? newItem : undefined,
+  editItem: typeof editItem !== 'undefined' ? editItem : undefined,
+  openForm: typeof openForm !== 'undefined' ? openForm : undefined,
+  onKindChange: typeof onKindChange !== 'undefined' ? onKindChange : undefined,
+  saveItem: typeof saveItem !== 'undefined' ? saveItem : undefined,
+  deleteItem: typeof deleteItem !== 'undefined' ? deleteItem : undefined,
+  newReceipt: typeof newReceipt !== 'undefined' ? newReceipt : undefined,
+  onRMChange: typeof onRMChange !== 'undefined' ? onRMChange : undefined,
+  onWhChange: typeof onWhChange !== 'undefined' ? onWhChange : undefined,
+  saveReceipt: typeof saveReceipt !== 'undefined' ? saveReceipt : undefined,
+  adjustLot: typeof adjustLot !== 'undefined' ? adjustLot : undefined,
+  saveAdjust: typeof saveAdjust !== 'undefined' ? saveAdjust : undefined,
+});
+});
 </script>
 </body>
 </html>

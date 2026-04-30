@@ -15,10 +15,8 @@
 <script src="../assets/js/tax.js"></script>
 <script src="../assets/js/ui.js"></script>
 <script>
-(async function() {
-
-// Esperar a Firebase + Auth + DB lista
-await moduleInit('usuarios');
+moduleInit('usuarios').then(async (ok) => {
+if (!ok) return;
 
 function render() {
   const items = db.getAll(db.COLLECTIONS.users);
@@ -198,7 +196,17 @@ function deleteItem(id) {
 
 render();
 
-})();
+
+// Exponer funciones a window (para que onclick="" del HTML pueda llamarlas)
+Object.assign(window, {
+  render: typeof render !== 'undefined' ? render : undefined,
+  newItem: typeof newItem !== 'undefined' ? newItem : undefined,
+  editItem: typeof editItem !== 'undefined' ? editItem : undefined,
+  openForm: typeof openForm !== 'undefined' ? openForm : undefined,
+  saveItem: typeof saveItem !== 'undefined' ? saveItem : undefined,
+  deleteItem: typeof deleteItem !== 'undefined' ? deleteItem : undefined,
+});
+});
 </script>
 </body>
 </html>

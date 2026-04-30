@@ -15,10 +15,8 @@
 <script src="../assets/js/tax.js"></script>
 <script src="../assets/js/ui.js"></script>
 <script>
-(async function() {
-
-// Esperar a Firebase + Auth + DB lista
-await moduleInit('configuracion');
+moduleInit('configuracion').then(async (ok) => {
+if (!ok) return;
 
 function render() {
   const cfg = db.getById(db.COLLECTIONS.config, 'main') || {};
@@ -186,7 +184,16 @@ function resetSystem() {
 
 render();
 
-})();
+
+// Exponer funciones a window (para que onclick="" del HTML pueda llamarlas)
+Object.assign(window, {
+  render: typeof render !== 'undefined' ? render : undefined,
+  saveConfig: typeof saveConfig !== 'undefined' ? saveConfig : undefined,
+  exportData: typeof exportData !== 'undefined' ? exportData : undefined,
+  importData: typeof importData !== 'undefined' ? importData : undefined,
+  resetSystem: typeof resetSystem !== 'undefined' ? resetSystem : undefined,
+});
+});
 </script>
 </body>
 </html>

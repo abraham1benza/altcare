@@ -20,10 +20,8 @@
 <script src="../assets/js/payments.js"></script>
 <script src="../assets/js/ui.js"></script>
 <script>
-(async function() {
-
-// Esperar a Firebase + Auth + DB lista
-await moduleInit('cuentas-bancarias');
+moduleInit('cuentas-bancarias').then(async (ok) => {
+if (!ok) return;
 
 let view = 'list';        // list | detail
 let selectedId = null;
@@ -317,7 +315,25 @@ function recalcBalances() {
 
 render();
 
-})();
+
+// Exponer funciones a window (para que onclick="" del HTML pueda llamarlas)
+Object.assign(window, {
+  render: typeof render !== 'undefined' ? render : undefined,
+  renderList: typeof renderList !== 'undefined' ? renderList : undefined,
+  renderDetail: typeof renderDetail !== 'undefined' ? renderDetail : undefined,
+  openDetail: typeof openDetail !== 'undefined' ? openDetail : undefined,
+  backToList: typeof backToList !== 'undefined' ? backToList : undefined,
+  newAccount: typeof newAccount !== 'undefined' ? newAccount : undefined,
+  editAccount: typeof editAccount !== 'undefined' ? editAccount : undefined,
+  openForm: typeof openForm !== 'undefined' ? openForm : undefined,
+  saveAccount: typeof saveAccount !== 'undefined' ? saveAccount : undefined,
+  adjustBalance: typeof adjustBalance !== 'undefined' ? adjustBalance : undefined,
+  saveAdjust: typeof saveAdjust !== 'undefined' ? saveAdjust : undefined,
+  newManualMove: typeof newManualMove !== 'undefined' ? newManualMove : undefined,
+  saveMove: typeof saveMove !== 'undefined' ? saveMove : undefined,
+  recalcBalances: typeof recalcBalances !== 'undefined' ? recalcBalances : undefined,
+});
+});
 </script>
 </body>
 </html>

@@ -17,10 +17,8 @@
 <script src="../assets/js/formulas.js"></script>
 <script src="../assets/js/ui.js"></script>
 <script>
-(async function() {
-
-// Esperar a Firebase + Auth + DB lista
-await moduleInit('calidad');
+moduleInit('calidad').then(async (ok) => {
+if (!ok) return;
 
 const QC_STATUS = {
   PENDING:     { label: 'Pendiente',                color: 'badge-plain'   },
@@ -522,7 +520,27 @@ function formatDateTime(iso) {
 
 render();
 
-})();
+
+// Exponer funciones a window (para que onclick="" del HTML pueda llamarlas)
+Object.assign(window, {
+  render: typeof render !== 'undefined' ? render : undefined,
+  renderList: typeof renderList !== 'undefined' ? renderList : undefined,
+  onStatusFilter: typeof onStatusFilter !== 'undefined' ? onStatusFilter : undefined,
+  newTest: typeof newTest !== 'undefined' ? newTest : undefined,
+  renderCreate: typeof renderCreate !== 'undefined' ? renderCreate : undefined,
+  updateResult: typeof updateResult !== 'undefined' ? updateResult : undefined,
+  onAnalystChange: typeof onAnalystChange !== 'undefined' ? onAnalystChange : undefined,
+  cancelCreate: typeof cancelCreate !== 'undefined' ? cancelCreate : undefined,
+  saveTest: typeof saveTest !== 'undefined' ? saveTest : undefined,
+  openDetail: typeof openDetail !== 'undefined' ? openDetail : undefined,
+  backToList: typeof backToList !== 'undefined' ? backToList : undefined,
+  renderDetail: typeof renderDetail !== 'undefined' ? renderDetail : undefined,
+  downloadCOA: typeof downloadCOA !== 'undefined' ? downloadCOA : undefined,
+  escapeHtml: typeof escapeHtml !== 'undefined' ? escapeHtml : undefined,
+  formatDate: typeof formatDate !== 'undefined' ? formatDate : undefined,
+  formatDateTime: typeof formatDateTime !== 'undefined' ? formatDateTime : undefined,
+});
+});
 </script>
 </body>
 </html>

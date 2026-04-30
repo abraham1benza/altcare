@@ -21,10 +21,8 @@
 <script src="../assets/js/reports.js"></script>
 <script src="../assets/js/ui.js"></script>
 <script>
-(async function() {
-
-// Esperar a Firebase + Auth + DB lista
-await moduleInit('reportes');
+moduleInit('reportes').then(async (ok) => {
+if (!ok) return;
 
 const REPORTS = {
   'libro-compras': {
@@ -1035,7 +1033,40 @@ function pdfFlujoCaja(from, to) {
 
 render();
 
-})();
+
+// Exponer funciones a window (para que onclick="" del HTML pueda llamarlas)
+Object.assign(window, {
+  render: typeof render !== 'undefined' ? render : undefined,
+  renderDashboard: typeof renderDashboard !== 'undefined' ? renderDashboard : undefined,
+  openReport: typeof openReport !== 'undefined' ? openReport : undefined,
+  backToDashboard: typeof backToDashboard !== 'undefined' ? backToDashboard : undefined,
+  renderReport: typeof renderReport !== 'undefined' ? renderReport : undefined,
+  onPeriodChange: typeof onPeriodChange !== 'undefined' ? onPeriodChange : undefined,
+  renderEntityPicker: typeof renderEntityPicker !== 'undefined' ? renderEntityPicker : undefined,
+  exportButtonsFor: typeof exportButtonsFor !== 'undefined' ? exportButtonsFor : undefined,
+  renderLibroCompras: typeof renderLibroCompras !== 'undefined' ? renderLibroCompras : undefined,
+  renderLibroVentas: typeof renderLibroVentas !== 'undefined' ? renderLibroVentas : undefined,
+  renderRetenciones: typeof renderRetenciones !== 'undefined' ? renderRetenciones : undefined,
+  renderEstadoCliente: typeof renderEstadoCliente !== 'undefined' ? renderEstadoCliente : undefined,
+  renderEstadoProveedor: typeof renderEstadoProveedor !== 'undefined' ? renderEstadoProveedor : undefined,
+  renderEstadoTable: typeof renderEstadoTable !== 'undefined' ? renderEstadoTable : undefined,
+  renderInventario: typeof renderInventario !== 'undefined' ? renderInventario : undefined,
+  renderProduccion: typeof renderProduccion !== 'undefined' ? renderProduccion : undefined,
+  renderMargenes: typeof renderMargenes !== 'undefined' ? renderMargenes : undefined,
+  renderFlujoCaja: typeof renderFlujoCaja !== 'undefined' ? renderFlujoCaja : undefined,
+  exportCSV: typeof exportCSV !== 'undefined' ? exportCSV : undefined,
+  exportPDF: typeof exportPDF !== 'undefined' ? exportPDF : undefined,
+  pdfLibroCompras: typeof pdfLibroCompras !== 'undefined' ? pdfLibroCompras : undefined,
+  pdfLibroVentas: typeof pdfLibroVentas !== 'undefined' ? pdfLibroVentas : undefined,
+  pdfRetenciones: typeof pdfRetenciones !== 'undefined' ? pdfRetenciones : undefined,
+  pdfEstadoCliente: typeof pdfEstadoCliente !== 'undefined' ? pdfEstadoCliente : undefined,
+  pdfEstadoProveedor: typeof pdfEstadoProveedor !== 'undefined' ? pdfEstadoProveedor : undefined,
+  pdfInventario: typeof pdfInventario !== 'undefined' ? pdfInventario : undefined,
+  pdfProduccion: typeof pdfProduccion !== 'undefined' ? pdfProduccion : undefined,
+  pdfMargenes: typeof pdfMargenes !== 'undefined' ? pdfMargenes : undefined,
+  pdfFlujoCaja: typeof pdfFlujoCaja !== 'undefined' ? pdfFlujoCaja : undefined,
+});
+});
 </script>
 </body>
 </html>

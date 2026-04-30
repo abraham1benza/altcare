@@ -17,10 +17,8 @@
 <script src="../assets/js/formulas.js"></script>
 <script src="../assets/js/ui.js"></script>
 <script>
-(async function() {
-
-// Esperar a Firebase + Auth + DB lista
-await moduleInit('almacenes');
+moduleInit('almacenes').then(async (ok) => {
+if (!ok) return;
 
 let selectedWarehouseId = null;
 
@@ -258,7 +256,22 @@ function deleteLocation(id) {
 
 render();
 
-})();
+
+// Exponer funciones a window (para que onclick="" del HTML pueda llamarlas)
+Object.assign(window, {
+  render: typeof render !== 'undefined' ? render : undefined,
+  selectWh: typeof selectWh !== 'undefined' ? selectWh : undefined,
+  newWarehouse: typeof newWarehouse !== 'undefined' ? newWarehouse : undefined,
+  editWarehouse: typeof editWarehouse !== 'undefined' ? editWarehouse : undefined,
+  openWhForm: typeof openWhForm !== 'undefined' ? openWhForm : undefined,
+  saveWh: typeof saveWh !== 'undefined' ? saveWh : undefined,
+  newLocation: typeof newLocation !== 'undefined' ? newLocation : undefined,
+  editLocation: typeof editLocation !== 'undefined' ? editLocation : undefined,
+  openLocForm: typeof openLocForm !== 'undefined' ? openLocForm : undefined,
+  saveLoc: typeof saveLoc !== 'undefined' ? saveLoc : undefined,
+  deleteLocation: typeof deleteLocation !== 'undefined' ? deleteLocation : undefined,
+});
+});
 </script>
 </body>
 </html>

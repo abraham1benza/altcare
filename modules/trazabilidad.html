@@ -17,10 +17,8 @@
 <script src="../assets/js/formulas.js"></script>
 <script src="../assets/js/ui.js"></script>
 <script>
-(async function() {
-
-// Esperar a Firebase + Auth + DB lista
-await moduleInit('trazabilidad');
+moduleInit('trazabilidad').then(async (ok) => {
+if (!ok) return;
 
 let view = 'search';   // search | fgLot | rmLot | of
 let target = null;     // {kind, id}
@@ -348,7 +346,21 @@ function downloadCOAFromTrace(qcId) {
 
 render();
 
-})();
+
+// Exponer funciones a window (para que onclick="" del HTML pueda llamarlas)
+Object.assign(window, {
+  render: typeof render !== 'undefined' ? render : undefined,
+  renderSearch: typeof renderSearch !== 'undefined' ? renderSearch : undefined,
+  openFGLot: typeof openFGLot !== 'undefined' ? openFGLot : undefined,
+  openRMLot: typeof openRMLot !== 'undefined' ? openRMLot : undefined,
+  openOF: typeof openOF !== 'undefined' ? openOF : undefined,
+  backToSearch: typeof backToSearch !== 'undefined' ? backToSearch : undefined,
+  renderFGLot: typeof renderFGLot !== 'undefined' ? renderFGLot : undefined,
+  renderRMLot: typeof renderRMLot !== 'undefined' ? renderRMLot : undefined,
+  renderOF: typeof renderOF !== 'undefined' ? renderOF : undefined,
+  downloadCOAFromTrace: typeof downloadCOAFromTrace !== 'undefined' ? downloadCOAFromTrace : undefined,
+});
+});
 </script>
 </body>
 </html>

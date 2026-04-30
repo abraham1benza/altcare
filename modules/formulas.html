@@ -17,10 +17,8 @@
 <script src="../assets/js/formulas.js"></script>
 <script src="../assets/js/ui.js"></script>
 <script>
-(async function() {
-
-// Esperar a Firebase + Auth + DB lista
-await moduleInit('formulas');
+moduleInit('formulas').then(async (ok) => {
+if (!ok) return;
 
 let view = 'list';
 let selectedFormulaId = null;
@@ -614,7 +612,47 @@ function deleteFormula(id) {
 
 render();
 
-})();
+
+// Exponer funciones a window (para que onclick="" del HTML pueda llamarlas)
+Object.assign(window, {
+  render: typeof render !== 'undefined' ? render : undefined,
+  renderList: typeof renderList !== 'undefined' ? renderList : undefined,
+  onSearch: typeof onSearch !== 'undefined' ? onSearch : undefined,
+  openDetail: typeof openDetail !== 'undefined' ? openDetail : undefined,
+  backToList: typeof backToList !== 'undefined' ? backToList : undefined,
+  renderDetail: typeof renderDetail !== 'undefined' ? renderDetail : undefined,
+  renderPresentationsSection: typeof renderPresentationsSection !== 'undefined' ? renderPresentationsSection : undefined,
+  newPresentation: typeof newPresentation !== 'undefined' ? newPresentation : undefined,
+  editPresentation: typeof editPresentation !== 'undefined' ? editPresentation : undefined,
+  openPresentationForm: typeof openPresentationForm !== 'undefined' ? openPresentationForm : undefined,
+  renderComponentRow: typeof renderComponentRow !== 'undefined' ? renderComponentRow : undefined,
+  addComponentRow: typeof addComponentRow !== 'undefined' ? addComponentRow : undefined,
+  updateComponentField: typeof updateComponentField !== 'undefined' ? updateComponentField : undefined,
+  removeComponentRow: typeof removeComponentRow !== 'undefined' ? removeComponentRow : undefined,
+  savePresentation: typeof savePresentation !== 'undefined' ? savePresentation : undefined,
+  deletePresentation: typeof deletePresentation !== 'undefined' ? deletePresentation : undefined,
+  showVersions: typeof showVersions !== 'undefined' ? showVersions : undefined,
+  setActiveVersion: typeof setActiveVersion !== 'undefined' ? setActiveVersion : undefined,
+  showScaler: typeof showScaler !== 'undefined' ? showScaler : undefined,
+  updateScale: typeof updateScale !== 'undefined' ? updateScale : undefined,
+  newFormula: typeof newFormula !== 'undefined' ? newFormula : undefined,
+  editFormula: typeof editFormula !== 'undefined' ? editFormula : undefined,
+  renderEdit: typeof renderEdit !== 'undefined' ? renderEdit : undefined,
+  changeMode: typeof changeMode !== 'undefined' ? changeMode : undefined,
+  updatePhaseName: typeof updatePhaseName !== 'undefined' ? updatePhaseName : undefined,
+  addPhase: typeof addPhase !== 'undefined' ? addPhase : undefined,
+  removePhase: typeof removePhase !== 'undefined' ? removePhase : undefined,
+  addItem: typeof addItem !== 'undefined' ? addItem : undefined,
+  updateItem: typeof updateItem !== 'undefined' ? updateItem : undefined,
+  removeItem: typeof removeItem !== 'undefined' ? removeItem : undefined,
+  addQC: typeof addQC !== 'undefined' ? addQC : undefined,
+  updateQC: typeof updateQC !== 'undefined' ? updateQC : undefined,
+  removeQC: typeof removeQC !== 'undefined' ? removeQC : undefined,
+  saveFormula: typeof saveFormula !== 'undefined' ? saveFormula : undefined,
+  cancelEdit: typeof cancelEdit !== 'undefined' ? cancelEdit : undefined,
+  deleteFormula: typeof deleteFormula !== 'undefined' ? deleteFormula : undefined,
+});
+});
 </script>
 </body>
 </html>

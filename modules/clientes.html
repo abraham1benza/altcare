@@ -15,10 +15,8 @@
 <script src="../assets/js/tax.js"></script>
 <script src="../assets/js/ui.js"></script>
 <script>
-(async function() {
-
-// Esperar a Firebase + Auth + DB lista
-await moduleInit('clientes');
+moduleInit('clientes').then(async (ok) => {
+if (!ok) return;
 
 const PAYMENT_TERMS = ['Contado', '7 días', '15 días', '30 días', '45 días', '60 días', '90 días'];
 const TAXPAYER_TYPES = ['Contribuyente Ordinario', 'Contribuyente Formal', 'Contribuyente Especial', 'No Contribuyente', 'Persona Natural'];
@@ -265,7 +263,18 @@ function deleteItem(id) {
 
 render();
 
-})();
+
+// Exponer funciones a window (para que onclick="" del HTML pueda llamarlas)
+Object.assign(window, {
+  render: typeof render !== 'undefined' ? render : undefined,
+  onSearch: typeof onSearch !== 'undefined' ? onSearch : undefined,
+  newItem: typeof newItem !== 'undefined' ? newItem : undefined,
+  editItem: typeof editItem !== 'undefined' ? editItem : undefined,
+  openForm: typeof openForm !== 'undefined' ? openForm : undefined,
+  saveItem: typeof saveItem !== 'undefined' ? saveItem : undefined,
+  deleteItem: typeof deleteItem !== 'undefined' ? deleteItem : undefined,
+});
+});
 </script>
 </body>
 </html>

@@ -17,10 +17,8 @@
 <script src="../assets/js/formulas.js"></script>
 <script src="../assets/js/ui.js"></script>
 <script>
-(async function() {
-
-// Esperar a Firebase + Auth + DB lista
-await moduleInit('almacen');
+moduleInit('almacen').then(async (ok) => {
+if (!ok) return;
 
 let view = 'overview';   // overview | kardex
 let kardexItem = null;   // {kind, id}
@@ -217,7 +215,18 @@ function renderKardex() {
 
 render();
 
-})();
+
+// Exponer funciones a window (para que onclick="" del HTML pueda llamarlas)
+Object.assign(window, {
+  render: typeof render !== 'undefined' ? render : undefined,
+  renderOverview: typeof renderOverview !== 'undefined' ? renderOverview : undefined,
+  onSearch: typeof onSearch !== 'undefined' ? onSearch : undefined,
+  onTypeFilter: typeof onTypeFilter !== 'undefined' ? onTypeFilter : undefined,
+  openKardex: typeof openKardex !== 'undefined' ? openKardex : undefined,
+  backToOverview: typeof backToOverview !== 'undefined' ? backToOverview : undefined,
+  renderKardex: typeof renderKardex !== 'undefined' ? renderKardex : undefined,
+});
+});
 </script>
 </body>
 </html>

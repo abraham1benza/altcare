@@ -17,10 +17,8 @@
 <script src="../assets/js/formulas.js"></script>
 <script src="../assets/js/ui.js"></script>
 <script>
-(async function() {
-
-// Esperar a Firebase + Auth + DB lista
-await moduleInit('produccion');
+moduleInit('produccion').then(async (ok) => {
+if (!ok) return;
 
 const STATES = {
   PLANNED:   { label: 'Planificada', color: 'badge-plain'   },
@@ -561,7 +559,31 @@ function cancelOF(id) {
 
 render();
 
-})();
+
+// Exponer funciones a window (para que onclick="" del HTML pueda llamarlas)
+Object.assign(window, {
+  render: typeof render !== 'undefined' ? render : undefined,
+  renderList: typeof renderList !== 'undefined' ? renderList : undefined,
+  onSearch: typeof onSearch !== 'undefined' ? onSearch : undefined,
+  onStateFilter: typeof onStateFilter !== 'undefined' ? onStateFilter : undefined,
+  newOF: typeof newOF !== 'undefined' ? newOF : undefined,
+  renderCreate: typeof renderCreate !== 'undefined' ? renderCreate : undefined,
+  onFormulaChange: typeof onFormulaChange !== 'undefined' ? onFormulaChange : undefined,
+  onBatchSizeChange: typeof onBatchSizeChange !== 'undefined' ? onBatchSizeChange : undefined,
+  onOperatorChange: typeof onOperatorChange !== 'undefined' ? onOperatorChange : undefined,
+  rebuildItems: typeof rebuildItems !== 'undefined' ? rebuildItems : undefined,
+  updateItemLot: typeof updateItemLot !== 'undefined' ? updateItemLot : undefined,
+  cancelCreate: typeof cancelCreate !== 'undefined' ? cancelCreate : undefined,
+  saveOF: typeof saveOF !== 'undefined' ? saveOF : undefined,
+  openDetail: typeof openDetail !== 'undefined' ? openDetail : undefined,
+  backToList: typeof backToList !== 'undefined' ? backToList : undefined,
+  renderDetail: typeof renderDetail !== 'undefined' ? renderDetail : undefined,
+  startOF: typeof startOF !== 'undefined' ? startOF : undefined,
+  completeOF: typeof completeOF !== 'undefined' ? completeOF : undefined,
+  saveComplete: typeof saveComplete !== 'undefined' ? saveComplete : undefined,
+  cancelOF: typeof cancelOF !== 'undefined' ? cancelOF : undefined,
+});
+});
 </script>
 </body>
 </html>

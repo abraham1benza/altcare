@@ -20,10 +20,8 @@
 <script src="../assets/js/payments.js"></script>
 <script src="../assets/js/ui.js"></script>
 <script>
-(async function() {
-
-// Esperar a Firebase + Auth + DB lista
-await moduleInit('ventas');
+moduleInit('ventas').then(async (ok) => {
+if (!ok) return;
 
 let view = 'list';        // list | detail | create | assignLots
 let selectedId = null;
@@ -905,7 +903,45 @@ function formatMoney(amount, ccy) {
 
 render();
 
-})();
+
+// Exponer funciones a window (para que onclick="" del HTML pueda llamarlas)
+Object.assign(window, {
+  render: typeof render !== 'undefined' ? render : undefined,
+  renderList: typeof renderList !== 'undefined' ? renderList : undefined,
+  onSearch: typeof onSearch !== 'undefined' ? onSearch : undefined,
+  onTypeFilter: typeof onTypeFilter !== 'undefined' ? onTypeFilter : undefined,
+  newDoc: typeof newDoc !== 'undefined' ? newDoc : undefined,
+  renderCreate: typeof renderCreate !== 'undefined' ? renderCreate : undefined,
+  renderVenSummary: typeof renderVenSummary !== 'undefined' ? renderVenSummary : undefined,
+  onCustomerChange: typeof onCustomerChange !== 'undefined' ? onCustomerChange : undefined,
+  addItem: typeof addItem !== 'undefined' ? addItem : undefined,
+  updateItemFormula: typeof updateItemFormula !== 'undefined' ? updateItemFormula : undefined,
+  updateItemFast: typeof updateItemFast !== 'undefined' ? updateItemFast : undefined,
+  updateItemExempt: typeof updateItemExempt !== 'undefined' ? updateItemExempt : undefined,
+  recomputeAndRefreshSummary: typeof recomputeAndRefreshSummary !== 'undefined' ? recomputeAndRefreshSummary : undefined,
+  removeItem: typeof removeItem !== 'undefined' ? removeItem : undefined,
+  cancelCreate: typeof cancelCreate !== 'undefined' ? cancelCreate : undefined,
+  saveDoc: typeof saveDoc !== 'undefined' ? saveDoc : undefined,
+  openDetail: typeof openDetail !== 'undefined' ? openDetail : undefined,
+  backToList: typeof backToList !== 'undefined' ? backToList : undefined,
+  renderDetail: typeof renderDetail !== 'undefined' ? renderDetail : undefined,
+  convertTo: typeof convertTo !== 'undefined' ? convertTo : undefined,
+  cancelDoc: typeof cancelDoc !== 'undefined' ? cancelDoc : undefined,
+  confirmCancel: typeof confirmCancel !== 'undefined' ? confirmCancel : undefined,
+  goAssignLots: typeof goAssignLots !== 'undefined' ? goAssignLots : undefined,
+  renderAssignLots: typeof renderAssignLots !== 'undefined' ? renderAssignLots : undefined,
+  addAllocation: typeof addAllocation !== 'undefined' ? addAllocation : undefined,
+  updateAllocation: typeof updateAllocation !== 'undefined' ? updateAllocation : undefined,
+  updateAllocationFast: typeof updateAllocationFast !== 'undefined' ? updateAllocationFast : undefined,
+  removeAllocation: typeof removeAllocation !== 'undefined' ? removeAllocation : undefined,
+  cancelAssign: typeof cancelAssign !== 'undefined' ? cancelAssign : undefined,
+  saveAssignment: typeof saveAssignment !== 'undefined' ? saveAssignment : undefined,
+  printDoc: typeof printDoc !== 'undefined' ? printDoc : undefined,
+  escapeHtml: typeof escapeHtml !== 'undefined' ? escapeHtml : undefined,
+  formatDate: typeof formatDate !== 'undefined' ? formatDate : undefined,
+  formatMoney: typeof formatMoney !== 'undefined' ? formatMoney : undefined,
+});
+});
 </script>
 </body>
 </html>

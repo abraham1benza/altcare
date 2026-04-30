@@ -14,10 +14,8 @@
 <script src="../assets/js/tax.js"></script>
 <script src="../assets/js/ui.js"></script>
 <script>
-(async function() {
-
-// Esperar a Firebase + Auth + DB lista
-await moduleInit('envasado');
+moduleInit('envasado').then(async (ok) => {
+if (!ok) return;
 ui.renderLayout({
   activeModule: 'envasado',
   pageEyebrow: 'Inventario',
@@ -31,6 +29,6 @@ ui.renderLayout({
   `
 });
 
-})();
+});
 </script>
 </body></html>

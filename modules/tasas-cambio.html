@@ -15,10 +15,8 @@
 <script src="../assets/js/tax.js"></script>
 <script src="../assets/js/ui.js"></script>
 <script>
-(async function() {
-
-// Esperar a Firebase + Auth + DB lista
-await moduleInit('tasas-cambio');
+moduleInit('tasas-cambio').then(async (ok) => {
+if (!ok) return;
 
 let isFetching = false;
 
@@ -281,18 +279,25 @@ function convert() {
 }
 
 // Auto-refresh al cargar si las tasas están vencidas (>6h)
-(async function init() {
-  render();
-  if (currency.needsRefresh()) {
-    // Esperar un poquito para que el render se termine de ver
-    setTimeout(async () => {
-      console.log('[tasas] Tasas vencidas, refrescando automáticamente...');
-      await fetchLive();
-    }, 500);
-  }
-})();
+render();
+if (currency.needsRefresh()) {
+  // Esperar un poquito para que el render se termine de ver
+  setTimeout(async () => {
+    console.log('[tasas] Tasas vencidas, refrescando automáticamente...');
+    await fetchLive();
+  }, 500);
+}
 
-})();
+// Exponer funciones a window (para que onclick="" del HTML pueda llamarlas)
+Object.assign(window, {
+  render: typeof render !== 'undefined' ? render : undefined,
+  fetchLive: typeof fetchLive !== 'undefined' ? fetchLive : undefined,
+  editRate: typeof editRate !== 'undefined' ? editRate : undefined,
+  saveRate: typeof saveRate !== 'undefined' ? saveRate : undefined,
+  activate: typeof activate !== 'undefined' ? activate : undefined,
+  convert: typeof convert !== 'undefined' ? convert : undefined,
+});
+});
 </script>
 </body>
 </html>
