@@ -16,9 +16,26 @@ const ROLES = {
   calidad:     { label: 'Control Calidad',   modules: ['dashboard','calidad','trazabilidad'] }
 };
 
+// PERMISSIONS: estructura inversa { moduleName: [roles que tienen acceso] }
+// Compatibilidad con código que la usa así
+const PERMISSIONS = (() => {
+  const ALL_MODULES = ['dashboard','tasas-cambio','configuracion','proveedores','clientes','usuarios','almacenes','materias-primas','formulas','produccion','calidad','producto-terminado','almacen','trazabilidad','envasado','compras','cuentas-bancarias','metodos-pago','pagos','ventas','reportes'];
+  const out = {};
+  ALL_MODULES.forEach(m => {
+    out[m] = [];
+    Object.entries(ROLES).forEach(([roleKey, roleDef]) => {
+      if (roleDef.modules === '*' || roleDef.modules.includes(m)) {
+        out[m].push(roleKey);
+      }
+    });
+  });
+  return out;
+})();
+
 const auth = {
 
   ROLES,
+  PERMISSIONS,
 
   // Cache del perfil completo del usuario (de Firestore)
   _profile: null,
@@ -33,6 +50,21 @@ const auth = {
   /** Devuelve el perfil completo del usuario actual desde caché */
   getCurrentUser() {
     return this._profile;
+  },
+
+  /**
+   * Alias de getCurrentUser() (compatibilidad con código viejo).
+   * Los módulos viejos llamaban `auth.currentUser()` esperando un objeto con
+   * username, fullName, id. Devolvemos el perfil con esos campos mapeados.
+   */
+  currentUser() {
+    if (!this._profile) return null;
+    return {
+      ...this._profile,
+      // Compatibilidad: nombres de campos viejos
+      username: this._profile.email,
+      fullName: this._profile.name || this._profile.email
+    };
   },
 
   /** Devuelve el UID de Firebase del usuario actual */
