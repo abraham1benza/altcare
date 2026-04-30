@@ -296,15 +296,15 @@ function renderDashboard() {
   }, 0);
   const totalFGValueUSD = fgLots.reduce((s,l) => s + ((l.balance||0) * (l.unitCost||0)), 0);
 
-  // === HELPER PARA KPIs MULTI-MONEDA ===
+  // === HELPER PARA KPIs (consolidado en moneda del modo activo) ===
   const renderMultiKPI = (byCcy, color) => {
-    const parts = [];
-    if (byCcy.VES > 0.01) parts.push(currency.format(byCcy.VES, 'VES'));
-    if (byCcy.USD > 0.01) parts.push(currency.format(byCcy.USD, 'USD'));
-    if (byCcy.EUR > 0.01) parts.push(currency.format(byCcy.EUR, 'EUR'));
-    if (!parts.length) return `<div class="kpi-value" style="color:${color};font-size:24px;">0,00</div>`;
-    if (parts.length === 1) return `<div class="kpi-value" style="color:${color};font-size:22px;">${parts[0]}</div>`;
-    return `<div style="display:flex;flex-direction:column;gap:2px;margin-top:4px;">${parts.map(p => `<div style="font-family:var(--font-display);font-size:15px;letter-spacing:-0.02em;color:${color};line-height:1.2;">${p}</div>`).join('')}</div>`;
+    // Convertir todos los montos a la moneda del modo activo y sumar
+    let total = 0;
+    Object.entries(byCcy).forEach(([ccy, amount]) => {
+      if (amount > 0.01) total += currency.toDisplay(amount, ccy);
+    });
+    if (total < 0.01) return `<div class="kpi-value" style="color:${color};font-size:24px;">0,00</div>`;
+    return `<div class="kpi-value" style="color:${color};font-size:22px;">${currency.format(total, currency.getModeCurrency())}</div>`;
   };
 
   // === ALERTAS ===
@@ -396,7 +396,7 @@ function renderDashboard() {
               <div class="text-muted" style="font-size:11px;">${ui.escape(d.invoiceNumber||d.code)}${d.dueDate?' · vence '+ui.formatDate(d.dueDate):''}</div>
             </div>
             ${overdue ? '<span class="badge badge-danger" style="font-size:10px;">Vencida</span>' : '<span></span>'}
-            <span class="td-mono td-strong">${currency.format(remaining, d.currency)}</span>
+            <span class="td-mono td-strong">${currency.formatInMode(remaining, d.currency)}</span>
           </a>`;
         }).join('') : '<div style="padding:32px;text-align:center;color:var(--ink-3);font-size:13px;">Todo cobrado ✓</div>'}
       </div>
@@ -418,7 +418,7 @@ function renderDashboard() {
               <div class="text-muted" style="font-size:11px;">${ui.escape(i.code)}${i.dueDate?' · vence '+ui.formatDate(i.dueDate):''}</div>
             </div>
             ${overdue ? '<span class="badge badge-danger" style="font-size:10px;">Vencida</span>' : '<span></span>'}
-            <span class="td-mono td-strong">${currency.format(remaining, i.currency)}</span>
+            <span class="td-mono td-strong">${currency.formatInMode(remaining, i.currency)}</span>
           </a>`;
         }).join('') : '<div style="padding:32px;text-align:center;color:var(--ink-3);font-size:13px;">Sin deudas ✓</div>'}
       </div>
