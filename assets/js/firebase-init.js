@@ -1,8 +1,7 @@
 /* ============================================
    firebase-init.js — Inicialización de Firebase
-   CRÍTICO: usa initializeAuth() en vez de getAuth() para configurar
-   la persistencia DESDE EL INICIO de manera síncrona.
-   Esto evita que la sesión se pierda al navegar entre páginas.
+   Soporta múltiples pestañas con sincronización entre tabs.
+   La persistencia de Auth se configura SÍNCRONAMENTE desde el inicio.
    ============================================ */
 
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.13.2/firebase-app.js";
@@ -12,9 +11,9 @@ import {
   browserLocalPersistence, indexedDBLocalPersistence
 } from "https://www.gstatic.com/firebasejs/10.13.2/firebase-auth.js";
 import {
-  getFirestore, collection, doc, getDoc, getDocs, setDoc, addDoc, updateDoc,
-  deleteDoc, query, where, orderBy, limit, serverTimestamp, onSnapshot,
-  enableIndexedDbPersistence, writeBatch, Timestamp
+  initializeFirestore, persistentLocalCache, persistentMultipleTabManager,
+  collection, doc, getDoc, getDocs, setDoc, addDoc, updateDoc, deleteDoc,
+  query, where, orderBy, limit, serverTimestamp, onSnapshot, writeBatch, Timestamp
 } from "https://www.gstatic.com/firebasejs/10.13.2/firebase-firestore.js";
 
 const firebaseConfig = {
@@ -28,8 +27,7 @@ const firebaseConfig = {
 
 const app = initializeApp(firebaseConfig);
 
-// CRÍTICO: initializeAuth permite pasar persistencia DESDE EL INICIO
-// (a diferencia de getAuth + setPersistence que es async y crea race condition)
+// ====== AUTH con persistencia desde el inicio ======
 let auth;
 try {
   auth = initializeAuth(app, {
@@ -37,21 +35,27 @@ try {
   });
   console.log('[firebase] Auth inicializado con persistencia local');
 } catch (err) {
-  // Si ya estaba inicializado (otro script lo hizo), usar getAuth
-  console.warn('[firebase] initializeAuth falló, usando getAuth:', err.message);
+  // Ya estaba inicializado en otra pestaña/módulo
+  console.log('[firebase] Auth ya inicializado, reutilizando');
   auth = getAuth(app);
 }
 
-const dbFs = getFirestore(app);
-
-// Habilitar caché offline para Firestore (no bloquea)
-enableIndexedDbPersistence(dbFs).catch(err => {
-  if (err.code === 'failed-precondition') {
-    console.warn('[firebase] Persistencia Firestore no disponible (múltiples pestañas)');
-  } else if (err.code === 'unimplemented') {
-    console.warn('[firebase] Persistencia Firestore no soportada');
-  }
-});
+// ====== FIRESTORE con caché multi-tab ======
+// initializeFirestore con persistentMultipleTabManager permite múltiples pestañas
+let dbFs;
+try {
+  dbFs = initializeFirestore(app, {
+    localCache: persistentLocalCache({
+      tabManager: persistentMultipleTabManager()
+    })
+  });
+  console.log('[firebase] Firestore inicializado con caché multi-tab');
+} catch (err) {
+  // Ya estaba inicializado, usar versión existente
+  console.warn('[firebase] Firestore ya inicializado:', err.message);
+  const { getFirestore } = await import("https://www.gstatic.com/firebasejs/10.13.2/firebase-firestore.js");
+  dbFs = getFirestore(app);
+}
 
 window.fb = {
   app, auth, db: dbFs,
