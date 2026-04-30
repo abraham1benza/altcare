@@ -270,10 +270,24 @@ function renderDashboard() {
   cxpPending.forEach(i => { cxpByCcy[i.currency] = (cxpByCcy[i.currency]||0) + (i.totalToPay - (i.paidAmount||0)); });
   const cxcByCcy = { VES: 0, USD: 0, EUR: 0 };
   cxcPending.forEach(d => { cxcByCcy[d.currency] = (cxcByCcy[d.currency]||0) + (d.total - (d.paidAmount||0)); });
-  const bankByCcy = { VES: 0, USD: 0, EUR: 0 };
+  const bankCompanyByCcy = { VES: 0, USD: 0, EUR: 0 };
+  const bankPersonalByCcy = { VES: 0, USD: 0, EUR: 0 };
+  let companyAccountsCount = 0;
+  let personalAccountsCount = 0;
   db.getAll(db.COLLECTIONS.bankAccounts).filter(a => a.active !== false).forEach(a => {
-    bankByCcy[a.currency] = (bankByCcy[a.currency]||0) + (a.balance||0);
+    if (a.countsForFiscal === false) {
+      bankPersonalByCcy[a.currency] = (bankPersonalByCcy[a.currency]||0) + (a.balance||0);
+      personalAccountsCount++;
+    } else {
+      bankCompanyByCcy[a.currency] = (bankCompanyByCcy[a.currency]||0) + (a.balance||0);
+      companyAccountsCount++;
+    }
   });
+  // En modo Contable: solo empresa. En Gerencial: todas.
+  const isGerencial = (typeof auth !== 'undefined' && auth.getActiveMode && auth.getActiveMode() === 'gerencial');
+  const bankByCcy = isGerencial
+    ? { VES: bankCompanyByCcy.VES + bankPersonalByCcy.VES, USD: bankCompanyByCcy.USD + bankPersonalByCcy.USD, EUR: bankCompanyByCcy.EUR + bankPersonalByCcy.EUR }
+    : bankCompanyByCcy;
 
   // OCs sin facturar (listas para crear factura)
   const ocsToInvoice = db.getAll(db.COLLECTIONS.purchaseOrders)
@@ -363,7 +377,7 @@ function renderDashboard() {
     <div class="grid grid-4 mb-24">
       <div class="kpi"><div class="kpi-label">Por cobrar</div>${renderMultiKPI(cxcByCcy, 'var(--accent-ink)')}<div class="kpi-value-sub">${cxcPending.length} factura${cxcPending.length!==1?'s':''}${cxcOverdue.length?` · <span style="color:var(--danger);">${cxcOverdue.length} vencida${cxcOverdue.length!==1?'s':''}</span>`:''}</div></div>
       <div class="kpi"><div class="kpi-label">Por pagar</div>${renderMultiKPI(cxpByCcy, 'var(--danger)')}<div class="kpi-value-sub">${cxpPending.length} factura${cxpPending.length!==1?'s':''}${cxpOverdue.length?` · <span style="color:var(--danger);">${cxpOverdue.length} vencida${cxpOverdue.length!==1?'s':''}</span>`:''}</div></div>
-      <div class="kpi"><div class="kpi-label">Disponible en bancos</div>${renderMultiKPI(bankByCcy, 'var(--success)')}<div class="kpi-value-sub">${db.getAll(db.COLLECTIONS.bankAccounts).filter(a=>a.active!==false).length} cuenta${db.getAll(db.COLLECTIONS.bankAccounts).filter(a=>a.active!==false).length!==1?'s':''}</div></div>
+      <div class="kpi"><div class="kpi-label">Disponible en bancos</div>${renderMultiKPI(bankByCcy, 'var(--success)')}<div class="kpi-value-sub">${isGerencial && personalAccountsCount > 0 ? `🏢 ${companyAccountsCount} empresa · 👤 ${personalAccountsCount} personal` : `${companyAccountsCount} cuenta${companyAccountsCount!==1?'s':''}${personalAccountsCount > 0 ? ` <span class="text-muted">(${personalAccountsCount} personal oculta${personalAccountsCount!==1?'s':''})</span>` : ''}`}</div></div>
       <div class="kpi"><div class="kpi-label">Pedidos abiertos</div><div class="kpi-value">${openOrders.length}</div><div class="kpi-value-sub">en gestión</div></div>
     </div>
 
