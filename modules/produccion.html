@@ -113,7 +113,10 @@ function newOF() {
     scheduledDate: new Date().toISOString().slice(0,10),
     operatorId: '', operatorName: '',
     notes: '',
-    items: []     // items con materia prima + lote elegido + cantidad requerida
+    items: [],     // items con materia prima + lote elegido + cantidad requerida
+    presentationId: '',  // presentación opcional (envasado en la OF)
+    presentationName: '',
+    unitsPlanned: 0      // unidades teóricas a envasar
   };
   view = 'create'; render();
 }
@@ -167,12 +170,90 @@ function renderCreate() {
     `;
   }
 
+  // === PRESENTACIÓN (envasado opcional) ===
+  let presentationHtml = '';
+  let validationHtml = '';
+  let validationOk = true;
+
+  if (c.formulaId && c.batchSize > 0) {
+    // Listar presentaciones de esta fórmula
+    const availPresentations = db.query(db.COLLECTIONS.presentations,
+      p => p.formulaId === c.formulaId && p.active !== false
+    );
+
+    presentationHtml = `
+      <div class="card mb-24">
+        <div class="card-header">
+          <div class="card-title">Envasado (opcional)</div>
+          <div class="text-muted" style="font-size:12px;margin-top:4px;">Si elegís una presentación, al cerrar la orden se descontarán también los envases, tapas, etiquetas, etc. Si no, queda como granel.</div>
+        </div>
+        <div class="form-grid form-grid-2">
+          <div class="field">
+            <label class="field-label">Presentación</label>
+            <select class="select" onchange="onPresentationChange(this.value)">
+              <option value="">— Solo granel (sin envasar) —</option>
+              ${availPresentations.map(p => `<option value="${p.id}" ${p.id===c.presentationId?'selected':''}>${ui.escape(p.sku)} · ${ui.escape(p.name)} (${p.size}${p.sizeUnit})</option>`).join('')}
+            </select>
+            ${!availPresentations.length ? '<div class="field-hint">Esta fórmula no tiene presentaciones definidas. Andá a Fórmulas → ver fórmula → Presentaciones.</div>' : ''}
+          </div>
+          ${c.presentationId ? `
+            <div class="field">
+              <label class="field-label">Unidades a envasar *</label>
+              <input class="input" type="number" min="1" value="${c.unitsPlanned||0}" oninput="onUnitsChange(this.value)">
+              <div class="field-hint">Sugerido: ${(() => {
+                const r = inventory.checkOFRequirements(c.formulaId, c.batchSize, c.presentationId, c.unitsPlanned||0);
+                return r.theoreticalUnits > 0 ? r.theoreticalUnits + ' unidades teóricas' : '';
+              })()}</div>
+            </div>
+          ` : ''}
+        </div>
+      </div>
+    `;
+
+    // === VERIFICACIÓN DE STOCK ===
+    const req = inventory.checkOFRequirements(c.formulaId, c.batchSize, c.presentationId, c.unitsPlanned||0);
+    validationOk = req.ok;
+    if (req.ingredients.length || req.packaging.length) {
+      const renderRow = (item) => `
+        <tr style="${!item.ok?'background:#fef2f2;':''}">
+          <td><span class="badge badge-plain" style="font-size:10px;">${item.kindLabel}</span></td>
+          <td><div class="td-strong">${ui.escape(item.name)}</div><div class="text-muted" style="font-size:11px;">${item.code||''}</div></td>
+          <td style="text-align:right;"><span class="td-mono">${item.required.toFixed(3)}</span> <span class="text-muted">${item.unit}</span></td>
+          <td style="text-align:right;"><span class="td-mono ${item.ok?'':'td-strong'}" style="${item.ok?'':'color:var(--danger);'}">${item.available.toFixed(3)}</span> <span class="text-muted">${item.unit}</span></td>
+          <td>${item.ok ? '<span style="color:var(--success);">✓</span>' : `<span style="color:var(--danger);font-size:12px;">⚠️ Faltan ${(item.required - item.available).toFixed(3)}</span>`}</td>
+        </tr>
+      `;
+
+      validationHtml = `
+        <div class="card mb-24" style="padding:0;${!req.ok?'border-color:#fca5a5;':''}">
+          <div style="padding:14px 20px;border-bottom:1px solid var(--border);${!req.ok?'background:#fef2f2;':''}">
+            <div class="card-title" style="font-size:15px;">${req.ok ? '✓ Verificación de insumos' : `⚠️ Faltan ${req.missingItems} insumo(s)`}</div>
+            <div class="text-muted" style="font-size:12px;margin-top:4px;">
+              ${req.ok ? 'Todos los insumos requeridos están disponibles.' : 'No podés crear esta orden hasta que haya stock suficiente. Compralos primero o ajustá las cantidades.'}
+            </div>
+          </div>
+          <table>
+            <thead>
+              <tr><th style="width:80px;">Tipo</th><th>Insumo</th><th style="text-align:right;">Necesario</th><th style="text-align:right;">Disponible</th><th>Estado</th></tr>
+            </thead>
+            <tbody>
+              ${req.ingredients.length ? `<tr style="background:var(--surface-2);"><td colspan="5" style="font-weight:600;font-size:11px;letter-spacing:0.08em;text-transform:uppercase;color:var(--ink-3);padding:10px 12px;">Ingredientes del granel</td></tr>` : ''}
+              ${req.ingredients.map(renderRow).join('')}
+              ${req.packaging.length ? `<tr style="background:var(--surface-2);"><td colspan="5" style="font-weight:600;font-size:11px;letter-spacing:0.08em;text-transform:uppercase;color:var(--ink-3);padding:10px 12px;">Insumos de envasado · ${c.unitsPlanned||0} unidades</td></tr>` : ''}
+              ${req.packaging.map(renderRow).join('')}
+            </tbody>
+          </table>
+        </div>
+      `;
+    }
+  }
+
   ui.renderLayout({
     activeModule: 'produccion', pageEyebrow: 'Nueva orden', pageTitle: c.code,
     contentHtml: `
       <div class="action-bar">
         <div class="action-bar-left"><button class="btn btn-ghost btn-sm" onclick="cancelCreate()">← Cancelar</button></div>
-        <div class="action-bar-right"><button class="btn btn-primary" onclick="saveOF()">${ui.icon('check')} Crear orden</button></div>
+        <div class="action-bar-right"><button class="btn btn-primary" onclick="saveOF()" ${!validationOk?'disabled style="opacity:0.5;cursor:not-allowed;" title="Faltan insumos"':''}>${ui.icon('check')} Crear orden${!validationOk?' (faltan insumos)':''}</button></div>
       </div>
 
       <div class="card mb-24">
@@ -194,9 +275,33 @@ function renderCreate() {
         </div>
       </div>
 
+      ${presentationHtml}
+      ${validationHtml}
       ${itemsHtml}
     `
   });
+}
+
+function onPresentationChange(pId) {
+  creating.presentationId = pId;
+  if (pId) {
+    const p = db.getById(db.COLLECTIONS.presentations, pId);
+    creating.presentationName = p ? p.name : '';
+    // Auto-sugerir unidades según teóricas
+    if (creating.batchSize > 0) {
+      const r = inventory.checkOFRequirements(creating.formulaId, creating.batchSize, pId, 0);
+      if (r.theoreticalUnits > 0) creating.unitsPlanned = r.theoreticalUnits;
+    }
+  } else {
+    creating.presentationName = '';
+    creating.unitsPlanned = 0;
+  }
+  render();
+}
+
+function onUnitsChange(val) {
+  creating.unitsPlanned = parseInt(val, 10) || 0;
+  render();
 }
 
 function onFormulaChange(fId) {
@@ -277,6 +382,18 @@ function saveOF() {
     }
   }
 
+  // Si hay presentación: revalidar stock de envasado al momento de guardar
+  if (c.presentationId) {
+    if (!c.unitsPlanned || c.unitsPlanned <= 0) {
+      ui.toast('Indicá la cantidad de unidades a envasar', 'error'); return;
+    }
+    const req = inventory.checkOFRequirements(c.formulaId, c.batchSize, c.presentationId, c.unitsPlanned);
+    if (!req.ok) {
+      ui.toast(`Stock insuficiente: faltan ${req.missingItems} insumo(s). Revisá la verificación.`, 'error', 5000);
+      return;
+    }
+  }
+
   // Crear OF
   const ofData = {
     code: c.code,
@@ -290,6 +407,10 @@ function saveOF() {
     operatorName: c.operatorName,
     notes: c.notes,
     items: c.items,
+    presentationId: c.presentationId || null,
+    presentationName: c.presentationName || null,
+    unitsPlanned: c.unitsPlanned || 0,
+    unitsActual: null,
     status: 'PLANNED',
     actualYield: null,
     yieldVariance: null,
@@ -300,7 +421,7 @@ function saveOF() {
     completedAt: null
   };
   const saved = db.save(db.COLLECTIONS.productionOrders, ofData);
-  // Reservar lotes
+  // Reservar lotes de granel
   c.items.forEach(it => {
     inventory.reserveFromLot(it.lotId, it.required, `OF ${saved.code}`);
   });
@@ -435,22 +556,34 @@ function completeOF(id) {
   const o = db.getById(db.COLLECTIONS.productionOrders, id);
   const suggestedLot = inventory.nextLotNumber(o.formulaName);
   const warehouses = db.getAll(db.COLLECTIONS.warehouses);
+  const hasPresentation = !!o.presentationId;
+  const presentation = hasPresentation ? db.getById(db.COLLECTIONS.presentations, o.presentationId) : null;
+
   ui.openModal({
     size: 'lg',
     title: 'Terminar orden de fabricación',
-    subtitle: 'Registrar producción real y crear lote de producto terminado',
+    subtitle: hasPresentation
+      ? `Producir granel + envasar en ${presentation?.sku || o.presentationName}`
+      : 'Registrar producción real y crear lote de producto terminado',
     body: `
       <form id="complete-form" onsubmit="saveComplete(event, '${id}')">
         <div class="form-grid form-grid-2 mb-24">
           <div class="field">
-            <label class="field-label">Cantidad real producida *</label>
+            <label class="field-label">Cantidad real de granel producida *</label>
             <input class="input" type="number" step="0.001" name="actualYield" required value="${o.batchSize}">
             <div class="field-hint">Teórico: ${o.batchSize} ${o.batchUnit}</div>
           </div>
           <div class="field">
-            <label class="field-label">Unidad</label>
+            <label class="field-label">Unidad granel</label>
             <input class="input" value="${o.batchUnit}" disabled>
           </div>
+          ${hasPresentation ? `
+            <div class="field" style="grid-column:1/-1;background:#fef3c7;border:1px solid #fcd34d;border-radius:6px;padding:12px;">
+              <label class="field-label">Unidades realmente envasadas *</label>
+              <input class="input" type="number" min="0" step="1" name="unitsActual" required value="${o.unitsPlanned||0}">
+              <div class="field-hint">Planificadas: ${o.unitsPlanned||0} unidades · Si envasaste menos (merma de envasado), poné el número real.</div>
+            </div>
+          ` : ''}
           <div class="field">
             <label class="field-label">Número de lote PT *</label>
             <input class="input" name="lotNumber" required value="${suggestedLot}" style="font-family:var(--font-mono);">
@@ -477,7 +610,9 @@ function completeOF(id) {
           </div>
         </div>
         <div style="padding:12px;background:var(--accent-soft);border-radius:var(--r-md);font-size:12.5px;color:var(--accent-ink);">
-          Al cerrar se: consume el material reservado · crea lote de PT en estado "Cuarentena" · queda pendiente de aprobación de QC para liberarlo a venta.
+          ${hasPresentation
+            ? `Al cerrar se: consume el granel · descuenta envases/tapas/etiquetas/cajas según las unidades reales · crea lote de PT envasado <strong>${presentation?.sku||''}</strong> en cuarentena.`
+            : `Al cerrar se: consume el material reservado · crea lote de PT (granel) en cuarentena · queda pendiente de QC.`}
         </div>
       </form>`,
     footer: `<button class="btn btn-secondary" onclick="ui.closeModal()">Cancelar</button><button class="btn btn-primary" onclick="document.getElementById('complete-form').requestSubmit()">${ui.icon('check')} Terminar OF</button>`
@@ -488,14 +623,33 @@ function saveComplete(e, ofId) {
   e.preventDefault();
   const data = ui.formData(e.target);
   const o = db.getById(db.COLLECTIONS.productionOrders, ofId);
+  const hasPresentation = !!o.presentationId;
+  const unitsActual = hasPresentation ? (parseInt(data.unitsActual, 10) || 0) : 0;
 
-  // Consumir reservas (descuenta de balance y libera reserved)
+  // Si hay presentación: validar stock una vez más (puede haber cambiado entre la creación y el cierre)
+  if (hasPresentation && unitsActual > 0) {
+    const presentation = db.getById(db.COLLECTIONS.presentations, o.presentationId);
+    if (presentation && presentation.components) {
+      for (const comp of presentation.components) {
+        const rm = db.getById(db.COLLECTIONS.rawMaterials, comp.rawMaterialId);
+        if (!rm) continue;
+        const need = (comp.quantity || 1) * unitsActual;
+        const av = inventory.getAvailableStockForRM(rm.id);
+        if (av < need) {
+          ui.toast(`Stock insuficiente de ${rm.name}: necesitás ${need.toFixed(2)} y hay ${av.toFixed(2)}`, 'error', 6000);
+          return;
+        }
+      }
+    }
+  }
+
+  // Consumir reservas de granel (descuenta de balance y libera reserved)
   o.items.forEach(it => {
     inventory.consumeFromLot(it.lotId, it.required, `OF ${o.code} terminada`);
   });
 
-  // Calcular costo unitario PT
-  let totalCostUSD = 0;
+  // Calcular costo unitario del granel (USD)
+  let totalGranelCostUSD = 0;
   o.items.forEach(it => {
     const lot = db.getById(db.COLLECTIONS.rmLots, it.lotId);
     if (!lot) return;
@@ -504,19 +658,67 @@ function saveComplete(e, ofId) {
       const r = currency.getActiveRate();
       lineUSD = r && r.value ? lineUSD / r.value : 0;
     }
-    totalCostUSD += lineUSD;
+    totalGranelCostUSD += lineUSD;
   });
-  const unitCost = data.actualYield > 0 ? totalCostUSD / data.actualYield : 0;
+
+  // Si hay presentación: descontar componentes de envasado y agregar su costo
+  let packagingCostUSD = 0;
+  if (hasPresentation && unitsActual > 0) {
+    const presentation = db.getById(db.COLLECTIONS.presentations, o.presentationId);
+    if (presentation && presentation.components) {
+      presentation.components.forEach(comp => {
+        const rm = db.getById(db.COLLECTIONS.rawMaterials, comp.rawMaterialId);
+        if (!rm) return;
+        const totalNeeded = (comp.quantity || 1) * unitsActual;
+        // Descontar de los lotes FEFO disponibles
+        const lots = inventory.getLotsFEFO(rm.id);
+        let remaining = totalNeeded;
+        for (const lot of lots) {
+          if (remaining <= 0) break;
+          const av = (lot.balance||0) - (lot.reserved||0);
+          if (av <= 0) continue;
+          const take = Math.min(av, remaining);
+          inventory.consumeFromLot(lot.id, take, `OF ${o.code} envasado`);
+          remaining -= take;
+          // Costo
+          let lineUSD = take * (lot.unitCost||0);
+          if (lot.costCurrency === 'VES') {
+            const r = currency.getActiveRate();
+            lineUSD = r && r.value ? lineUSD / r.value : 0;
+          }
+          packagingCostUSD += lineUSD;
+        }
+      });
+    }
+  }
+
+  // Costo unitario del lote PT
+  let lotQuantity, lotUnit, unitCost;
+  if (hasPresentation && unitsActual > 0) {
+    // Lote PT en unidades envasadas
+    lotQuantity = unitsActual;
+    lotUnit = 'unidad';
+    unitCost = (totalGranelCostUSD + packagingCostUSD) / unitsActual;
+  } else {
+    // Lote PT en granel (kg/L)
+    lotQuantity = parseFloat(data.actualYield);
+    lotUnit = o.batchUnit;
+    unitCost = lotQuantity > 0 ? totalGranelCostUSD / lotQuantity : 0;
+  }
 
   // Crear lote PT
+  const presentation = hasPresentation ? db.getById(db.COLLECTIONS.presentations, o.presentationId) : null;
   const fg = inventory.createFGLot({
     formulaId: o.formulaId,
     formulaName: o.formulaName,
+    presentationId: o.presentationId || null,
+    presentationName: o.presentationName || null,
+    presentationSku: presentation?.sku || null,
     productionOrderId: o.id,
     productionOrderCode: o.code,
     lotNumber: data.lotNumber,
-    quantity: data.actualYield,
-    unit: o.batchUnit,
+    quantity: lotQuantity,
+    unit: lotUnit,
     manufactureDate: data.manufactureDate,
     expiryDate: data.expiryDate || null,
     warehouseId: data.warehouseId,
@@ -533,11 +735,17 @@ function saveComplete(e, ofId) {
   o.fgLotId = fg.id;
   o.actualYield = parseFloat(data.actualYield);
   o.yieldVariance = ((o.actualYield - o.batchSize) / o.batchSize) * 100;
+  if (hasPresentation) {
+    o.unitsActual = unitsActual;
+    o.unitsVariance = o.unitsPlanned > 0 ? ((unitsActual - o.unitsPlanned) / o.unitsPlanned) * 100 : 0;
+  }
   o.closingNotes = data.closingNotes;
   db.save(db.COLLECTIONS.productionOrders, o);
 
   ui.closeModal();
-  ui.toast('OF terminada · Lote PT creado en cuarentena', 'success');
+  ui.toast(hasPresentation
+    ? `OF terminada · Lote PT creado: ${unitsActual} unidades de ${presentation?.sku||''}`
+    : 'OF terminada · Lote PT creado en cuarentena', 'success');
   render();
 }
 
@@ -578,6 +786,8 @@ Object.assign(window, {
   onFormulaChange: typeof onFormulaChange !== 'undefined' ? onFormulaChange : undefined,
   onBatchSizeChange: typeof onBatchSizeChange !== 'undefined' ? onBatchSizeChange : undefined,
   onOperatorChange: typeof onOperatorChange !== 'undefined' ? onOperatorChange : undefined,
+  onPresentationChange: typeof onPresentationChange !== 'undefined' ? onPresentationChange : undefined,
+  onUnitsChange: typeof onUnitsChange !== 'undefined' ? onUnitsChange : undefined,
   rebuildItems: typeof rebuildItems !== 'undefined' ? rebuildItems : undefined,
   updateItemLot: typeof updateItemLot !== 'undefined' ? updateItemLot : undefined,
   cancelCreate: typeof cancelCreate !== 'undefined' ? cancelCreate : undefined,
