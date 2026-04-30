@@ -128,9 +128,19 @@ const auth = {
    * Espera a que Firebase Auth determine el estado inicial.
    * Devuelve el perfil si hay sesión activa, null si no.
    */
-  waitReady() {
+  async waitReady() {
+    // Esperar a que window.fb exista (firebase-init.js es módulo ES6 async)
+    let waited = 0;
+    while (!window.fb && waited < 10000) {
+      await new Promise(r => setTimeout(r, 50));
+      waited += 50;
+    }
+    if (!window.fb) {
+      console.error('[auth] Firebase no se cargó después de 10s');
+      return null;
+    }
+
     return new Promise((resolve) => {
-      if (!window.fb) return resolve(null);
       const unsub = window.fb.onAuthStateChanged(window.fb.auth, async (user) => {
         unsub();
         if (!user) return resolve(null);
@@ -142,6 +152,8 @@ const auth = {
           resolve(null);
         }
       });
+      // Timeout de seguridad
+      setTimeout(() => resolve(window.fb?.auth?.currentUser ? null : null), 8000);
     });
   },
 
