@@ -304,6 +304,115 @@ const inventory = {
       .replace('{####}', String(next).padStart(4,'0'))
       .replace('{###}', String(next).padStart(3,'0'))
       .replace('{CODE}', formulaCode || '');
+  },
+
+  /**
+   * Calcula los requerimientos de una Orden de Fabricación y verifica stock.
+   * Recibe: formulaId, batchSize (en la unidad de la fórmula), opcionalmente presentationId y units.
+   *
+   * Retorna:
+   * {
+   *   ok: bool,                 // true si hay stock para todo
+   *   ingredients: [             // ingredientes del granel
+   *     { rawMaterialId, code, name, required, available, unit, ok }
+   *   ],
+   *   packaging: [               // insumos de envasado (si hay presentación)
+   *     { rawMaterialId, code, name, kindLabel, required, available, unit, ok }
+   *   ],
+   *   missingItems: number,      // cantidad de items con stock insuficiente
+   *   theoreticalUnits: number   // unidades teóricas que produciría el batch (si hay presentación)
+   * }
+   */
+  checkOFRequirements(formulaId, batchSize, presentationId, units) {
+    const result = {
+      ok: true,
+      ingredients: [],
+      packaging: [],
+      missingItems: 0,
+      theoreticalUnits: 0
+    };
+
+    const formula = db.getById(db.COLLECTIONS.formulas, formulaId);
+    if (!formula) return result;
+
+    // 1. Ingredientes del granel
+    const version = db.query(db.COLLECTIONS.formulaVersions,
+      v => v.formulaId === formulaId && v.version === formula.currentVersion
+    )[0];
+    if (version) {
+      const scaled = formulas.scaleVersion(version, batchSize);
+      scaled.phases.forEach(phase => {
+        (phase.items || []).forEach(item => {
+          const rm = db.getById(db.COLLECTIONS.rawMaterials, item.rawMaterialId);
+          if (!rm) return;
+          const required = item.scaledAmount;
+          const available = this.getAvailableStockForRM(rm.id);
+          const itemOk = available >= required;
+          result.ingredients.push({
+            rawMaterialId: rm.id,
+            code: rm.code,
+            name: rm.name,
+            kindLabel: 'Ingrediente',
+            required: required,
+            available: available,
+            unit: rm.unit || 'unidad',
+            ok: itemOk
+          });
+          if (!itemOk) {
+            result.ok = false;
+            result.missingItems++;
+          }
+        });
+      });
+    }
+
+    // 2. Insumos de envasado (si hay presentación)
+    if (presentationId && units > 0) {
+      const presentation = db.getById(db.COLLECTIONS.presentations, presentationId);
+      if (presentation && presentation.components) {
+        const KIND_LABELS = { PACKAGING: 'Envase', CAP: 'Tapa', LABEL: 'Etiqueta', BOX: 'Caja', OTHER: 'Otro' };
+        presentation.components.forEach(comp => {
+          const rm = db.getById(db.COLLECTIONS.rawMaterials, comp.rawMaterialId);
+          if (!rm) return;
+          const required = (comp.quantity || 1) * units;
+          const available = this.getAvailableStockForRM(rm.id);
+          const itemOk = available >= required;
+          result.packaging.push({
+            rawMaterialId: rm.id,
+            code: rm.code,
+            name: rm.name,
+            kindLabel: KIND_LABELS[rm.kind] || 'Otro',
+            required: required,
+            available: available,
+            unit: rm.unit || 'unidad',
+            ok: itemOk
+          });
+          if (!itemOk) {
+            result.ok = false;
+            result.missingItems++;
+          }
+        });
+
+        // Calcular unidades teóricas según presentación y batch size
+        // (ej: 1000g de granel ÷ 30g por presentación = 33 unidades teóricas)
+        // Asumimos que la unidad de batch coincide con la de la presentación (kg/g, L/mL)
+        const presSize = parseFloat(presentation.size) || 0;
+        if (presSize > 0) {
+          // Convertir batchSize y presSize a la misma unidad (mL o g)
+          const formulaBatchInBaseUnit = (formula.batchUnit === 'kg' || formula.batchUnit === 'L')
+            ? batchSize * 1000
+            : batchSize;
+          const presInBaseUnit = (presentation.sizeUnit === 'kg' || presentation.sizeUnit === 'L')
+            ? presSize * 1000
+            : presSize;
+          if (presInBaseUnit > 0) {
+            result.theoreticalUnits = Math.floor(formulaBatchInBaseUnit / presInBaseUnit);
+          }
+        }
+      }
+    }
+
+    return result;
   }
 };
 
