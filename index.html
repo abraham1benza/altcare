@@ -20,35 +20,51 @@
       Sistema integral de gestión para fabricación de cosméticos. Trazabilidad, control de calidad y operación multi-moneda en un solo lugar.
     </div>
     <div style="position:relative;font-size:11px;letter-spacing:0.16em;text-transform:uppercase;color:rgba(255,255,255,0.4);">
-      v1.0 · Fase 1
+      v2.0 · Cloud
     </div>
   </div>
   <div class="login-form-side">
     <form class="login-form" id="login-form">
       <h2>Iniciar sesión</h2>
-      <p class="lead">Ingresa con tus credenciales para acceder al sistema.</p>
+      <p class="lead">Ingresa con tu email y contraseña para acceder al sistema.</p>
       <div class="field">
-        <label class="field-label">Usuario</label>
-        <input class="input" type="text" name="username" id="login-username" autocomplete="username" required>
+        <label class="field-label">Email</label>
+        <input class="input" type="email" name="email" id="login-email" autocomplete="username" required placeholder="tu@email.com">
       </div>
       <div class="field" style="margin-top:14px;">
         <label class="field-label">Contraseña</label>
         <input class="input" type="password" name="password" id="login-password" autocomplete="current-password" required>
       </div>
-      <button type="submit" class="btn btn-primary" style="width:100%;justify-content:center;margin-top:20px;padding:11px;">
+      <button type="submit" class="btn btn-primary" id="login-btn" style="width:100%;justify-content:center;margin-top:20px;padding:11px;">
         Entrar
       </button>
-      <div class="login-roles">
-        <strong>Acceso por defecto</strong>
-        Usuario: <span class="role-chip" onclick="document.getElementById('login-username').value='admin';document.getElementById('login-password').value='admin';">admin / admin</span>
-        <div style="margin-top:8px;font-size:11px;">Cambia esta contraseña en Configuración después de iniciar sesión.</div>
+      <div style="margin-top:14px;text-align:center;">
+        <a href="#" onclick="resetPasswordPrompt(event)" style="font-size:12px;color:var(--ink-3);text-decoration:none;">¿Olvidaste tu contraseña?</a>
+      </div>
+      <div class="login-roles" id="login-help" style="display:none;">
+        <strong>Datos en la nube</strong>
+        Tu sesión queda guardada y los datos se sincronizan en tiempo real entre dispositivos.
       </div>
     </form>
   </div>
 </div>
 
+<!-- PANTALLA DE CARGA INICIAL -->
+<div id="loading-view" style="position:fixed;inset:0;background:#fafaf6;display:flex;flex-direction:column;align-items:center;justify-content:center;z-index:9999;">
+  <div style="font-family:'Fraunces',serif;font-style:italic;font-size:48px;letter-spacing:-0.03em;line-height:1;color:#1a1a18;">
+    <span style="color:#5b7a5a;">alt</span>care
+  </div>
+  <div style="margin-top:24px;width:32px;height:32px;border:3px solid #e7e5df;border-top-color:#5b7a5a;border-radius:50%;animation:spin 0.8s linear infinite;"></div>
+  <div id="loading-text" style="margin-top:20px;font-size:13px;color:#8a8a82;letter-spacing:0.04em;">Conectando a la nube...</div>
+  <style>@keyframes spin { to { transform: rotate(360deg); } }</style>
+</div>
+
 <!-- DASHBOARD se renderiza dinámicamente por ui.renderLayout -->
 
+<!-- 1. Firebase SDK (módulo ES6) -->
+<script type="module" src="assets/js/firebase-init.js"></script>
+
+<!-- 2. Resto de scripts (esperan a que Firebase esté listo) -->
 <script src="assets/js/db.js"></script>
 <script src="assets/js/auth.js"></script>
 <script src="assets/js/currency.js"></script>
@@ -60,27 +76,90 @@
 <script src="assets/js/payments.js"></script>
 <script src="assets/js/ui.js"></script>
 <script>
-(function() {
-  if (auth.isLoggedIn()) {
-    renderDashboard();
-    // Refrescar tasas en background si están vencidas (>6h o nunca)
-    triggerAutoRefresh();
+const $loading = document.getElementById('loading-view');
+const $loadingText = document.getElementById('loading-text');
+const $login = document.getElementById('login-view');
+
+function setLoadingText(t) { if ($loadingText) $loadingText.textContent = t; }
+function hideLoading() { $loading.style.display = 'none'; }
+function showLogin() {
+  hideLoading();
+  $login.classList.remove('hidden');
+}
+function showDashboard() {
+  hideLoading();
+  $login.classList.add('hidden');
+  renderDashboard();
+  triggerAutoRefresh();
+}
+
+(async function init() {
+  // Esperar a que Firebase Auth determine el estado inicial
+  setLoadingText('Verificando sesión...');
+  const profile = await auth.waitReady();
+
+  if (profile) {
+    // Hay sesión activa: cargar datos
+    setLoadingText('Cargando datos...');
+    try {
+      await db.init();
+      await db.seedDefaults();
+      showDashboard();
+    } catch (err) {
+      console.error('[bootstrap] Error cargando datos:', err);
+      ui.toast('Error: ' + err.message, 'error', 6000);
+      // Cerrar sesión y volver a login
+      await auth.logout();
+    }
   } else {
-    document.getElementById('login-view').classList.remove('hidden');
-    document.getElementById('login-form').addEventListener('submit', e => {
+    showLogin();
+    // Setup del form de login
+    document.getElementById('login-form').addEventListener('submit', async e => {
       e.preventDefault();
-      const u = document.getElementById('login-username').value.trim();
-      const p = document.getElementById('login-password').value;
-      const r = auth.login(u, p);
+      const btn = document.getElementById('login-btn');
+      const email = document.getElementById('login-email').value.trim();
+      const password = document.getElementById('login-password').value;
+
+      btn.disabled = true;
+      btn.textContent = 'Verificando...';
+
+      const r = await auth.login(email, password);
+
       if (r.ok) {
-        renderDashboard();
-        triggerAutoRefresh();
+        $login.classList.add('hidden');
+        $loading.style.display = 'flex';
+        setLoadingText('Cargando datos...');
+        try {
+          await db.init();
+          await db.seedDefaults();
+          showDashboard();
+        } catch (err) {
+          ui.toast('Error: ' + err.message, 'error', 6000);
+          btn.disabled = false;
+          btn.textContent = 'Entrar';
+          $loading.style.display = 'none';
+          $login.classList.remove('hidden');
+        }
       } else {
-        ui.toast(r.error, 'error');
+        btn.disabled = false;
+        btn.textContent = 'Entrar';
+        ui.toast(r.error, 'error', 4000);
       }
     });
   }
 })();
+
+async function resetPasswordPrompt(e) {
+  e.preventDefault();
+  const email = prompt('Ingresá tu email para recibir el link de reseteo:');
+  if (!email) return;
+  const r = await auth.sendPasswordReset(email);
+  if (r.ok) {
+    ui.toast('Te enviamos un email con instrucciones', 'success', 5000);
+  } else {
+    ui.toast('Error: ' + r.error, 'error');
+  }
+}
 
 /**
  * Refresca tasas en background (no bloquea). Si se actualizan, re-renderiza
@@ -92,8 +171,7 @@ async function triggerAutoRefresh() {
     const result = await currency.fetchLiveRates();
     if (result.ok) {
       console.log('[altcare] Tasas actualizadas automáticamente:', result.updated);
-      // Re-render para mostrar los nuevos valores
-      if (typeof renderDashboard === 'function') renderDashboard();
+      if (typeof renderDashboard === 'function' && auth.isLoggedIn()) renderDashboard();
     }
   } catch (e) {
     console.warn('[altcare] No se pudo conectar a dolarapi.com:', e.message);
