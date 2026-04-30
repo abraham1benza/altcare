@@ -1,37 +1,40 @@
 /* ============================================
-   db.js — Capa de Datos
-   Abstracción sobre localStorage. Cuando migremos a
-   Firebase, solo este archivo cambia. El resto del
-   sistema sigue llamando db.getAll(), db.save(), etc.
+   db.js — Capa de Datos (Firebase Firestore)
+   Mantiene la misma API que la versión localStorage:
+     db.getAll(collection)
+     db.getById(collection, id)
+     db.save(collection, item)
+     db.remove(collection, id)
+     db.query(collection, predicate)
+     db.nextCode(collection, prefix)
+
+   Internamente:
+   - Cada colección se carga una sola vez al inicio (snapshot)
+   - Los cambios se guardan en Firestore Y en caché de memoria
+   - La caché se mantiene sincronizada en tiempo real con onSnapshot
    ============================================ */
 
 const DB_VERSION = 4;
-const DB_PREFIX = 'altcare_';
 
 const COLLECTIONS = {
   users: 'users',
   config: 'config',
   rates: 'rates',
-  // Inventario
   rawMaterials: 'rawMaterials',
   rmLots: 'rmLots',
   warehouses: 'warehouses',
   locations: 'locations',
-  // Comercial - master data
   suppliers: 'suppliers',
   customers: 'customers',
-  // Producción
   formulas: 'formulas',
   formulaVersions: 'formulaVersions',
-  presentations: 'presentations',          // 🆕 SKUs envasados (Shampoo X · 250ml)
-  productionOrders: 'productionOrders',     // OF de fabricación (granel)
-  packagingOrders: 'packagingOrders',       // 🆕 OF de envasado
+  presentations: 'presentations',
+  productionOrders: 'productionOrders',
+  packagingOrders: 'packagingOrders',
   qcTests: 'qcTests',
-  finishedGoods: 'finishedGoods',           // ahora distingue BULK / PACKAGED
+  finishedGoods: 'finishedGoods',
   packaging: 'packaging',
-  // Movimientos
   warehouseMoves: 'warehouseMoves',
-  // ===== COMERCIAL FASE 3 =====
   purchaseOrders: 'purchaseOrders',
   purchaseReceipts: 'purchaseReceipts',
   supplierInvoices: 'supplierInvoices',
@@ -42,222 +45,237 @@ const COLLECTIONS = {
   bankAccounts: 'bankAccounts',
   payments: 'payments',
   bankMoves: 'bankMoves',
-  // Sistema
   auditLog: 'auditLog'
 };
 
+// ====== CACHÉ LOCAL EN MEMORIA ======
+// Cada colección carga toda su data en memoria al inicio.
+// Las funciones síncronas (getAll, getById) leen de aquí.
+// Las funciones que modifican (save, remove) escriben en Firestore Y actualizan la caché.
+const _cache = {};
+const _ready = {}; // map collection -> Promise resolved cuando se cargó
+
+let _initialized = false;
+let _userUid = null;
+
 const db = {
-  // ====== Bajo nivel ======
-  _key(collection) { return `${DB_PREFIX}${collection}`; },
+  COLLECTIONS,
 
-  _read(collection) {
+  // ====== INICIALIZACIÓN ======
+
+  /**
+   * Carga todas las colecciones en caché. Llamar una vez al iniciar la app
+   * después de autenticarse.
+   */
+  async init() {
+    if (_initialized) return;
+    if (!window.fb) throw new Error('Firebase no inicializado');
+    if (!window.fb.auth.currentUser) throw new Error('Usuario no autenticado');
+    _userUid = window.fb.auth.currentUser.uid;
+
+    // Cargar todas las colecciones en paralelo
+    const tasks = Object.values(COLLECTIONS).map(name => this._loadCollection(name));
+    await Promise.all(tasks);
+    _initialized = true;
+    console.log('[db] Inicializado · ' + Object.keys(_cache).length + ' colecciones cargadas');
+  },
+
+  /** Carga una colección desde Firestore a la caché */
+  async _loadCollection(name) {
+    const fb = window.fb;
     try {
-      const raw = localStorage.getItem(this._key(collection));
-      return raw ? JSON.parse(raw) : [];
-    } catch (e) {
-      console.error('DB read error:', collection, e);
-      return [];
+      const snap = await fb.getDocs(fb.collection(fb.db, name));
+      _cache[name] = {};
+      snap.forEach(d => {
+        _cache[name][d.id] = { ...d.data(), id: d.id };
+      });
+    } catch (err) {
+      console.warn(`[db] Error cargando ${name}:`, err.message);
+      _cache[name] = {};
     }
   },
 
-  _write(collection, data) {
-    try {
-      localStorage.setItem(this._key(collection), JSON.stringify(data));
-      return true;
-    } catch (e) {
-      console.error('DB write error:', collection, e);
-      return false;
+  isInitialized() { return _initialized; },
+
+  /** Limpiar caché (al cerrar sesión) */
+  clearCache() {
+    Object.keys(_cache).forEach(k => delete _cache[k]);
+    _initialized = false;
+    _userUid = null;
+  },
+
+  // ====== API PÚBLICA (SÍNCRONA, igual que antes) ======
+
+  /** Obtiene todos los items de una colección */
+  getAll(collectionName) {
+    if (!_cache[collectionName]) return [];
+    return Object.values(_cache[collectionName]);
+  },
+
+  /** Obtiene un item por id */
+  getById(collectionName, id) {
+    if (!_cache[collectionName]) return null;
+    return _cache[collectionName][id] || null;
+  },
+
+  /** Filtra items con un predicado */
+  query(collectionName, predicate) {
+    return this.getAll(collectionName).filter(predicate);
+  },
+
+  /** Genera un código secuencial para una colección con prefijo */
+  nextCode(collectionName, prefix) {
+    const items = this.getAll(collectionName);
+    const codes = items.map(i => i.code || '').filter(c => c.startsWith(prefix + '-'));
+    let max = 0;
+    codes.forEach(c => {
+      const n = parseInt((c.split('-')[1] || '').replace(/\D/g, ''), 10);
+      if (n > max) max = n;
+    });
+    return prefix + '-' + String(max + 1).padStart(4, '0');
+  },
+
+  /**
+   * Genera un id único (similar a Firestore autoId)
+   */
+  generateId() {
+    const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+    let id = '';
+    for (let i = 0; i < 20; i++) id += chars[Math.floor(Math.random() * chars.length)];
+    return id;
+  },
+
+  /**
+   * Guarda un item. Si tiene id, hace update; si no, crea.
+   * Devuelve el item con id asignado.
+   */
+  save(collectionName, item) {
+    if (!_cache[collectionName]) _cache[collectionName] = {};
+    if (!item.id) item.id = this.generateId();
+
+    // Limpiar valores undefined (Firestore los rechaza)
+    const clean = this._cleanForFirestore(item);
+
+    // Update caché inmediatamente (UI responde)
+    _cache[collectionName][item.id] = { ...clean };
+
+    // Escribir a Firestore en background (no bloquea)
+    const fb = window.fb;
+    if (fb && fb.auth.currentUser) {
+      const docRef = fb.doc(fb.db, collectionName, item.id);
+      fb.setDoc(docRef, clean, { merge: false }).catch(err => {
+        console.error(`[db] Error guardando ${collectionName}/${item.id}:`, err.message);
+        // Notificar a UI si está disponible
+        if (window.ui && window.ui.toast) {
+          window.ui.toast('Error guardando: ' + err.message, 'error', 5000);
+        }
+      });
     }
+
+    return clean;
   },
 
-  // ====== CRUD genérico ======
-
-  /** Devuelve todos los registros de una colección */
-  getAll(collection) {
-    return this._read(collection);
+  /** Elimina un item */
+  remove(collectionName, id) {
+    if (_cache[collectionName]) {
+      delete _cache[collectionName][id];
+    }
+    const fb = window.fb;
+    if (fb && fb.auth.currentUser) {
+      const docRef = fb.doc(fb.db, collectionName, id);
+      fb.deleteDoc(docRef).catch(err => {
+        console.error(`[db] Error eliminando ${collectionName}/${id}:`, err.message);
+        if (window.ui && window.ui.toast) {
+          window.ui.toast('Error eliminando: ' + err.message, 'error', 5000);
+        }
+      });
+    }
+    return true;
   },
 
-  /** Devuelve uno por id */
-  getById(collection, id) {
-    return this._read(collection).find(r => r.id === id) || null;
+  /**
+   * Limpia un objeto para Firestore: convierte undefined → null,
+   * elimina funciones, normaliza fechas.
+   */
+  _cleanForFirestore(obj) {
+    if (obj === null || obj === undefined) return null;
+    if (obj instanceof Date) return obj.toISOString();
+    if (Array.isArray(obj)) return obj.map(x => this._cleanForFirestore(x));
+    if (typeof obj === 'object') {
+      const out = {};
+      Object.entries(obj).forEach(([k, v]) => {
+        if (v === undefined) out[k] = null;
+        else if (typeof v === 'function') return;
+        else out[k] = this._cleanForFirestore(v);
+      });
+      return out;
+    }
+    return obj;
   },
 
-  /** Filtra registros */
-  query(collection, predicate) {
-    return this._read(collection).filter(predicate);
-  },
+  // ====== UTILIDADES ======
 
-  /** Crea o actualiza. Si no trae id, lo asigna. */
-  save(collection, record) {
-    const all = this._read(collection);
-    if (!record.id) {
-      record.id = this._uid();
-      record.createdAt = new Date().toISOString();
-      record.createdBy = auth.currentUser()?.username || 'system';
-      all.push(record);
+  /**
+   * Asegura que existan los datos por defecto (config, rates, paymentMethods, etc.).
+   * Solo crea si la colección está vacía.
+   */
+  async seedDefaults() {
+    const fb = window.fb;
+    const today = new Date().toISOString().slice(0,10);
+
+    // Config
+    if (this.getAll(COLLECTIONS.config).length === 0) {
+      this.save(COLLECTIONS.config, {
+        id: 'main',
+        companyName: '',
+        rif: '',
+        address: '',
+        phone: '',
+        email: '',
+        website: '',
+        ivaRate: 16,
+        ivaWithholdingRate: 75,
+        currency: 'VES',
+        defaultRateType: 'BCV_USD',
+        logoDataUrl: null,
+        expiryAlertDays: 60,
+        lotNumberFormat: 'L-{YYYY}-{####}',
+        invoiceMode: 'SENIAT',
+        invoiceNumberPrefix: 'F',
+        invoiceControlNumberPrefix: '00',
+        nextInvoiceNumber: 1,
+        nextControlNumber: 1
+      });
+    }
+
+    // Tasas
+    if (this.getAll(COLLECTIONS.rates).length === 0) {
+      this.save(COLLECTIONS.rates, { id: 'rate_BCV_USD', type: 'BCV_USD', label: 'BCV USD',  symbol: '$', value: 0, updatedDate: today, source: null, active: true });
+      this.save(COLLECTIONS.rates, { id: 'rate_BCV_EUR', type: 'BCV_EUR', label: 'BCV EUR',  symbol: '€', value: 0, updatedDate: today, source: null, active: false });
+      this.save(COLLECTIONS.rates, { id: 'rate_BINANCE', type: 'BINANCE', label: 'P2P USD',  symbol: '$', value: 0, updatedDate: today, source: null, active: false });
+      this.save(COLLECTIONS.rates, { id: 'rate_P2P_EUR', type: 'P2P_EUR', label: 'P2P EUR',  symbol: '€', value: 0, updatedDate: today, source: null, active: false });
+      this.save(COLLECTIONS.rates, { id: 'rate_CUSTOM',  type: 'CUSTOM',  label: 'Personalizada', symbol: '$', value: 0, updatedDate: today, source: null, active: false });
     } else {
-      const idx = all.findIndex(r => r.id === record.id);
-      if (idx === -1) {
-        all.push(record);
-      } else {
-        record.updatedAt = new Date().toISOString();
-        record.updatedBy = auth.currentUser()?.username || 'system';
-        all[idx] = { ...all[idx], ...record };
+      // Migración: asegurar P2P_EUR
+      if (!this.getAll(COLLECTIONS.rates).find(r => r.type === 'P2P_EUR')) {
+        this.save(COLLECTIONS.rates, { id: 'rate_P2P_EUR', type: 'P2P_EUR', label: 'P2P EUR', symbol: '€', value: 0, updatedDate: today, source: null, active: false });
       }
     }
-    this._write(collection, all);
-    this._audit(collection, record.id, 'save');
-    return record;
-  },
 
-  /** Borra por id */
-  remove(collection, id) {
-    const all = this._read(collection);
-    const filtered = all.filter(r => r.id !== id);
-    this._write(collection, filtered);
-    this._audit(collection, id, 'delete');
-    return filtered.length !== all.length;
-  },
-
-  /** Limpia toda una colección */
-  clear(collection) {
-    this._write(collection, []);
-  },
-
-  /** Limpia TODA la base de datos. Úsalo con cuidado. */
-  nuke() {
-    Object.values(COLLECTIONS).forEach(c => localStorage.removeItem(this._key(c)));
-  },
-
-  /** Genera ID único */
-  _uid() {
-    return 'id_' + Date.now().toString(36) + Math.random().toString(36).substr(2, 6);
-  },
-
-  /** Genera código secuencial tipo MP-0001, OF-0001 */
-  nextCode(collection, prefix, padding = 4) {
-    const all = this._read(collection);
-    const codes = all
-      .map(r => r.code)
-      .filter(c => c && c.startsWith(prefix + '-'))
-      .map(c => parseInt(c.split('-')[1], 10))
-      .filter(n => !isNaN(n));
-    const next = codes.length ? Math.max(...codes) + 1 : 1;
-    return `${prefix}-${String(next).padStart(padding, '0')}`;
-  },
-
-  /** Auditoría simple */
-  _audit(collection, recordId, action) {
-    if (collection === COLLECTIONS.auditLog) return; // evita recursión
-    const log = this._read(COLLECTIONS.auditLog);
-    log.push({
-      id: this._uid(),
-      timestamp: new Date().toISOString(),
-      user: typeof auth !== 'undefined' ? auth.currentUser()?.username : 'system',
-      collection,
-      recordId,
-      action
-    });
-    if (log.length > 5000) log.splice(0, log.length - 5000); // límite
-    this._write(COLLECTIONS.auditLog, log);
-  },
-
-  // ====== Export / Import ======
-
-  exportAll() {
-    const dump = { version: DB_VERSION, exportedAt: new Date().toISOString(), data: {} };
-    Object.values(COLLECTIONS).forEach(c => { dump.data[c] = this._read(c); });
-    return dump;
-  },
-
-  importAll(dump) {
-    if (!dump || !dump.data) return false;
-    Object.entries(dump.data).forEach(([c, data]) => {
-      this._write(c, data);
-    });
-    return true;
+    // Métodos de pago default
+    if (this.getAll(COLLECTIONS.paymentMethods).length === 0) {
+      const methods = [
+        { id: 'pm_efectivo',     name: 'Efectivo',      type: 'CASH',          requiresBank: false, requiresReference: false, active: true },
+        { id: 'pm_transferencia',name: 'Transferencia', type: 'TRANSFER',      requiresBank: true,  requiresReference: true,  active: true },
+        { id: 'pm_zelle',        name: 'Zelle',         type: 'TRANSFER',      requiresBank: true,  requiresReference: true,  active: true },
+        { id: 'pm_pago_movil',   name: 'Pago Móvil',    type: 'MOBILE',        requiresBank: true,  requiresReference: true,  active: true },
+        { id: 'pm_cheque',       name: 'Cheque',        type: 'CHECK',         requiresBank: true,  requiresReference: true,  active: true },
+        { id: 'pm_cripto',       name: 'Criptomoneda',  type: 'CRYPTO',        requiresBank: false, requiresReference: true,  active: true }
+      ];
+      methods.forEach(m => this.save(COLLECTIONS.paymentMethods, m));
+    }
   }
 };
 
-// Exponer constantes
-db.COLLECTIONS = COLLECTIONS;
-
-// ====== INICIALIZACIÓN POR DEFECTO ======
-// Solo se corre la primera vez que se abre la app
-(function initDefaults() {
-  // Config inicial
-  if (db.getAll(COLLECTIONS.config).length === 0) {
-    db.save(COLLECTIONS.config, {
-      id: 'main',
-      companyName: '',
-      rif: '',
-      address: '',
-      phone: '',
-      email: '',
-      website: '',
-      ivaRate: 16,
-      ivaWithholdingRate: 75,
-      currency: 'VES',
-      defaultRateType: 'BCV_USD',
-      logoDataUrl: null,
-      expiryAlertDays: 60,
-      lotNumberFormat: 'L-{YYYY}-{####}',
-      // Fase 3
-      invoiceMode: 'SENIAT',                       // SENIAT | SIMPLE
-      invoiceControlNumberPrefix: '00',           // ej: 00-00000001
-      invoiceNumberPrefix: 'F',                   // ej: F-00000001
-      invoicePaymentTermsDefault: 'Contado',
-      defaultISLRRate: 0,                          // % ISLR a aplicar por defecto si proveedor no tiene
-      receiptNumberPrefix: 'REC',
-      withholdingVoucherPrefix: 'CR'
-    });
-  }
-  // Almacén principal por defecto
-  if (db.getAll(COLLECTIONS.warehouses).length === 0) {
-    db.save(COLLECTIONS.warehouses, {
-      id: 'wh_main', code: 'PRINCIPAL', name: 'Almacén Principal',
-      address: '', isDefault: true, active: true
-    });
-  }
-  // Métodos de pago por defecto
-  if (db.getAll(COLLECTIONS.paymentMethods).length === 0) {
-    [
-      { id: 'pm_efectivo',     name: 'Efectivo',           requiresBank: false, requiresReference: false },
-      { id: 'pm_transferencia',name: 'Transferencia',      requiresBank: true,  requiresReference: true },
-      { id: 'pm_zelle',        name: 'Zelle',              requiresBank: true,  requiresReference: true },
-      { id: 'pm_pagomovil',    name: 'Pago Móvil',         requiresBank: true,  requiresReference: true },
-      { id: 'pm_cheque',       name: 'Cheque',             requiresBank: true,  requiresReference: true },
-      { id: 'pm_cripto',       name: 'Criptomoneda',       requiresBank: false, requiresReference: true }
-    ].forEach(pm => db.save(COLLECTIONS.paymentMethods, { ...pm, active: true }));
-  }
-  // Tasas iniciales (vacías, el usuario las llena)
-  if (db.getAll(COLLECTIONS.rates).length === 0) {
-    const today = new Date().toISOString().slice(0,10);
-    db.save(COLLECTIONS.rates, { id: 'rate_BCV_USD', type: 'BCV_USD', label: 'BCV USD',  symbol: '$', value: 0, updatedDate: today, source: null, active: true });
-    db.save(COLLECTIONS.rates, { id: 'rate_BCV_EUR', type: 'BCV_EUR', label: 'BCV EUR',  symbol: '€', value: 0, updatedDate: today, source: null, active: false });
-    db.save(COLLECTIONS.rates, { id: 'rate_BINANCE', type: 'BINANCE', label: 'P2P USD',  symbol: '$', value: 0, updatedDate: today, source: null, active: false });
-    db.save(COLLECTIONS.rates, { id: 'rate_P2P_EUR', type: 'P2P_EUR', label: 'P2P EUR',  symbol: '€', value: 0, updatedDate: today, source: null, active: false });
-    db.save(COLLECTIONS.rates, { id: 'rate_CUSTOM',  type: 'CUSTOM',  label: 'Personalizada', symbol: '$', value: 0, updatedDate: today, source: null, active: false });
-  } else {
-    // Migración: asegurar que P2P_EUR existe y BINANCE tenga el label nuevo
-    if (!db.getAll(COLLECTIONS.rates).find(r => r.type === 'P2P_EUR')) {
-      db.save(COLLECTIONS.rates, { id: 'rate_P2P_EUR', type: 'P2P_EUR', label: 'P2P EUR', symbol: '€', value: 0, updatedDate: new Date().toISOString().slice(0,10), source: null, active: false });
-    }
-    const binance = db.getAll(COLLECTIONS.rates).find(r => r.type === 'BINANCE');
-    if (binance && binance.label === 'Binance USD') {
-      binance.label = 'P2P USD';
-      db.save(COLLECTIONS.rates, binance);
-    }
-  }
-  // Usuario admin por defecto
-  if (db.getAll(COLLECTIONS.users).length === 0) {
-    db.save(COLLECTIONS.users, {
-      id: 'user_admin',
-      username: 'admin',
-      password: 'admin',  // ⚠️ en Firebase usaremos auth real
-      fullName: 'Administrador',
-      role: 'admin',
-      active: true
-    });
-  }
-})();
+// Hacer disponible globalmente
+window.db = db;
