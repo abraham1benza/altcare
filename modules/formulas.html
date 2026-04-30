@@ -187,7 +187,16 @@ function renderPresentationsSection(f) {
           // Costo envasado: granel (tamaño en kg/L × costo por unidad de fórmula) + componentes
           const grBatchUnit = f.batchUnit || 'kg';
           const sizeInBatchUnit = (p.size || 0) / (grBatchUnit==='kg'?1000:grBatchUnit==='L'?1000:1); // mL → kg/L
-          const grCost = sizeInBatchUnit * (formulas.calculateCost(f.id).perKgUSD || 0);
+          // Usar computeCost(version, batchSize); para "por kg" usamos batchSize=1
+          let perUnitGranelUSD = 0;
+          try {
+            const currVerForCost = formulas.getVersion(f.id, f.currentVersion);
+            if (currVerForCost) {
+              const c = formulas.computeCost(currVerForCost, 1);
+              perUnitGranelUSD = c.totalUSD || 0;
+            }
+          } catch (e) { /* ignorar errores de cálculo */ }
+          const grCost = sizeInBatchUnit * perUnitGranelUSD;
           let compCost = 0;
           (p.components||[]).forEach(c => {
             const rm = db.getById(db.COLLECTIONS.rawMaterials, c.rawMaterialId);
