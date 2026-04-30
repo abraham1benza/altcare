@@ -1047,6 +1047,14 @@ render();
 
 
 // Exponer funciones a window (para que onclick="" del HTML pueda llamarlas)
+
+// Sincronizar variables de estado del módulo con window
+try { Object.defineProperty(window, 'currentReport', { get: () => currentReport, set: (val) => { currentReport = val; }, configurable: true }); } catch(e) {}
+try { Object.defineProperty(window, 'period', { get: () => period, set: (val) => { period = val; }, configurable: true }); } catch(e) {}
+try { Object.defineProperty(window, 'customFrom', { get: () => customFrom, set: (val) => { customFrom = val; }, configurable: true }); } catch(e) {}
+try { Object.defineProperty(window, 'customTo', { get: () => customTo, set: (val) => { customTo = val; }, configurable: true }); } catch(e) {}
+try { Object.defineProperty(window, 'entityId', { get: () => entityId, set: (val) => { entityId = val; }, configurable: true }); } catch(e) {}
+
 Object.assign(window, {
   render: typeof render !== 'undefined' ? render : undefined,
   renderDashboard: typeof renderDashboard !== 'undefined' ? renderDashboard : undefined,

@@ -147,6 +147,10 @@ render();
 
 
 // Exponer funciones a window (para que onclick="" del HTML pueda llamarlas)
+
+// Sincronizar variables de estado del módulo con window
+try { Object.defineProperty(window, 'statusFilter', { get: () => statusFilter, set: (val) => { statusFilter = val; }, configurable: true }); } catch(e) {}
+
 Object.assign(window, {
   render: typeof render !== 'undefined' ? render : undefined,
   onSearch: typeof onSearch !== 'undefined' ? onSearch : undefined,

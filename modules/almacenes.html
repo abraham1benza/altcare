@@ -258,6 +258,10 @@ render();
 
 
 // Exponer funciones a window (para que onclick="" del HTML pueda llamarlas)
+
+// Sincronizar variables de estado del módulo con window
+try { Object.defineProperty(window, 'selectedWarehouseId', { get: () => selectedWarehouseId, set: (val) => { selectedWarehouseId = val; }, configurable: true }); } catch(e) {}
+
 Object.assign(window, {
   render: typeof render !== 'undefined' ? render : undefined,
   selectWh: typeof selectWh !== 'undefined' ? selectWh : undefined,

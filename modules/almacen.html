@@ -217,6 +217,12 @@ render();
 
 
 // Exponer funciones a window (para que onclick="" del HTML pueda llamarlas)
+
+// Sincronizar variables de estado del módulo con window
+try { Object.defineProperty(window, 'view', { get: () => view, set: (val) => { view = val; }, configurable: true }); } catch(e) {}
+try { Object.defineProperty(window, 'kardexItem', { get: () => kardexItem, set: (val) => { kardexItem = val; }, configurable: true }); } catch(e) {}
+try { Object.defineProperty(window, 'typeFilter', { get: () => typeFilter, set: (val) => { typeFilter = val; }, configurable: true }); } catch(e) {}
+
 Object.assign(window, {
   render: typeof render !== 'undefined' ? render : undefined,
   renderOverview: typeof renderOverview !== 'undefined' ? renderOverview : undefined,

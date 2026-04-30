@@ -289,6 +289,10 @@ if (currency.needsRefresh()) {
 }
 
 // Exponer funciones a window (para que onclick="" del HTML pueda llamarlas)
+
+// Sincronizar variables de estado del módulo con window
+try { Object.defineProperty(window, 'isFetching', { get: () => isFetching, set: (val) => { isFetching = val; }, configurable: true }); } catch(e) {}
+
 Object.assign(window, {
   render: typeof render !== 'undefined' ? render : undefined,
   fetchLive: typeof fetchLive !== 'undefined' ? fetchLive : undefined,
