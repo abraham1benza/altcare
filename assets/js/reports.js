@@ -199,18 +199,19 @@ const reports = {
   estadoCuentaCliente(customerId, from, to) {
     const customer = db.getById(db.COLLECTIONS.customers, customerId);
     const docs = db.getAll(db.COLLECTIONS.salesOrders)
-      .filter(d => d.customerId === customerId && d.type === 'FACTURA' && !d.cancelled && this.inRange(d.issueDate, from, to))
+      .filter(d => d.customerId === customerId && (d.type === 'FACTURA' || d.type === 'NOTA_ENTREGA') && !d.cancelled && this.inRange(d.issueDate, from, to))
       .sort((a,b) => (a.issueDate||'').localeCompare(b.issueDate||''));
     const allPayments = db.query(db.COLLECTIONS.payments, p => p.direction === 'IN' && p.counterpartyId === customerId && this.inRange(p.date, from, to));
 
-    // Movimientos: cargo (factura) y abono (pago)
+    // Movimientos: cargo (factura/NE) y abono (pago)
     const movements = [];
     docs.forEach(d => {
+      const isNE = d.type === 'NOTA_ENTREGA';
       movements.push({
         date: d.issueDate,
-        type: 'INVOICE',
+        type: isNE ? 'NOTA_ENTREGA' : 'INVOICE',
         ref: d.invoiceNumber || d.code,
-        description: 'Factura emitida',
+        description: isNE ? 'Nota de Entrega emitida' : 'Factura emitida',
         debit: d.total,
         credit: 0,
         currency: d.currency,
@@ -688,3 +689,21 @@ function escapeHtml(s) { return String(s ?? '').replace(/[&<>"']/g, m => ({'&':'
 function fmtVES(n) { return (parseFloat(n)||0).toLocaleString('es-VE', { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
 function fmtUSD(n) { return '$' + (parseFloat(n)||0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
 function fmtDate(iso) { return iso ? new Date(iso).toLocaleDateString('es-VE', { day: '2-digit', month: '2-digit', year: 'numeric' }) : '—'; }
+
+/**
+ * Formatea un valor en USD a la moneda del modo activo.
+ * Los reportes operativos calculan internamente en USD; esta función
+ * convierte a la moneda del usuario al mostrar.
+ * - Modo Gerencial → mantiene en USD
+ * - Modo Contable → convierte a VES con tasa BCV
+ */
+function fmtMode(usdAmount) {
+  if (typeof currency === 'undefined' || !currency.getModeCurrency) return fmtUSD(usdAmount);
+  const modeCcy = currency.getModeCurrency();
+  if (modeCcy === 'USD') return fmtUSD(usdAmount);
+  // Convertir USD → VES con la tasa del modo (BCV)
+  const rate = currency.getRate('BCV_USD');
+  if (!rate || !rate.value) return fmtUSD(usdAmount);
+  const ves = (parseFloat(usdAmount) || 0) * rate.value;
+  return fmtVES(ves) + ' Bs.';
+}

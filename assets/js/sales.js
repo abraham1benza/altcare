@@ -7,14 +7,20 @@ const sales = {
 
   // Estados que puede tener un documento de venta. Empieza como PEDIDO y cambia.
   STATUS: {
-    PEDIDO:    { label: 'Pedido',          color: 'badge-plain'   },
-    COTIZACION:{ label: 'Cotización',      color: 'badge-accent'  },
-    FACTURA:   { label: 'Factura',         color: 'badge-success' },
-    PARTIAL:   { label: 'Pago parcial',    color: 'badge-warning' },
-    PAID:      { label: 'Pagada',          color: 'badge-success' },
-    OVERDUE:   { label: 'Vencida',         color: 'badge-danger'  },
-    CANCELLED: { label: 'Anulada',         color: 'badge-danger'  }
+    PEDIDO:       { label: 'Pedido',          color: 'badge-plain'   },
+    COTIZACION:   { label: 'Cotización',      color: 'badge-accent'  },
+    NOTA_ENTREGA: { label: 'Nota de Entrega', color: 'badge-warning' },
+    FACTURA:      { label: 'Factura',         color: 'badge-success' },
+    PARTIAL:      { label: 'Pago parcial',    color: 'badge-warning' },
+    PAID:         { label: 'Pagada',          color: 'badge-success' },
+    OVERDUE:      { label: 'Vencida',         color: 'badge-danger'  },
+    CANCELLED:    { label: 'Anulada',         color: 'badge-danger'  }
   },
+
+  // Tipos de documento que descuentan inventario
+  INVENTORY_TYPES: ['NOTA_ENTREGA', 'FACTURA'],
+  // Tipos de documento que entran en libros fiscales
+  FISCAL_TYPES: ['FACTURA'],
 
   // ====== PEDIDO / COTIZACIÓN / FACTURA ======
 
@@ -27,7 +33,6 @@ const sales = {
     if (!customer) throw new Error('Cliente no encontrado');
     if (!items || !items.length) throw new Error('Debe haber al menos un ítem');
 
-    const code = db.nextCode(db.COLLECTIONS.salesOrders, 'V');
     const cfg = db.getById(db.COLLECTIONS.config, 'main') || {};
 
     // Normalizar items y calcular totales
@@ -47,26 +52,38 @@ const sales = {
     }));
     const subtotal = normalizedItems.reduce((s, it) => s + it.subtotal, 0);
 
+    // Tipo de documento
+    const docType = status || 'PEDIDO';
+    const isNotaEntrega = docType === 'NOTA_ENTREGA';
+
     // Cálculo IVA con la alícuota configurada
+    // NOTA: Las Notas de Entrega NO cobran IVA (no son documento fiscal)
     const ivaRate = cfg.ivaRate || 16;
-    const taxableBase = normalizedItems.filter(it => !it.exempt).reduce((s, it) => s + it.subtotal, 0);
-    const exemptBase = normalizedItems.filter(it => it.exempt).reduce((s, it) => s + it.subtotal, 0);
-    const ivaAmount = taxableBase * (ivaRate / 100);
+    const taxableBase = isNotaEntrega ? 0 : normalizedItems.filter(it => !it.exempt).reduce((s, it) => s + it.subtotal, 0);
+    const exemptBase = isNotaEntrega ? subtotal : normalizedItems.filter(it => it.exempt).reduce((s, it) => s + it.subtotal, 0);
+    const ivaAmount = isNotaEntrega ? 0 : taxableBase * (ivaRate / 100);
     const total = subtotal + ivaAmount;
+
+    // Numeración: NE para notas de entrega, V (venta genérica) para el resto
+    const code = isNotaEntrega
+      ? db.nextCode(db.COLLECTIONS.salesOrders, 'NE')
+      : db.nextCode(db.COLLECTIONS.salesOrders, 'V');
 
     const doc = {
       code,
-      type: status || 'PEDIDO',           // PEDIDO | COTIZACION | FACTURA
-      status: status || 'PEDIDO',
+      type: docType,                       // PEDIDO | COTIZACION | NOTA_ENTREGA | FACTURA
+      status: docType,
       // Datos cliente (snapshot - no cambia si cliente se edita después)
       customerId,
       customerName: customer.name,
       customerRif: customer.rif,
       customerAddress: customer.address || '',
       customerPhone: customer.phone || '',
-      // Numeración fiscal (solo se asigna al convertir a FACTURA)
+      // Numeración fiscal (solo se asigna al convertir a FACTURA, NUNCA a NE)
       invoiceNumber: null,
       controlNumber: null,
+      // Si nació como NE y luego se convirtió a Factura, guardamos el código original
+      noteEntregaCode: isNotaEntrega ? code : null,
       // Fechas
       issueDate: new Date().toISOString().slice(0,10),
       dueDate: dueDate || null,
@@ -81,16 +98,16 @@ const sales = {
       subtotal: round(subtotal),
       taxableBase: round(taxableBase),
       exemptBase: round(exemptBase),
-      ivaRate,
+      ivaRate: isNotaEntrega ? 0 : ivaRate,
       ivaAmount: round(ivaAmount),
       total: round(total),
-      // Equivalente en VES (para libros SENIAT)
+      // Equivalente en VES (para libros SENIAT cuando sea factura)
       totalVES: docCurrency === 'VES' ? round(total) : round(total * (currency.getRate(rateType || cfg.defaultRateType || 'BCV_USD')?.value || 0)),
       // Pago
       paidAmount: 0,
       paidPercent: 0,
       payments: [],
-      // Asignación de lotes (al convertir a FACTURA)
+      // Asignación de lotes (al convertir a FACTURA o crear como NE)
       lotsAssigned: false,
       // Cancelación
       cancelled: false,
@@ -101,22 +118,78 @@ const sales = {
     return db.save(db.COLLECTIONS.salesOrders, doc);
   },
 
-  /** Convierte el documento a otro estado: PEDIDO → COTIZACION o FACTURA */
+  /**
+   * Convierte el documento a otro estado.
+   * - PEDIDO/COTIZACION → NOTA_ENTREGA: descuenta inventario, NO factura
+   * - PEDIDO/COTIZACION/NOTA_ENTREGA → FACTURA: asigna número fiscal, recalcula IVA
+   * - FACTURA → NOTA_ENTREGA: solo si no tiene pagos. Reversa fiscal.
+   */
   convertTo(docId, newStatus) {
     const doc = db.getById(db.COLLECTIONS.salesOrders, docId);
     if (!doc) throw new Error('Documento no encontrado');
     if (doc.cancelled) throw new Error('Documento anulado');
-    if (newStatus === 'FACTURA' && doc.status === 'FACTURA') throw new Error('Ya es factura');
+    if (doc.status === newStatus) throw new Error(`Ya es ${newStatus}`);
 
     const cfg = db.getById(db.COLLECTIONS.config, 'main') || {};
 
-    if (newStatus === 'FACTURA') {
+    // FACTURA → NOTA_ENTREGA: solo permitido si no tiene pagos
+    if (newStatus === 'NOTA_ENTREGA' && doc.status === 'FACTURA') {
+      if ((doc.paidAmount || 0) > 0) {
+        throw new Error('No se puede revertir a Nota de Entrega: la factura tiene pagos asociados');
+      }
+      // Quitar IVA, quitar numeración fiscal
+      doc.subtotal = doc.subtotal; // queda igual
+      doc.taxableBase = 0;
+      doc.exemptBase = doc.subtotal;
+      doc.ivaAmount = 0;
+      doc.ivaRate = 0;
+      doc.total = doc.subtotal;
+      doc.totalVES = doc.currency === 'VES' ? doc.total : doc.total * (doc.rateValue || 0);
+      doc.invoiceNumber = null;
+      doc.controlNumber = null;
+      doc.invoicedAt = null;
+      // Asignar código NE si no tenía
+      if (!doc.noteEntregaCode) {
+        doc.noteEntregaCode = db.nextCode(db.COLLECTIONS.salesOrders, 'NE');
+        doc.code = doc.noteEntregaCode;
+      } else {
+        doc.code = doc.noteEntregaCode;
+      }
+    }
+    // → FACTURA: recalcular IVA si venía de NE, asignar número fiscal
+    else if (newStatus === 'FACTURA') {
+      // Recalcular IVA (en caso de venir de NE que tenía IVA en 0)
+      const ivaRate = cfg.ivaRate || 16;
+      const taxableBase = doc.items.filter(it => !it.exempt).reduce((s, it) => s + it.subtotal, 0);
+      const exemptBase = doc.items.filter(it => it.exempt).reduce((s, it) => s + it.subtotal, 0);
+      const ivaAmount = taxableBase * (ivaRate / 100);
+      doc.taxableBase = round(taxableBase);
+      doc.exemptBase = round(exemptBase);
+      doc.ivaRate = ivaRate;
+      doc.ivaAmount = round(ivaAmount);
+      doc.total = round(doc.subtotal + ivaAmount);
+      doc.totalVES = doc.currency === 'VES' ? doc.total : round(doc.total * (doc.rateValue || 0));
+
       // Asignar número de control y número de factura
       const allInvoices = db.getAll(db.COLLECTIONS.salesOrders).filter(d => d.invoiceNumber);
       const nextInvoice = allInvoices.length + 1;
       doc.invoiceNumber = `${cfg.invoiceNumberPrefix||'F'}-${String(nextInvoice).padStart(8,'0')}`;
       doc.controlNumber = `${cfg.invoiceControlNumberPrefix||'00'}-${String(nextInvoice).padStart(8,'0')}`;
       doc.invoicedAt = new Date().toISOString();
+    }
+    // → NOTA_ENTREGA desde Pedido/Cotización: sin IVA
+    else if (newStatus === 'NOTA_ENTREGA') {
+      doc.taxableBase = 0;
+      doc.exemptBase = doc.subtotal;
+      doc.ivaAmount = 0;
+      doc.ivaRate = 0;
+      doc.total = doc.subtotal;
+      doc.totalVES = doc.currency === 'VES' ? doc.total : doc.total * (doc.rateValue || 0);
+      // Asignar código NE
+      if (!doc.noteEntregaCode) {
+        doc.noteEntregaCode = db.nextCode(db.COLLECTIONS.salesOrders, 'NE');
+        doc.code = doc.noteEntregaCode;
+      }
     }
 
     doc.type = newStatus;
