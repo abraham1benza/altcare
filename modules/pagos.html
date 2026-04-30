@@ -73,11 +73,15 @@ function renderList() {
     cxcByCcy[d.currency] = (cxcByCcy[d.currency] || 0) + remaining;
   });
 
-  // Saldo bancario por moneda
+  // Saldo bancario por moneda — modo Gerencial muestra todas, Contable solo empresa
+  const isGerencialMode = (typeof auth !== 'undefined' && auth.getActiveMode && auth.getActiveMode() === 'gerencial');
   const bankByCcy = { VES: 0, USD: 0, EUR: 0 };
-  db.getAll(db.COLLECTIONS.bankAccounts).filter(a => a.active !== false).forEach(a => {
-    bankByCcy[a.currency] = (bankByCcy[a.currency] || 0) + (a.balance || 0);
-  });
+  db.getAll(db.COLLECTIONS.bankAccounts)
+    .filter(a => a.active !== false)
+    .filter(a => isGerencialMode || a.countsForFiscal !== false)
+    .forEach(a => {
+      bankByCcy[a.currency] = (bankByCcy[a.currency] || 0) + (a.balance || 0);
+    });
 
   // Helper: KPI consolidado en moneda del modo activo (Gerencial USD / Contable VES)
   const renderMultiKPI = (byCcy, color) => {
@@ -463,6 +467,24 @@ function savePayment() {
   // Validar que no exceda lo pendiente
   if (c.amountInDocCurrency > c.docRemaining + 0.01) {
     if (!confirm(`El monto excede lo pendiente (${currency.format(c.docRemaining, c.docCurrency)}). ¿Continuar?`)) return;
+  }
+
+  // Aviso si la cuenta es PERSONAL (no entra en libros fiscales)
+  if (c.bankAccountId) {
+    const acc = db.getById(db.COLLECTIONS.bankAccounts, c.bankAccountId);
+    if (acc && acc.countsForFiscal === false) {
+      const docName = c.relatedDocCode || 'el documento';
+      const action = c.direction === 'OUT' ? 'pago' : 'cobro';
+      const ok = confirm(
+        `⚠️ Cuenta personal\n\n` +
+        `La cuenta "${acc.name}" está marcada como personal.\n\n` +
+        `Este ${action} de ${currency.format(c.amount, c.currency)} para ${docName}:\n` +
+        `✓ Se registrará y descontará/sumará al saldo de la cuenta\n` +
+        `✗ NO aparecerá en los libros fiscales (Compras/Ventas SENIAT)\n\n` +
+        `¿Continuar?`
+      );
+      if (!ok) return;
+    }
   }
 
   try {

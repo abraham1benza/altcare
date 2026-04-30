@@ -34,23 +34,34 @@ function render() {
 function renderList() {
   const accounts = db.getAll(db.COLLECTIONS.bankAccounts).filter(a => a.active !== false);
   const modeCcy = currency.getModeCurrency();
+  const activeMode = auth.getActiveMode();
 
-  // Total consolidado en moneda del modo
-  let totalConsolidated = 0;
-  accounts.forEach(a => {
-    totalConsolidated += currency.toDisplay(a.balance || 0, a.currency);
-  });
+  // Separar cuentas: empresa vs personal
+  const companyAccounts = accounts.filter(a => a.countsForFiscal !== false);
+  const personalAccounts = accounts.filter(a => a.countsForFiscal === false);
 
-  const cards = accounts.map(a => {
+  // Totales consolidados en moneda del modo
+  let totalCompany = 0;
+  let totalPersonal = 0;
+  companyAccounts.forEach(a => { totalCompany += currency.toDisplay(a.balance || 0, a.currency); });
+  personalAccounts.forEach(a => { totalPersonal += currency.toDisplay(a.balance || 0, a.currency); });
+  const totalAll = totalCompany + totalPersonal;
+
+  // Helper para renderizar una card
+  const renderCard = (a) => {
     const equivalentInMode = currency.toDisplay(a.balance || 0, a.currency);
+    const isPersonal = a.countsForFiscal === false;
     return `
-      <div class="card" style="cursor:pointer;padding:20px;" onclick="openDetail('${a.id}')">
+      <div class="card" style="cursor:pointer;padding:20px;${isPersonal?'border-color:#fcd34d;background:#fffbf5;':''}" onclick="openDetail('${a.id}')">
         <div style="display:flex;justify-content:space-between;align-items:start;gap:8px;margin-bottom:12px;">
           <div>
             <div class="td-strong" style="font-size:15px;">${ui.escape(a.name)}</div>
             <div class="text-muted" style="font-size:11px;margin-top:2px;">${ui.escape(a.bank||'')}${a.accountNumber?` · ····${a.accountNumber.slice(-4)}`:''}</div>
           </div>
-          <span class="badge ${a.currency==='USD'?'badge-accent':a.currency==='EUR'?'badge-warning':'badge-plain'}">${a.currency}</span>
+          <div style="display:flex;flex-direction:column;align-items:flex-end;gap:4px;">
+            <span class="badge ${a.currency==='USD'?'badge-accent':a.currency==='EUR'?'badge-warning':'badge-plain'}">${a.currency}</span>
+            ${isPersonal ? `<span class="badge" style="background:#fef3c7;color:#92400e;font-size:10px;">👤 Personal</span>` : ''}
+          </div>
         </div>
         <div style="margin-bottom:12px;">
           <div style="font-family:var(--font-display);font-size:30px;letter-spacing:-0.03em;line-height:1;${a.balance<0?'color:var(--danger);':''}">${currency.format(a.balance, a.currency)}</div>
@@ -62,7 +73,27 @@ function renderList() {
         </div>
       </div>
     `;
-  }).join('');
+  };
+
+  const companyCards = companyAccounts.map(renderCard).join('');
+  const personalCards = personalAccounts.map(renderCard).join('');
+
+  // En modo Contable: solo mostramos empresa. En Gerencial: ambas separadas + total.
+  const showPersonal = activeMode === 'gerencial';
+
+  let totalsBar = '';
+  if (showPersonal && personalAccounts.length > 0) {
+    totalsBar = `<span class="action-bar-count">
+      🏢 Empresa: <strong>${currency.format(totalCompany, modeCcy)}</strong>
+      · 👤 Personal: <strong>${currency.format(totalPersonal, modeCcy)}</strong>
+      · Total: <strong>${currency.format(totalAll, modeCcy)}</strong>
+    </span>`;
+  } else {
+    totalsBar = `<span class="action-bar-count">
+      ${accounts.length} cuenta${accounts.length!==1?'s':''} ·
+      Empresa: <strong>${currency.format(totalCompany, modeCcy)}</strong>
+    </span>`;
+  }
 
   ui.renderLayout({
     activeModule: 'cuentas-bancarias', pageEyebrow: 'Sistema', pageTitle: 'Cuentas Bancarias',
@@ -70,7 +101,7 @@ function renderList() {
       <div class="action-bar">
         <div class="action-bar-left">
           <h2 class="action-bar-title">Cuentas bancarias</h2>
-          <span class="action-bar-count">${accounts.length} cuenta${accounts.length!==1?'s':''} activas · Total consolidado ≈ ${currency.format(totalConsolidated, modeCcy)}</span>
+          ${totalsBar}
         </div>
         <div class="action-bar-right">
           <button class="btn btn-secondary" onclick="recalcBalances()" title="Recalcula los saldos desde los movimientos. Útil si hay diferencia.">${ui.icon('refresh')} Recalcular saldos</button>
@@ -78,16 +109,27 @@ function renderList() {
       </div>
 
       <p class="text-muted mb-24" style="max-width:680px;">
-        Cada cuenta bancaria lleva su propio saldo corriente. Al registrar pagos, el sistema actualiza automáticamente los saldos. Podés tener cuentas en distintas monedas.
+        Cada cuenta bancaria lleva su propio saldo corriente. Marcá si una cuenta es de la <strong>empresa</strong> (entra en libros fiscales SENIAT) o <strong>personal</strong> (de paso, no entra en reportes fiscales).
+        ${!showPersonal && personalAccounts.length > 0 ? `<br><span style="color:var(--accent-ink);font-size:12px;">⚙️ Estás en modo Contable: ${personalAccounts.length} cuenta${personalAccounts.length!==1?'s':''} personal${personalAccounts.length!==1?'es':''} oculta${personalAccounts.length!==1?'s':''}. Cambiá a modo Gerencial para verlas.</span>` : ''}
       </p>
 
-      ${accounts.length ? `<div class="grid grid-3 mb-24">${cards}</div>` : `
+      ${companyAccounts.length ? `
+        ${showPersonal && personalAccounts.length > 0 ? '<div class="divider-section"><span class="section-title" style="margin:0;">🏢 Cuentas de la empresa</span></div>' : ''}
+        <div class="grid grid-3 mb-24">${companyCards}</div>
+      ` : ''}
+
+      ${showPersonal && personalAccounts.length > 0 ? `
+        <div class="divider-section"><span class="section-title" style="margin:0;">👤 Cuentas personales</span></div>
+        <div class="grid grid-3 mb-24">${personalCards}</div>
+      ` : ''}
+
+      ${accounts.length === 0 ? `
         <div class="empty-state">
           <div class="empty-state-icon">${ui.icon('currency')}</div>
           <div class="empty-state-title">Sin cuentas bancarias</div>
           <div class="empty-state-text">Registra tus cuentas bancarias (en Bs, USD, EUR) con saldo inicial. El sistema llevará el track automáticamente.</div>
         </div>
-      `}
+      ` : ''}
 
       <!-- Botón abajo -->
       <div style="display:flex;justify-content:flex-end;gap:8px;padding:24px 0;border-top:1px solid var(--border);margin-top:24px;">
@@ -168,6 +210,8 @@ function editAccount(id) {
 
 function openForm(item) {
   const isNew = !item.id;
+  // Por defecto: empresa (countsForFiscal=true). Las cuentas viejas sin el flag se asumen empresa.
+  const isCompany = item.countsForFiscal !== false;
   ui.openModal({
     title: isNew ? 'Nueva cuenta bancaria' : 'Editar cuenta',
     body: `
@@ -191,6 +235,24 @@ function openForm(item) {
           </select></div>
           ${isNew ? `<div class="field"><label class="field-label">Saldo inicial</label><input class="input" type="number" step="0.01" name="openingBalance" value="${item.openingBalance||0}"><div class="field-hint">Saldo actual de la cuenta al momento de cargarla</div></div>` : ''}
         </div>
+
+        <div class="section-title" style="margin-top:24px;">Tipo de cuenta</div>
+        <div style="display:flex;gap:12px;margin-top:6px;">
+          <label class="checkbox-row" style="flex:1;padding:14px;background:var(--surface-2);border:1px solid var(--border);border-radius:8px;cursor:pointer;display:flex;align-items:start;gap:10px;">
+            <input type="radio" name="countsForFiscal" value="true" ${isCompany?'checked':''} style="margin-top:2px;">
+            <div>
+              <div style="font-weight:600;font-size:13px;">🏢 Cuenta de la empresa</div>
+              <div class="text-muted" style="font-size:11.5px;margin-top:2px;">Los pagos en esta cuenta cuentan para los reportes fiscales (Libro de Compras/Ventas, SENIAT)</div>
+            </div>
+          </label>
+          <label class="checkbox-row" style="flex:1;padding:14px;background:var(--surface-2);border:1px solid var(--border);border-radius:8px;cursor:pointer;display:flex;align-items:start;gap:10px;">
+            <input type="radio" name="countsForFiscal" value="false" ${!isCompany?'checked':''} style="margin-top:2px;">
+            <div>
+              <div style="font-weight:600;font-size:13px;">👤 Cuenta personal</div>
+              <div class="text-muted" style="font-size:11.5px;margin-top:2px;">Cuenta de paso o personal. Sus pagos NO entran en libros fiscales pero sí en reportes operativos.</div>
+            </div>
+          </label>
+        </div>
       </form>
     `,
     footer: `<button class="btn btn-secondary" onclick="ui.closeModal()">Cancelar</button><button class="btn btn-primary" onclick="document.getElementById('acc-form').requestSubmit()">${ui.icon('check')} Guardar</button>`
@@ -201,13 +263,15 @@ function saveAccount(e, id) {
   e.preventDefault();
   const data = ui.formData(e.target);
   if (!data.name || !data.currency) { ui.toast('Nombre y moneda son obligatorios', 'error'); return; }
+  // Convertir radio a boolean
+  const countsForFiscal = data.countsForFiscal === 'true' || data.countsForFiscal === true;
   if (id) {
     const a = db.getById(db.COLLECTIONS.bankAccounts, id);
-    Object.assign(a, { name: data.name, bank: data.bank, accountNumber: data.accountNumber, type: data.type });
+    Object.assign(a, { name: data.name, bank: data.bank, accountNumber: data.accountNumber, type: data.type, countsForFiscal });
     db.save(db.COLLECTIONS.bankAccounts, a);
     ui.toast('Cuenta actualizada', 'success');
   } else {
-    const created = payments.createBankAccount({ ...data, openingBalance: data.openingBalance || 0 });
+    const created = payments.createBankAccount({ ...data, countsForFiscal, openingBalance: data.openingBalance || 0 });
     selectedId = created.id;
     ui.toast('Cuenta creada', 'success');
   }
