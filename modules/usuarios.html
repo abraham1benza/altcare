@@ -143,6 +143,26 @@ function openForm(item) {
             </select>
             ${isMe ? `<input type="hidden" name="active" value="true">` : ''}
           </div>
+          <div class="field" style="grid-column:1/-1;">
+            <label class="field-label">Modos permitidos *</label>
+            <div style="display:flex;gap:12px;margin-top:6px;">
+              <label class="checkbox-row" style="flex:1;padding:10px 14px;background:var(--surface-2);border:1px solid var(--border);border-radius:8px;cursor:pointer;">
+                <input type="checkbox" name="mode_gerencial" ${(item.allowedModes||[]).includes('gerencial')?'checked':''} ${item.role==='admin'?'checked disabled':''}>
+                <div style="margin-left:8px;">
+                  <div style="font-weight:600;font-size:13px;">📊 Gerencial</div>
+                  <div class="text-muted" style="font-size:11px;">USD · Tasa Binance</div>
+                </div>
+              </label>
+              <label class="checkbox-row" style="flex:1;padding:10px 14px;background:var(--surface-2);border:1px solid var(--border);border-radius:8px;cursor:pointer;">
+                <input type="checkbox" name="mode_contable" ${(item.allowedModes||['contable']).includes('contable')?'checked':''} ${item.role==='admin'?'checked disabled':''}>
+                <div style="margin-left:8px;">
+                  <div style="font-weight:600;font-size:13px;">📋 Contable</div>
+                  <div class="text-muted" style="font-size:11px;">VES · Tasa BCV</div>
+                </div>
+              </label>
+            </div>
+            <div class="field-hint">Si tiene ambos, podrá alternar desde el sidebar. Admin siempre tiene los dos.</div>
+          </div>
         </div>
       </form>
     `,
@@ -158,6 +178,23 @@ function saveItem(e, id) {
   const data = ui.formData(e.target);
   data.active = data.active === true || data.active === 'true';
   if (!data.username || !data.fullName) { ui.toast('Completa los campos obligatorios', 'error'); return; }
+
+  // Procesar modos permitidos
+  const fd = new FormData(e.target);
+  const modes = [];
+  if (fd.get('mode_gerencial')) modes.push('gerencial');
+  if (fd.get('mode_contable')) modes.push('contable');
+  if (data.role === 'admin') {
+    data.allowedModes = ['gerencial', 'contable']; // admin siempre ambos
+  } else if (modes.length === 0) {
+    ui.toast('Asigná al menos un modo permitido', 'error');
+    return;
+  } else {
+    data.allowedModes = modes;
+  }
+  // Limpiar campos auxiliares del form
+  delete data.mode_gerencial;
+  delete data.mode_contable;
 
   // Validar usuario único en creación
   if (!id) {
