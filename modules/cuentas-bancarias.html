@@ -33,16 +33,16 @@ function render() {
 
 function renderList() {
   const accounts = db.getAll(db.COLLECTIONS.bankAccounts).filter(a => a.active !== false);
+  const modeCcy = currency.getModeCurrency();
 
-  // Total consolidado en USD
-  const totalUSD = payments.totalBalanceUSD();
+  // Total consolidado en moneda del modo
+  let totalConsolidated = 0;
+  accounts.forEach(a => {
+    totalConsolidated += currency.toDisplay(a.balance || 0, a.currency);
+  });
 
   const cards = accounts.map(a => {
-    let usdEquivalent = a.balance;
-    if (a.currency === 'VES') {
-      const r = currency.getActiveRate();
-      usdEquivalent = r && r.value ? a.balance / r.value : 0;
-    }
+    const equivalentInMode = currency.toDisplay(a.balance || 0, a.currency);
     return `
       <div class="card" style="cursor:pointer;padding:20px;" onclick="openDetail('${a.id}')">
         <div style="display:flex;justify-content:space-between;align-items:start;gap:8px;margin-bottom:12px;">
@@ -54,7 +54,7 @@ function renderList() {
         </div>
         <div style="margin-bottom:12px;">
           <div style="font-family:var(--font-display);font-size:30px;letter-spacing:-0.03em;line-height:1;${a.balance<0?'color:var(--danger);':''}">${currency.format(a.balance, a.currency)}</div>
-          ${a.currency !== 'USD' ? `<div class="text-muted" style="font-size:12px;margin-top:6px;">≈ $${usdEquivalent.toFixed(2)} USD</div>` : ''}
+          ${a.currency !== modeCcy ? `<div class="text-muted" style="font-size:12px;margin-top:6px;">≈ ${currency.format(equivalentInMode, modeCcy)}</div>` : ''}
         </div>
         <div style="display:flex;justify-content:space-between;align-items:center;font-size:11px;">
           <span class="text-muted">${a.type||'Corriente'}</span>
@@ -70,7 +70,7 @@ function renderList() {
       <div class="action-bar">
         <div class="action-bar-left">
           <h2 class="action-bar-title">Cuentas bancarias</h2>
-          <span class="action-bar-count">${accounts.length} cuenta${accounts.length!==1?'s':''} activas · Total consolidado ≈ $${totalUSD.toFixed(2)} USD</span>
+          <span class="action-bar-count">${accounts.length} cuenta${accounts.length!==1?'s':''} activas · Total consolidado ≈ ${currency.format(totalConsolidated, modeCcy)}</span>
         </div>
         <div class="action-bar-right">
           <button class="btn btn-secondary" onclick="recalcBalances()" title="Recalcula los saldos desde los movimientos. Útil si hay diferencia.">${ui.icon('refresh')} Recalcular saldos</button>

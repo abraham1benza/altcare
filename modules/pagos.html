@@ -79,23 +79,14 @@ function renderList() {
     bankByCcy[a.currency] = (bankByCcy[a.currency] || 0) + (a.balance || 0);
   });
 
-  // Helper: formatea KPI multi-moneda
-  const fmtMulti = (byCcy) => {
-    const parts = [];
-    if (byCcy.VES > 0.01) parts.push(currency.format(byCcy.VES, 'VES'));
-    if (byCcy.USD > 0.01) parts.push(currency.format(byCcy.USD, 'USD'));
-    if (byCcy.EUR > 0.01) parts.push(currency.format(byCcy.EUR, 'EUR'));
-    if (!parts.length) return '0,00';
-    return parts;
-  };
+  // Helper: KPI consolidado en moneda del modo activo (Gerencial USD / Contable VES)
   const renderMultiKPI = (byCcy, color) => {
-    const parts = fmtMulti(byCcy);
-    if (typeof parts === 'string') return `<div class="kpi-value" style="color:${color};">${parts}</div>`;
-    if (parts.length === 1) return `<div class="kpi-value" style="color:${color};font-size:24px;">${parts[0]}</div>`;
-    // Múltiples monedas: mostrar cada una más chica
-    return `<div style="display:flex;flex-direction:column;gap:2px;margin-top:4px;">
-      ${parts.map(p => `<div style="font-family:var(--font-display);font-size:18px;letter-spacing:-0.02em;color:${color};line-height:1.1;">${p}</div>`).join('')}
-    </div>`;
+    let total = 0;
+    Object.entries(byCcy).forEach(([ccy, amount]) => {
+      if (amount > 0.01) total += currency.toDisplay(amount, ccy);
+    });
+    if (total < 0.01) return `<div class="kpi-value" style="color:${color};">0,00</div>`;
+    return `<div class="kpi-value" style="color:${color};font-size:24px;">${currency.format(total, currency.getModeCurrency())}</div>`;
   };
 
   // Vencidas

@@ -119,6 +119,18 @@ function renderDashboard() {
         </div>
       </div>
 
+      <div class="card mb-24" style="background:${currency.getModeCurrency()==='USD'?'#fef3c7':'#dbeafe'};border-color:${currency.getModeCurrency()==='USD'?'#fcd34d':'#93c5fd'};padding:14px 18px;">
+        <div style="display:flex;align-items:center;gap:12px;">
+          <div style="font-size:20px;">${auth.MODES[auth.getActiveMode()].icon}</div>
+          <div>
+            <div style="font-size:11px;letter-spacing:0.12em;text-transform:uppercase;font-weight:600;color:${currency.getModeCurrency()==='USD'?'#92400e':'#1e40af'};">Modo ${auth.MODES[auth.getActiveMode()].label}</div>
+            <div style="font-size:13px;color:var(--ink-2);margin-top:2px;">
+              Los reportes <strong>operativos</strong> (Inventario, Producción, Márgenes, Flujo de caja) se muestran en <strong>${auth.MODES[auth.getActiveMode()].sub}</strong>. Los libros fiscales (Compras, Ventas, Retenciones) siempre van en VES con tasa BCV (exigencia SENIAT).
+            </div>
+          </div>
+        </div>
+      </div>
+
       <p class="text-muted mb-24" style="max-width:680px;">
         Generá libros fiscales, estados de cuenta, análisis de inventario y rentabilidad. Todos exportables a Excel (CSV) y PDF.
       </p>
@@ -445,9 +457,9 @@ function renderInventario() {
   if (!rows.length) return '<div class="empty-state"><div class="empty-state-title">Sin inventario</div></div>';
   return `
     <div class="grid grid-3 mb-24">
-      <div class="kpi"><div class="kpi-label">Valor MP</div><div class="kpi-value" style="color:var(--accent-ink);font-size:24px;">${fmtUSD(totals.rmValue)}</div></div>
-      <div class="kpi"><div class="kpi-label">Valor PT</div><div class="kpi-value" style="color:var(--accent-ink);font-size:24px;">${fmtUSD(totals.fgValue)}</div></div>
-      <div class="kpi"><div class="kpi-label">Total inventario</div><div class="kpi-value" style="color:var(--accent-ink);font-size:24px;">${fmtUSD(totals.total)}</div></div>
+      <div class="kpi"><div class="kpi-label">Valor MP</div><div class="kpi-value" style="color:var(--accent-ink);font-size:24px;">${fmtMode(totals.rmValue)}</div></div>
+      <div class="kpi"><div class="kpi-label">Valor PT</div><div class="kpi-value" style="color:var(--accent-ink);font-size:24px;">${fmtMode(totals.fgValue)}</div></div>
+      <div class="kpi"><div class="kpi-label">Total inventario</div><div class="kpi-value" style="color:var(--accent-ink);font-size:24px;">${fmtMode(totals.total)}</div></div>
     </div>
     <div class="table-wrap">
       <table>
@@ -461,13 +473,13 @@ function renderInventario() {
           <td>${ui.escape(r.name)}</td>
           <td style="text-align:right;"><span class="td-mono td-strong">${(r.quantity||0).toFixed(3)}</span></td>
           <td><span class="text-muted">${ui.escape(r.unit||'—')}</span></td>
-          <td style="text-align:right;"><span class="td-mono">${fmtUSD(r.avgCost)}</span></td>
+          <td style="text-align:right;"><span class="td-mono">${fmtMode(r.avgCost)}</span></td>
           <td style="text-align:right;"><span class="td-mono">${r.lotCount}</span></td>
-          <td style="text-align:right;"><span class="td-mono td-strong">${fmtUSD(r.valueUSD)}</span></td>
+          <td style="text-align:right;"><span class="td-mono td-strong">${fmtMode(r.valueUSD)}</span></td>
         </tr>`).join('')}
         <tr style="background:var(--ink);color:white;font-weight:600;">
           <td colspan="7">VALOR TOTAL DE INVENTARIO</td>
-          <td style="text-align:right;"><span class="td-mono">${fmtUSD(totals.total)}</span></td>
+          <td style="text-align:right;"><span class="td-mono">${fmtMode(totals.total)}</span></td>
         </tr>
         </tbody>
       </table>
@@ -482,7 +494,7 @@ function renderProduccion(from, to) {
     <div class="grid grid-4 mb-24">
       <div class="kpi"><div class="kpi-label">OFs totales</div><div class="kpi-value">${totals.countTotal}</div><div class="kpi-value-sub">${totals.countCompleted} terminadas</div></div>
       <div class="kpi"><div class="kpi-label">Producido</div><div class="kpi-value" style="font-size:22px;">${totals.totalProduced.toFixed(3)}</div><div class="kpi-value-sub">unidades</div></div>
-      <div class="kpi"><div class="kpi-label">Costo materiales</div><div class="kpi-value" style="font-size:22px;color:var(--accent-ink);">${fmtUSD(totals.totalCostUSD)}</div></div>
+      <div class="kpi"><div class="kpi-label">Costo materiales</div><div class="kpi-value" style="font-size:22px;color:var(--accent-ink);">${fmtMode(totals.totalCostUSD)}</div></div>
       <div class="kpi"><div class="kpi-label">Rendimiento promedio</div><div class="kpi-value" style="font-size:22px;color:${totals.avgYield>=95?'var(--success)':totals.avgYield>=85?'var(--warning)':'var(--danger)'};">${totals.avgYield.toFixed(1)}%</div></div>
     </div>
     <div class="table-wrap">
@@ -502,8 +514,8 @@ function renderProduccion(from, to) {
           <td style="text-align:right;"><span class="td-mono">${r.plannedBatch.toFixed(3)}</span></td>
           <td style="text-align:right;"><span class="td-mono td-strong">${r.actualQty.toFixed(3)}</span></td>
           <td style="text-align:right;"><span class="td-mono" style="color:${r.yieldPct>=95?'var(--success)':r.yieldPct>=85?'var(--warning)':'var(--danger)'};">${r.yieldPct.toFixed(1)}%</span></td>
-          <td style="text-align:right;"><span class="td-mono">${fmtUSD(r.materialCostUSD)}</span></td>
-          <td style="text-align:right;"><span class="td-mono">${fmtUSD(r.unitCostUSD)}</span></td>
+          <td style="text-align:right;"><span class="td-mono">${fmtMode(r.materialCostUSD)}</span></td>
+          <td style="text-align:right;"><span class="td-mono">${fmtMode(r.unitCostUSD)}</span></td>
           <td><span class="badge badge-plain" style="font-size:10px;">${r.status}</span></td>
         </tr>`).join('')}</tbody>
       </table>
@@ -516,9 +528,9 @@ function renderMargenes(from, to) {
   if (!productRows.length) return '<div class="empty-state"><div class="empty-state-title">Sin facturas de venta en el período</div></div>';
   return `
     <div class="grid grid-4 mb-24">
-      <div class="kpi"><div class="kpi-label">Ingresos</div><div class="kpi-value" style="color:var(--accent-ink);font-size:22px;">${fmtUSD(totals.revenueUSD)}</div></div>
-      <div class="kpi"><div class="kpi-label">Costos</div><div class="kpi-value" style="color:var(--danger);font-size:22px;">${fmtUSD(totals.costUSD)}</div></div>
-      <div class="kpi"><div class="kpi-label">Margen bruto</div><div class="kpi-value" style="color:var(--success);font-size:22px;">${fmtUSD(totals.profitUSD)}</div></div>
+      <div class="kpi"><div class="kpi-label">Ingresos</div><div class="kpi-value" style="color:var(--accent-ink);font-size:22px;">${fmtMode(totals.revenueUSD)}</div></div>
+      <div class="kpi"><div class="kpi-label">Costos</div><div class="kpi-value" style="color:var(--danger);font-size:22px;">${fmtMode(totals.costUSD)}</div></div>
+      <div class="kpi"><div class="kpi-label">Margen bruto</div><div class="kpi-value" style="color:var(--success);font-size:22px;">${fmtMode(totals.profitUSD)}</div></div>
       <div class="kpi"><div class="kpi-label">% margen</div><div class="kpi-value" style="font-size:22px;color:${totals.marginPct>=30?'var(--success)':totals.marginPct>=15?'var(--warning)':'var(--danger)'};">${totals.marginPct.toFixed(1)}%</div></div>
     </div>
 
@@ -532,9 +544,9 @@ function renderMargenes(from, to) {
         <tbody>${productRows.map(r => `<tr>
           <td><div class="td-strong">${ui.escape(r.formulaName)}</div></td>
           <td style="text-align:right;"><span class="td-mono">${r.quantity.toFixed(3)}</span></td>
-          <td style="text-align:right;"><span class="td-mono">${fmtUSD(r.revenueUSD)}</span></td>
-          <td style="text-align:right;"><span class="td-mono">${fmtUSD(r.costUSD)}</span></td>
-          <td style="text-align:right;"><span class="td-mono td-strong">${fmtUSD(r.profitUSD)}</span></td>
+          <td style="text-align:right;"><span class="td-mono">${fmtMode(r.revenueUSD)}</span></td>
+          <td style="text-align:right;"><span class="td-mono">${fmtMode(r.costUSD)}</span></td>
+          <td style="text-align:right;"><span class="td-mono td-strong">${fmtMode(r.profitUSD)}</span></td>
           <td style="text-align:right;"><span class="td-mono" style="color:${r.marginPct>=30?'var(--success)':r.marginPct>=15?'var(--warning)':'var(--danger)'};">${r.marginPct.toFixed(1)}%</span></td>
         </tr>`).join('')}</tbody>
       </table>
@@ -550,9 +562,9 @@ function renderMargenes(from, to) {
         <tbody>${customerRows.map(r => `<tr>
           <td><div class="td-strong">${ui.escape(r.customerName)}</div></td>
           <td style="text-align:right;"><span class="td-mono">${r.docCount}</span></td>
-          <td style="text-align:right;"><span class="td-mono">${fmtUSD(r.revenueUSD)}</span></td>
-          <td style="text-align:right;"><span class="td-mono">${fmtUSD(r.costUSD)}</span></td>
-          <td style="text-align:right;"><span class="td-mono td-strong">${fmtUSD(r.profitUSD)}</span></td>
+          <td style="text-align:right;"><span class="td-mono">${fmtMode(r.revenueUSD)}</span></td>
+          <td style="text-align:right;"><span class="td-mono">${fmtMode(r.costUSD)}</span></td>
+          <td style="text-align:right;"><span class="td-mono td-strong">${fmtMode(r.profitUSD)}</span></td>
           <td style="text-align:right;"><span class="td-mono" style="color:${r.marginPct>=30?'var(--success)':r.marginPct>=15?'var(--warning)':'var(--danger)'};">${r.marginPct.toFixed(1)}%</span></td>
         </tr>`).join('')}</tbody>
       </table>
@@ -925,9 +937,9 @@ function pdfInventario() {
   const { rows, totals } = reports.inventarioValorizado();
   return `
     <div class="summary-grid">
-      <div class="summary-box"><div class="label">Valor MP</div><div class="value">${fmtUSD(totals.rmValue)}</div></div>
-      <div class="summary-box"><div class="label">Valor PT</div><div class="value">${fmtUSD(totals.fgValue)}</div></div>
-      <div class="summary-box"><div class="label">TOTAL</div><div class="value">${fmtUSD(totals.total)}</div></div>
+      <div class="summary-box"><div class="label">Valor MP</div><div class="value">${fmtMode(totals.rmValue)}</div></div>
+      <div class="summary-box"><div class="label">Valor PT</div><div class="value">${fmtMode(totals.fgValue)}</div></div>
+      <div class="summary-box"><div class="label">TOTAL</div><div class="value">${fmtMode(totals.total)}</div></div>
     </div>
     <table>
       <thead><tr>
@@ -937,10 +949,10 @@ function pdfInventario() {
       <tbody>${rows.map(r => `<tr>
         <td>${r.kind}</td><td>${escapeHtml(r.code||'—')}</td><td>${escapeHtml(r.name)}</td>
         <td class="num">${(r.quantity||0).toFixed(3)}</td><td>${escapeHtml(r.unit||'—')}</td>
-        <td class="num">${fmtUSD(r.avgCost)}</td><td class="num">${r.lotCount}</td>
-        <td class="num"><strong>${fmtUSD(r.valueUSD)}</strong></td>
+        <td class="num">${fmtMode(r.avgCost)}</td><td class="num">${r.lotCount}</td>
+        <td class="num"><strong>${fmtMode(r.valueUSD)}</strong></td>
       </tr>`).join('')}
-      <tr class="total-row"><td colspan="7">VALOR TOTAL DE INVENTARIO</td><td class="num">${fmtUSD(totals.total)}</td></tr>
+      <tr class="total-row"><td colspan="7">VALOR TOTAL DE INVENTARIO</td><td class="num">${fmtMode(totals.total)}</td></tr>
       </tbody>
     </table>
   `;
@@ -953,7 +965,7 @@ function pdfProduccion(from, to) {
     <div class="summary-grid">
       <div class="summary-box"><div class="label">OFs totales</div><div class="value">${totals.countTotal}</div></div>
       <div class="summary-box"><div class="label">Producido</div><div class="value">${totals.totalProduced.toFixed(2)}</div></div>
-      <div class="summary-box"><div class="label">Costo materiales</div><div class="value">${fmtUSD(totals.totalCostUSD)}</div></div>
+      <div class="summary-box"><div class="label">Costo materiales</div><div class="value">${fmtMode(totals.totalCostUSD)}</div></div>
       <div class="summary-box"><div class="label">Rendim. promedio</div><div class="value">${totals.avgYield.toFixed(1)}%</div></div>
     </div>
     <table>
@@ -967,8 +979,8 @@ function pdfProduccion(from, to) {
         <td>${fmtDate(r.scheduledDate)}</td><td>${r.completedAt?fmtDate(r.completedAt):'—'}</td>
         <td>${escapeHtml(r.lotCode)}</td>
         <td class="num">${r.plannedBatch.toFixed(3)}</td><td class="num">${r.actualQty.toFixed(3)}</td>
-        <td class="num">${r.yieldPct.toFixed(1)}%</td><td class="num">${fmtUSD(r.materialCostUSD)}</td>
-        <td class="num">${fmtUSD(r.unitCostUSD)}</td><td>${r.status}</td>
+        <td class="num">${r.yieldPct.toFixed(1)}%</td><td class="num">${fmtMode(r.materialCostUSD)}</td>
+        <td class="num">${fmtMode(r.unitCostUSD)}</td><td>${r.status}</td>
       </tr>`).join('')}</tbody>
     </table>
   `;
@@ -979,9 +991,9 @@ function pdfMargenes(from, to) {
   if (!productRows.length) return '<p>Sin facturas de venta en el período.</p>';
   return `
     <div class="summary-grid">
-      <div class="summary-box"><div class="label">Ingresos</div><div class="value">${fmtUSD(totals.revenueUSD)}</div></div>
-      <div class="summary-box"><div class="label">Costos</div><div class="value">${fmtUSD(totals.costUSD)}</div></div>
-      <div class="summary-box"><div class="label">Margen bruto</div><div class="value">${fmtUSD(totals.profitUSD)}</div></div>
+      <div class="summary-box"><div class="label">Ingresos</div><div class="value">${fmtMode(totals.revenueUSD)}</div></div>
+      <div class="summary-box"><div class="label">Costos</div><div class="value">${fmtMode(totals.costUSD)}</div></div>
+      <div class="summary-box"><div class="label">Margen bruto</div><div class="value">${fmtMode(totals.profitUSD)}</div></div>
       <div class="summary-box"><div class="label">% margen</div><div class="value">${totals.marginPct.toFixed(1)}%</div></div>
     </div>
     <h2 class="section-title">Por producto</h2>
@@ -989,8 +1001,8 @@ function pdfMargenes(from, to) {
       <thead><tr><th>Producto</th><th class="num">Cantidad</th><th class="num">Ingresos</th><th class="num">Costo</th><th class="num">Margen</th><th class="num">% margen</th></tr></thead>
       <tbody>${productRows.map(r => `<tr>
         <td>${escapeHtml(r.formulaName)}</td><td class="num">${r.quantity.toFixed(3)}</td>
-        <td class="num">${fmtUSD(r.revenueUSD)}</td><td class="num">${fmtUSD(r.costUSD)}</td>
-        <td class="num"><strong>${fmtUSD(r.profitUSD)}</strong></td><td class="num">${r.marginPct.toFixed(1)}%</td>
+        <td class="num">${fmtMode(r.revenueUSD)}</td><td class="num">${fmtMode(r.costUSD)}</td>
+        <td class="num"><strong>${fmtMode(r.profitUSD)}</strong></td><td class="num">${r.marginPct.toFixed(1)}%</td>
       </tr>`).join('')}</tbody>
     </table>
     <h2 class="section-title">Por cliente</h2>
@@ -998,8 +1010,8 @@ function pdfMargenes(from, to) {
       <thead><tr><th>Cliente</th><th class="num">Facturas</th><th class="num">Ingresos</th><th class="num">Costo</th><th class="num">Margen</th><th class="num">% margen</th></tr></thead>
       <tbody>${customerRows.map(r => `<tr>
         <td>${escapeHtml(r.customerName)}</td><td class="num">${r.docCount}</td>
-        <td class="num">${fmtUSD(r.revenueUSD)}</td><td class="num">${fmtUSD(r.costUSD)}</td>
-        <td class="num"><strong>${fmtUSD(r.profitUSD)}</strong></td><td class="num">${r.marginPct.toFixed(1)}%</td>
+        <td class="num">${fmtMode(r.revenueUSD)}</td><td class="num">${fmtMode(r.costUSD)}</td>
+        <td class="num"><strong>${fmtMode(r.profitUSD)}</strong></td><td class="num">${r.marginPct.toFixed(1)}%</td>
       </tr>`).join('')}</tbody>
     </table>
   `;

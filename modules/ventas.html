@@ -124,6 +124,7 @@ function renderList() {
             <option value="">Todos los tipos</option>
             <option value="PEDIDO" ${typeFilter==='PEDIDO'?'selected':''}>Pedidos</option>
             <option value="COTIZACION" ${typeFilter==='COTIZACION'?'selected':''}>Cotizaciones</option>
+            <option value="NOTA_ENTREGA" ${typeFilter==='NOTA_ENTREGA'?'selected':''}>Notas de Entrega</option>
             <option value="FACTURA" ${typeFilter==='FACTURA'?'selected':''}>Facturas</option>
             <option value="PAID" ${typeFilter==='PAID'?'selected':''}>Pagadas</option>
             <option value="PARTIAL" ${typeFilter==='PARTIAL'?'selected':''}>Pago parcial</option>
@@ -134,7 +135,8 @@ function renderList() {
       </div>
 
       <div style="display:flex;justify-content:flex-end;gap:8px;padding:24px 0;border-top:1px solid var(--border);margin-top:24px;">
-        <button class="btn btn-primary" onclick="newDoc()">${ui.icon('plus')} Nuevo pedido</button>
+        <button class="btn btn-secondary" onclick="newDoc('NOTA_ENTREGA')" title="Sin IVA, no entra en libros fiscales">${ui.icon('file')} Nueva Nota de Entrega</button>
+        <button class="btn btn-primary" onclick="newDoc('PEDIDO')">${ui.icon('plus')} Nuevo Pedido</button>
       </div>
     `
   });
@@ -145,7 +147,7 @@ function onTypeFilter(v) { typeFilter = v; render(); }
 
 // ====== CREAR ======
 
-function newDoc() {
+function newDoc(initialType) {
   const customers = db.getAll(db.COLLECTIONS.customers);
   if (!customers.length) { ui.toast('Primero crea un cliente', 'error'); return; }
   const formulas = db.getAll(db.COLLECTIONS.formulas);
@@ -156,8 +158,11 @@ function newDoc() {
   }
 
   const cfg = db.getById(db.COLLECTIONS.config, 'main') || {};
+  const docType = initialType || 'PEDIDO';
+  const codePrefix = docType === 'NOTA_ENTREGA' ? 'NE' : 'V';
   creating = {
-    code: db.nextCode(db.COLLECTIONS.salesOrders, 'V'),
+    type: docType,
+    code: db.nextCode(db.COLLECTIONS.salesOrders, codePrefix),
     customerId: '', customerName: '',
     currency: 'VES',
     rateType: cfg.defaultRateType || 'BCV_USD',
@@ -377,12 +382,23 @@ function saveDoc() {
       currency: c.currency,
       rateType: c.rateType,
       items: c.items,
-      status: 'PEDIDO',
+      status: c.type || 'PEDIDO',
       notes: c.notes,
       paymentTerms: c.paymentTerms,
       dueDate: c.dueDate
     });
-    ui.toast('Pedido creado', 'success');
+    const labels = { PEDIDO: 'Pedido', NOTA_ENTREGA: 'Nota de Entrega', COTIZACION: 'Cotización', FACTURA: 'Factura' };
+    ui.toast(`${labels[c.type] || 'Pedido'} creada`, 'success');
+
+    // Si es Nota de Entrega, ir directo a asignar lotes (descuenta inventario)
+    if (c.type === 'NOTA_ENTREGA') {
+      selectedId = doc.id;
+      creating = null;
+      view = 'assign';
+      render();
+      return;
+    }
+
     selectedId = doc.id; view = 'detail'; creating = null;
     render();
   } catch (err) {
@@ -400,7 +416,7 @@ function renderDetail() {
   if (!d) { backToList(); return; }
   const sBadge = d.cancelled ? 'badge-danger' : (sales.STATUS[d.status]?.color || 'badge-plain');
   const sLabel = d.cancelled ? 'Anulada' : (sales.STATUS[d.status]?.label || d.status);
-  const tBadge = d.type === 'PEDIDO' ? 'badge-plain' : d.type === 'COTIZACION' ? 'badge-accent' : 'badge-success';
+  const tBadge = d.type === 'PEDIDO' ? 'badge-plain' : d.type === 'COTIZACION' ? 'badge-accent' : d.type === 'NOTA_ENTREGA' ? 'badge-warning' : 'badge-success';
   const remaining = d.total - (d.paidAmount||0);
   const paymentsForDoc = payments.getPaymentsForDoc('IN', d.id);
 
@@ -409,12 +425,25 @@ function renderDetail() {
   if (!d.cancelled) {
     if (d.type === 'PEDIDO') {
       actions += `<button class="btn btn-secondary" onclick="convertTo('${d.id}','COTIZACION')">→ Cotización</button>`;
+      actions += `<button class="btn btn-secondary" onclick="convertTo('${d.id}','NOTA_ENTREGA')">→ Nota de Entrega</button>`;
       actions += `<button class="btn btn-primary" onclick="convertTo('${d.id}','FACTURA')">${ui.icon('check')} → Factura</button>`;
     } else if (d.type === 'COTIZACION') {
+      actions += `<button class="btn btn-secondary" onclick="convertTo('${d.id}','NOTA_ENTREGA')">→ Nota de Entrega</button>`;
       actions += `<button class="btn btn-primary" onclick="convertTo('${d.id}','FACTURA')">${ui.icon('check')} Convertir a Factura</button>`;
+    } else if (d.type === 'NOTA_ENTREGA') {
+      // NE puede convertirse a Factura si el cliente decide pagar IVA
+      actions += `<button class="btn btn-primary" onclick="convertTo('${d.id}','FACTURA')">${ui.icon('check')} Convertir a Factura</button>`;
+      actions += `<button class="btn btn-secondary" onclick="printDoc('${d.id}')">${ui.icon('download')} Imprimir Nota</button>`;
+      if (remaining > 0.01 && d.status !== 'PAID') {
+        actions += `<a href="pagos.html?doc=${d.id}" class="btn btn-primary">${ui.icon('plus')} Registrar cobro</a>`;
+      }
     } else if (d.type === 'FACTURA') {
       if (!d.lotsAssigned) {
         actions += `<button class="btn btn-primary" onclick="goAssignLots('${d.id}')">${ui.icon('box')} Asignar lotes</button>`;
+      }
+      // Solo permitir reversión a NE si no hay pagos
+      if ((d.paidAmount || 0) === 0) {
+        actions += `<button class="btn btn-secondary" onclick="convertTo('${d.id}','NOTA_ENTREGA')" title="Solo si no hay pagos">↩ Revertir a Nota de Entrega</button>`;
       }
       actions += `<button class="btn btn-secondary" onclick="printDoc('${d.id}')">${ui.icon('download')} Imprimir factura</button>`;
       if (remaining > 0.01 && d.status !== 'PAID') {
@@ -522,15 +551,37 @@ function renderDetail() {
 
 function convertTo(docId, newStatus) {
   const d = db.getById(db.COLLECTIONS.salesOrders, docId);
-  const labels = { COTIZACION: 'Cotización', FACTURA: 'Factura' };
-  const message = newStatus === 'FACTURA'
-    ? `¿Convertir a Factura? Se asignará un número fiscal de factura y de control. Después podrás asignar los lotes de PT que se entregarán.`
-    : `¿Convertir a ${labels[newStatus]}?`;
+  const labels = { COTIZACION: 'Cotización', NOTA_ENTREGA: 'Nota de Entrega', FACTURA: 'Factura' };
+
+  let message = '';
+  if (newStatus === 'FACTURA') {
+    if (d.type === 'NOTA_ENTREGA') {
+      message = `¿Convertir esta Nota de Entrega en Factura? Se asignará número fiscal, se calculará el IVA y entrará en el Libro de Ventas.`;
+    } else {
+      message = `¿Convertir a Factura? Se asignará un número fiscal de factura y de control. Después podrás asignar los lotes de PT que se entregarán.`;
+    }
+  } else if (newStatus === 'NOTA_ENTREGA') {
+    if (d.type === 'FACTURA') {
+      message = `¿Revertir a Nota de Entrega? Se quitará el IVA, el número fiscal y saldrá del Libro de Ventas. Solo es posible porque no hay pagos asociados.`;
+    } else {
+      message = `¿Convertir a Nota de Entrega? Se descontará inventario inmediatamente pero NO se calculará IVA ni entrará en libros fiscales.`;
+    }
+  } else {
+    message = `¿Convertir a ${labels[newStatus]}?`;
+  }
+
   ui.confirm(message, () => {
     try {
       sales.convertTo(docId, newStatus);
       ui.toast(`Convertido a ${labels[newStatus]}`, 'success');
-      render();
+      // Si se convierte a NE o Factura y no tiene lotes asignados, ir a asignación
+      const updated = db.getById(db.COLLECTIONS.salesOrders, docId);
+      if ((newStatus === 'NOTA_ENTREGA' || newStatus === 'FACTURA') && !updated.lotsAssigned) {
+        view = 'assign';
+        render();
+      } else {
+        render();
+      }
     } catch (err) {
       ui.toast(err.message, 'error');
     }
