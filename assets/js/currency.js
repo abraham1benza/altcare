@@ -232,5 +232,78 @@ const currency = {
     if (sec < 3600) return `hace ${Math.floor(sec/60)} min`;
     if (sec < 86400) return `hace ${Math.floor(sec/3600)} h`;
     return `hace ${Math.floor(sec/86400)} días`;
+  },
+
+  // ====== HELPERS DE MODO (Gerencial / Contable) ======
+
+  /**
+   * Devuelve la moneda de visualización según el modo activo del usuario.
+   * - Gerencial → USD
+   * - Contable → VES
+   */
+  getModeCurrency() {
+    if (typeof auth === 'undefined' || !auth.getActiveMode) return 'VES';
+    const mode = auth.getActiveMode();
+    return mode === 'gerencial' ? 'USD' : 'VES';
+  },
+
+  /**
+   * Devuelve el tipo de tasa que usa el modo activo.
+   * - Gerencial → BINANCE (P2P)
+   * - Contable → BCV_USD
+   */
+  getModeRateType() {
+    if (typeof auth === 'undefined' || !auth.getActiveMode) return 'BCV_USD';
+    const mode = auth.getActiveMode();
+    return mode === 'gerencial' ? 'BINANCE' : 'BCV_USD';
+  },
+
+  /**
+   * Convierte un monto desde su moneda original a la moneda del modo activo.
+   * Usa la tasa del modo activo para la conversión.
+   * @param {number} amount - cantidad
+   * @param {string} fromCurrency - 'VES', 'USD', 'EUR'
+   * @returns {number} - monto en la moneda del modo activo
+   */
+  toDisplay(amount, fromCurrency = 'VES') {
+    const n = parseFloat(amount) || 0;
+    const targetCcy = this.getModeCurrency();
+    if (fromCurrency === targetCcy) return n;
+
+    const rateType = this.getModeRateType();
+    const rate = this.getRate(rateType);
+    if (!rate || !rate.value) return 0;
+
+    // Caso: convertir VES → USD usando tasa del modo
+    if (fromCurrency === 'VES' && targetCcy === 'USD') {
+      return n / rate.value;
+    }
+    // Caso: convertir USD → VES usando tasa del modo
+    if (fromCurrency === 'USD' && targetCcy === 'VES') {
+      return n * rate.value;
+    }
+    // Caso: convertir EUR → moneda destino vía VES
+    if (fromCurrency === 'EUR') {
+      const eurRate = this.getRate(targetCcy === 'USD' ? 'BCV_EUR' : 'BCV_EUR');
+      if (!eurRate || !eurRate.value) return 0;
+      const ves = n * eurRate.value;
+      if (targetCcy === 'VES') return ves;
+      // a USD usando tasa del modo
+      return ves / rate.value;
+    }
+    // Caso: VES → EUR (raro pero por si acaso)
+    if (fromCurrency === 'VES' && targetCcy === 'EUR') {
+      const eurRate = this.getRate('BCV_EUR');
+      return eurRate && eurRate.value ? n / eurRate.value : 0;
+    }
+    return n;
+  },
+
+  /**
+   * Formatea un monto en la moneda del modo activo, después de convertirlo.
+   */
+  formatInMode(amount, fromCurrency = 'VES') {
+    const converted = this.toDisplay(amount, fromCurrency);
+    return this.format(converted, this.getModeCurrency());
   }
 };

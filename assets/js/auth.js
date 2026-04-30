@@ -72,6 +72,55 @@ const auth = {
     return window.fb?.auth?.currentUser?.uid || null;
   },
 
+  // ====== MODOS DE VISTA ======
+
+  /** Modos disponibles del sistema */
+  MODES: {
+    gerencial: { label: 'Gerencial', sub: 'USD · Tasa Binance', icon: '📊', currency: 'USD', rateType: 'BINANCE' },
+    contable:  { label: 'Contable',  sub: 'VES · Tasa BCV',     icon: '📋', currency: 'VES', rateType: 'BCV_USD' }
+  },
+
+  /**
+   * Devuelve los modos permitidos al usuario actual.
+   * Si no tiene allowedModes definido, por defecto le damos solo 'contable'.
+   * Admin siempre puede ambos.
+   */
+  getAllowedModes() {
+    if (!this._profile) return ['contable'];
+    if (this._profile.role === 'admin') return ['gerencial', 'contable'];
+    const allowed = this._profile.allowedModes;
+    if (!allowed || !Array.isArray(allowed) || allowed.length === 0) {
+      return ['contable']; // default
+    }
+    return allowed.filter(m => m === 'gerencial' || m === 'contable');
+  },
+
+  /** ¿El usuario actual puede usar ambos modos? */
+  canSwitchModes() {
+    return this.getAllowedModes().length > 1;
+  },
+
+  /** Devuelve el modo activo del usuario actual */
+  getActiveMode() {
+    const allowed = this.getAllowedModes();
+    // Si solo tiene uno, ese es el activo
+    if (allowed.length === 1) return allowed[0];
+    // Si tiene ambos, leer de localStorage o default 'contable'
+    const stored = localStorage.getItem('altcare_active_mode_' + this.getUid());
+    if (stored && allowed.includes(stored)) return stored;
+    return 'contable';
+  },
+
+  /** Cambia el modo activo (solo si está permitido) */
+  setActiveMode(mode) {
+    const allowed = this.getAllowedModes();
+    if (!allowed.includes(mode)) return false;
+    localStorage.setItem('altcare_active_mode_' + this.getUid(), mode);
+    // Disparar evento para que módulos puedan re-renderizar
+    window.dispatchEvent(new CustomEvent('mode-changed', { detail: { mode } }));
+    return true;
+  },
+
   // ====== LOGIN / LOGOUT ======
 
   /**

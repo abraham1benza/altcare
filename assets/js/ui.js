@@ -97,6 +97,38 @@ const ui = {
            <span class="label">Sin tasa activa</span>
          </a>`;
 
+    // Selector de modo (Gerencial / Contable)
+    const allowedModes = auth.getAllowedModes();
+    const activeMode = auth.getActiveMode();
+    const canSwitch = auth.canSwitchModes();
+    let modeSelectorHtml = '';
+    if (canSwitch) {
+      // Mostrar las dos opciones para elegir
+      modeSelectorHtml = `
+        <div class="mode-selector">
+          ${allowedModes.map(m => {
+            const def = auth.MODES[m];
+            const active = m === activeMode ? 'active' : '';
+            return `<button class="mode-option ${active}" onclick="window._switchMode('${m}')" title="${def.sub}">
+              <span class="mode-icon">${def.icon}</span>
+              <span class="mode-label">${def.label}</span>
+            </button>`;
+          }).join('')}
+        </div>
+      `;
+    } else {
+      // Solo tiene un modo, mostrar como info
+      const def = auth.MODES[activeMode];
+      modeSelectorHtml = `
+        <div class="mode-selector single">
+          <div class="mode-option active" title="${def.sub}">
+            <span class="mode-icon">${def.icon}</span>
+            <span class="mode-label">Modo ${def.label}</span>
+          </div>
+        </div>
+      `;
+    }
+
     document.body.innerHTML = `
       <div class="app">
         <aside class="sidebar">
@@ -104,6 +136,7 @@ const ui = {
             <div class="brand-mark"><span>alt</span>care</div>
             <div class="brand-sub">Manufacturing OS</div>
           </div>
+          ${modeSelectorHtml}
           <nav>${navHtml}</nav>
           <div class="sidebar-footer">
             <div class="user-chip">
@@ -306,3 +339,28 @@ const ui = {
     return String(s ?? '').replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
   }
 };
+
+// ============== HANDLER GLOBAL DE CAMBIO DE MODO ==============
+
+window._switchMode = function(mode) {
+  if (auth.setActiveMode(mode)) {
+    // Re-renderizar la página actual
+    if (typeof render === 'function') {
+      render();
+    } else if (typeof renderDashboard === 'function') {
+      renderDashboard();
+    } else {
+      // Como fallback, recargar la página
+      window.location.reload();
+    }
+    ui.toast(`Modo ${auth.MODES[mode].label} activado`, 'success', 2000);
+  }
+};
+
+// Listener de cambios de modo (para módulos que quieran reaccionar)
+window.addEventListener('mode-changed', () => {
+  // Re-render automático si hay función render disponible
+  if (typeof render === 'function') {
+    setTimeout(render, 50);
+  }
+});
