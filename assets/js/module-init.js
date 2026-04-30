@@ -1,10 +1,16 @@
 /* ============================================
    module-init.js — Boot de módulos
    Espera Firebase + Auth + DB lista antes de seguir.
+
+   Estrategia simple y robusta:
+   1. Esperar a que window.fb exista (firebase-init.js cargó)
+   2. Esperar al PRIMER evento de onAuthStateChanged (Firebase ya determinó si hay sesión o no)
+   3. Si hay sesión → cargar perfil + datos
+   4. Si NO hay sesión → redirigir al login
    ============================================ */
 
 window.moduleInit = async function(moduleName) {
-  // Mostrar pantalla de carga si no existe
+  // Mostrar pantalla de carga
   let loading = document.getElementById('module-loading');
   if (!loading) {
     loading = document.createElement('div');
@@ -25,101 +31,86 @@ window.moduleInit = async function(moduleName) {
     if (el) el.textContent = t;
   };
 
+  console.log(`[moduleInit] Iniciando módulo: ${moduleName}`);
+
   try {
     // 1. ESPERAR A QUE FIREBASE ESTÉ DISPONIBLE
-    // firebase-init.js es un <script type="module"> que carga async/defer.
-    // Esperamos hasta 10 segundos comprobando cada 50ms si window.fb existe.
     setText('Cargando Firebase...');
     let waited = 0;
     while (!window.fb && waited < 10000) {
       await new Promise(r => setTimeout(r, 50));
       waited += 50;
     }
-    if (!window.fb) throw new Error('Firebase no se pudo cargar (timeout)');
+    if (!window.fb) {
+      console.error('[moduleInit] Firebase no se cargó en 10s');
+      throw new Error('Firebase no se pudo cargar');
+    }
+    console.log('[moduleInit] Firebase listo');
 
-    // 2. ESPERAR A QUE AUTH DETERMINE ESTADO
-    // onAuthStateChanged dispara con el estado inicial (puede ser null al principio
-    // y luego con el user). Esperamos a que tenga UN estado definitivo.
+    // 2. ESPERAR AL PRIMER EVENTO DE onAuthStateChanged
+    // Esto es CLAVE: el primer evento siempre indica el estado real de la sesión
+    // (después de que Firebase haya leído el storage local)
     setText('Verificando sesión...');
-    const profile = await new Promise((resolve) => {
-      let resolved = false;
-      const unsub = window.fb.onAuthStateChanged(window.fb.auth, async (user) => {
-        if (resolved) return;
-        if (!user) {
-          // Esperar un poquito más por si la sesión está cargándose
-          // Firebase Auth a veces dispara primero null y después el usuario
-          await new Promise(r => setTimeout(r, 300));
-          // Verificar de nuevo
-          const currentUser = window.fb.auth.currentUser;
-          if (!currentUser) {
-            resolved = true;
-            unsub();
-            return resolve(null);
-          }
-          // Hay usuario, cargar perfil
-          try {
-            await auth.loadProfile();
-            resolved = true;
-            unsub();
-            resolve(auth._profile);
-          } catch (err) {
-            console.error('[moduleInit] Error cargando perfil:', err.message);
-            resolved = true;
-            unsub();
-            resolve(null);
-          }
-        } else {
-          // Hay usuario inmediatamente
-          try {
-            await auth.loadProfile();
-            resolved = true;
-            unsub();
-            resolve(auth._profile);
-          } catch (err) {
-            console.error('[moduleInit] Error cargando perfil:', err.message);
-            resolved = true;
-            unsub();
-            resolve(null);
-          }
-        }
+    const user = await new Promise((resolve) => {
+      const unsub = window.fb.onAuthStateChanged(window.fb.auth, (u) => {
+        unsub();
+        resolve(u);
       });
-      // Timeout de seguridad: 8 segundos
-      setTimeout(() => {
-        if (!resolved) {
-          resolved = true;
-          unsub();
-          resolve(null);
-        }
-      }, 8000);
+      // Timeout de seguridad
+      setTimeout(() => resolve(window.fb.auth.currentUser), 5000);
     });
 
-    if (!profile) {
-      console.warn('[moduleInit] No hay sesión activa, redirigiendo al login');
-      window.location.href = '../index.html';
+    console.log('[moduleInit] User:', user ? user.email : '(sin sesión)');
+
+    if (!user) {
+      console.warn('[moduleInit] No hay sesión, redirigiendo a login');
+      // Detectar si estamos en /altcare/ o en raíz
+      const path = window.location.pathname;
+      const goTo = path.includes('/altcare/') ? '/altcare/' : '../index.html';
+      window.location.href = goTo;
       return false;
     }
 
-    // 3. VERIFICAR ACCESO AL MÓDULO
+    // 3. CARGAR PERFIL DESDE FIRESTORE
+    setText('Cargando perfil...');
+    try {
+      await auth.loadProfile();
+      console.log('[moduleInit] Perfil:', auth._profile?.email, '· rol:', auth._profile?.role);
+    } catch (err) {
+      console.error('[moduleInit] Error cargando perfil:', err.message);
+      alert('Error: ' + err.message);
+      const path = window.location.pathname;
+      const goTo = path.includes('/altcare/') ? '/altcare/' : '../index.html';
+      window.location.href = goTo;
+      return false;
+    }
+
+    // 4. VERIFICAR ACCESO AL MÓDULO
     if (!auth.canAccess(moduleName)) {
       alert('No tenés permiso para acceder a este módulo.');
-      window.location.href = '../index.html';
+      const path = window.location.pathname;
+      const goTo = path.includes('/altcare/') ? '/altcare/' : '../index.html';
+      window.location.href = goTo;
       return false;
     }
 
-    // 4. CARGAR DATOS DESDE FIRESTORE
+    // 5. CARGAR DATOS DESDE FIRESTORE
     setText('Cargando datos...');
     await db.init();
     await db.seedDefaults();
+    console.log('[moduleInit] DB cargada · módulo listo:', moduleName);
 
-    // 5. OCULTAR LOADING
+    // 6. OCULTAR LOADING
     loading.remove();
     return true;
   } catch (err) {
-    console.error('[moduleInit] Error:', err);
+    console.error('[moduleInit] Error fatal:', err);
     setText('Error: ' + err.message);
     loading.style.color = '#a83232';
     setTimeout(() => {
-      window.location.href = '../index.html';
+      const path = window.location.pathname;
+      const goTo = path.includes('/altcare/') ? '/altcare/' : '../index.html';
+      window.location.href = goTo;
     }, 2500);
     return false;
   }
