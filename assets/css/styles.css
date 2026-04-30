@@ -411,6 +411,12 @@ h3 { font-size: 18px; font-weight: 500; font-style: normal; letter-spacing: -0.0
   border-color: var(--border-strong);
 }
 .btn-danger:hover { background: var(--danger-soft); border-color: var(--danger); }
+.btn-warning {
+  background: #fef3c7;
+  color: #92400e;
+  border-color: #fcd34d;
+}
+.btn-warning:hover { background: #fde68a; border-color: #f59e0b; }
 .btn-sm { padding: 6px 12px; font-size: 12px; }
 .btn-icon {
   padding: 7px;
