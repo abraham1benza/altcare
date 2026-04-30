@@ -219,15 +219,22 @@ const reports = {
       });
     });
     allPayments.forEach(p => {
+      // ¿La cuenta donde entró el pago es de la empresa (fiscal) o personal?
+      let bankAccountIsCompany = true; // default si no hay cuenta o no se sabe
+      if (p.bankAccountId) {
+        const acc = db.getById(db.COLLECTIONS.bankAccounts, p.bankAccountId);
+        if (acc) bankAccountIsCompany = acc.countsForFiscal !== false;
+      }
       movements.push({
         date: p.date,
         type: 'PAYMENT',
         ref: p.code,
-        description: `Cobro · ${p.paymentMethodName||''}${p.reference?' · '+p.reference:''}`,
+        description: `Cobro · ${p.paymentMethodName||''}${p.reference?' · '+p.reference:''}${!bankAccountIsCompany?' · 👤 cuenta personal':''}`,
         debit: 0,
         credit: p.amountInDocCurrency,
         currency: p.docCurrency,
-        paymentId: p.id
+        paymentId: p.id,
+        bankAccountIsCompany
       });
     });
     movements.sort((a,b) => (a.date||'').localeCompare(b.date||''));
@@ -264,15 +271,21 @@ const reports = {
       });
     });
     allPayments.forEach(p => {
+      let bankAccountIsCompany = true;
+      if (p.bankAccountId) {
+        const acc = db.getById(db.COLLECTIONS.bankAccounts, p.bankAccountId);
+        if (acc) bankAccountIsCompany = acc.countsForFiscal !== false;
+      }
       movements.push({
         date: p.date,
         type: 'PAYMENT',
         ref: p.code,
-        description: `Pago · ${p.paymentMethodName||''}${p.reference?' · '+p.reference:''}`,
+        description: `Pago · ${p.paymentMethodName||''}${p.reference?' · '+p.reference:''}${!bankAccountIsCompany?' · 👤 cuenta personal':''}`,
         debit: p.amountInDocCurrency,
         credit: 0,
         currency: p.docCurrency,
-        paymentId: p.id
+        paymentId: p.id,
+        bankAccountIsCompany
       });
     });
     movements.sort((a,b) => (a.date||'').localeCompare(b.date||''));
