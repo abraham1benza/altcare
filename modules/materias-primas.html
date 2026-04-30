@@ -21,12 +21,12 @@ moduleInit('materias-primas').then(async (ok) => {
 if (!ok) return;
 
 const KINDS = {
-  INGREDIENT: { label: 'Ingrediente', color: 'badge-plain' },
-  PACKAGING:  { label: 'Envase',      color: 'badge-accent' },
-  CAP:        { label: 'Tapa',        color: 'badge-accent' },
-  LABEL:      { label: 'Etiqueta',    color: 'badge-accent' },
-  BOX:        { label: 'Caja',        color: 'badge-warning' },
-  OTHER:      { label: 'Otro',        color: 'badge-plain' }
+  INGREDIENT: { label: 'Ingrediente', color: 'badge-plain',   prefix: 'MP' },
+  PACKAGING:  { label: 'Envase',      color: 'badge-accent',  prefix: 'EN' },
+  CAP:        { label: 'Tapa',        color: 'badge-accent',  prefix: 'TA' },
+  LABEL:      { label: 'Etiqueta',    color: 'badge-accent',  prefix: 'ET' },
+  BOX:        { label: 'Caja',        color: 'badge-warning', prefix: 'CJ' },
+  OTHER:      { label: 'Otro',        color: 'badge-plain',   prefix: 'OT' }
 };
 
 const CATEGORIES_BY_KIND = {
@@ -37,6 +37,12 @@ const CATEGORIES_BY_KIND = {
   BOX:        ['Caja individual','Caja master','Display','Otro'],
   OTHER:      ['General']
 };
+
+/** Devuelve el siguiente código según el kind del ítem */
+function nextCodeFor(kind) {
+  const prefix = KINDS[kind]?.prefix || 'MP';
+  return db.nextCode(db.COLLECTIONS.rawMaterials, prefix);
+}
 
 // Para compatibilidad con código anterior
 const CATEGORIES = CATEGORIES_BY_KIND.INGREDIENT;
@@ -78,7 +84,7 @@ function renderCatalog() {
             return `<tr>
               <td><span class="td-mono td-strong">${r.code || '—'}</span></td>
               <td><span class="badge ${k.color}" style="font-size:10px;">${k.label}</span></td>
-              <td><div class="td-strong">${ui.escape(r.name)}</div>${r.inci ? `<div class="text-muted" style="font-size:11px;font-style:italic;">${ui.escape(r.inci)}</div>` : ''}</td>
+              <td><div class="td-strong">${ui.escape(r.name)}</div>${r.inci ? `<div class="text-muted" style="font-size:11px;font-style:italic;">${ui.escape(r.inci)}</div>` : ''}${r.kind === 'PACKAGING' && r.capacityMl ? `<div class="text-muted" style="font-size:11px;">${r.capacityMl} mL${r.color ? ' · ' + ui.escape(r.color) : ''}</div>` : ''}</td>
               <td>${r.category ? `<span class="badge badge-plain">${ui.escape(r.category)}</span>` : '<span class="td-muted">—</span>'}</td>
               <td style="text-align:right;"><span class="td-mono ${low?'':'text-strong'}" ${low?'style="color:var(--danger);"':''}>${r._stock.toLocaleString('es-VE',{minimumFractionDigits:2,maximumFractionDigits:3})}</span> <span class="td-muted">${r.unit||''}</span>${low ? '<div><span class="badge badge-danger" style="margin-top:4px;">Bajo</span></div>' : ''}</td>
               <td style="text-align:right;"><span class="td-mono td-muted">${(r.minStock||0).toLocaleString('es-VE')}</span></td>
@@ -101,19 +107,27 @@ function renderCatalog() {
   const ingredientsCount = allItems.filter(i => (i.kind || 'INGREDIENT') === 'INGREDIENT').length;
   const packagingCount = allItems.filter(i => ['PACKAGING','CAP','LABEL','BOX'].includes(i.kind)).length;
 
+  // Items con código que NO coincide con su tipo (ej: kind=PACKAGING pero código MP-XXXX)
+  const miscoded = allItems.filter(i => {
+    const expectedPrefix = KINDS[i.kind || 'INGREDIENT']?.prefix || 'MP';
+    const currentPrefix = (i.code || '').split('-')[0];
+    return currentPrefix && currentPrefix !== expectedPrefix;
+  }).length;
+
   // Categorías filtradas según kind seleccionado
   const availableCategories = kindFilter ? (CATEGORIES_BY_KIND[kindFilter] || []) : Object.values(CATEGORIES_BY_KIND).flat().filter((c,i,a)=>a.indexOf(c)===i);
 
   ui.renderLayout({
     activeModule: 'materias-primas',
     pageEyebrow: 'Inventario',
-    pageTitle: 'Materias Primas',
+    pageTitle: 'Materias Primas e Insumos',
     contentHtml: `
       <div class="action-bar">
         <div class="action-bar-left">
-          <h2 class="action-bar-title">Materias primas</h2>
-          <span class="action-bar-count">${allItems.length} referencias · ${ingredientsCount} ingredientes · ${packagingCount} envases · ${totalLots} lotes activos${lowStock ? ` · <span style="color:var(--danger);">${lowStock} con stock bajo</span>` : ''}</span>
+          <h2 class="action-bar-title">Materias Primas, Envases, Tapas, Etiquetas y Cajas</h2>
+          <span class="action-bar-count">${allItems.length} referencias · ${ingredientsCount} ingredientes · ${packagingCount} insumos de envasado · ${totalLots} lotes activos${lowStock ? ` · <span style="color:var(--danger);">${lowStock} con stock bajo</span>` : ''}</span>
         </div>
+        ${miscoded > 0 ? `<div class="action-bar-right"><button class="btn btn-warning" onclick="fixMiscoded()" title="${miscoded} ítem(s) tienen código de prefijo incorrecto según su tipo. Click para corregir.">⚠️ Corregir ${miscoded} código(s)</button></div>` : ''}
       </div>
       <div class="table-wrap">
         <div class="table-toolbar">
@@ -133,7 +147,7 @@ function renderCatalog() {
       <!-- Botones abajo -->
       <div style="display:flex;justify-content:flex-end;gap:8px;padding:24px 0;border-top:1px solid var(--border);margin-top:24px;">
         <button class="btn btn-secondary" onclick="newReceipt()">${ui.icon('download')} Registrar recepción</button>
-        <button class="btn btn-primary" onclick="newItem()">${ui.icon('plus')} Nueva MP</button>
+        <button class="btn btn-primary" onclick="newItem()">${ui.icon('plus')} Nuevo ítem</button>
       </div>
     `
   });
@@ -202,7 +216,7 @@ function renderLots() {
 }
 
 function newItem() {
-  openForm({ code: db.nextCode(db.COLLECTIONS.rawMaterials, 'MP'), unit: 'kg', state: 'Líquido', minStock: 0, kind: 'INGREDIENT' });
+  openForm({ code: nextCodeFor('INGREDIENT'), unit: 'kg', state: 'Líquido', minStock: 0, kind: 'INGREDIENT' });
 }
 function editItem(id) {
   const r = db.getById(db.COLLECTIONS.rawMaterials, id);
@@ -213,16 +227,16 @@ function openForm(item) {
   const suppliers = db.getAll(db.COLLECTIONS.suppliers);
   ui.openModal({
     size: 'lg',
-    title: isNew ? 'Nueva materia prima' : 'Editar materia prima',
-    subtitle: `Código: ${item.code}`,
+    title: isNew ? 'Nuevo ítem de inventario' : 'Editar ítem',
+    subtitle: `Código: <span id="form-code">${item.code}</span>`,
     body: `
       <form id="rm-form" onsubmit="saveItem(event, '${item.id || ''}')">
-        <input type="hidden" name="code" value="${item.code}">
+        <input type="hidden" name="code" id="hidden-code" value="${item.code}">
         <div class="section-title">Identificación</div>
         <div class="form-grid form-grid-2 mb-24">
-          <div class="field"><label class="field-label">Tipo *</label><select class="select" name="kind" required onchange="onKindChange(this.value)">
+          <div class="field"><label class="field-label">Tipo *</label><select class="select" name="kind" required onchange="onKindChange(this.value, ${isNew ? 'true' : 'false'})">
             ${Object.entries(KINDS).map(([k,v]) => `<option value="${k}" ${k===(item.kind||'INGREDIENT')?'selected':''}>${v.label}</option>`).join('')}
-          </select><div class="field-hint">Ingrediente para fórmulas, Envase/Tapa/Etiqueta para envasado</div></div>
+          </select><div class="field-hint">Cada tipo tiene su numeración: MP, EN, TA, ET, CJ, OT</div></div>
           <div class="field"><label class="field-label">Categoría *</label><select class="select" name="category" id="cat-select" required>
             <option value="">— Selecciona —</option>
             ${(CATEGORIES_BY_KIND[item.kind||'INGREDIENT']||[]).map(c => `<option ${c===item.category?'selected':''}>${c}</option>`).join('')}
@@ -231,6 +245,16 @@ function openForm(item) {
           <div class="field" id="inci-field" style="${(item.kind && item.kind !== 'INGREDIENT')?'display:none;':''}"><label class="field-label">Nombre INCI</label><input class="input" name="inci" value="${ui.escape(item.inci||'')}"></div>
           <div class="field" id="cas-field" style="${(item.kind && item.kind !== 'INGREDIENT')?'display:none;':''}"><label class="field-label">CAS</label><input class="input" name="cas" value="${ui.escape(item.cas||'')}"></div>
         </div>
+
+        <!-- Campos específicos de envase: capacidad y color -->
+        <div id="packaging-section" style="${item.kind === 'PACKAGING' ? '' : 'display:none;'}">
+          <div class="section-title">Características del envase</div>
+          <div class="form-grid form-grid-2 mb-24">
+            <div class="field"><label class="field-label">Capacidad (mL) *</label><input class="input" type="number" step="0.1" name="capacityMl" value="${item.capacityMl||''}" placeholder="ej: 250"><div class="field-hint">Volumen que admite cada envase. Se usa al envasar para calcular unidades.</div></div>
+            <div class="field"><label class="field-label">Color</label><input class="input" name="color" value="${ui.escape(item.color||'')}" placeholder="ej: Transparente, Blanco, Ámbar"></div>
+          </div>
+        </div>
+
         <div class="section-title">Características técnicas</div>
         <div class="form-grid form-grid-3 mb-24">
           <div class="field" id="state-field" style="${(item.kind && item.kind !== 'INGREDIENT')?'display:none;':''}"><label class="field-label">Estado</label><select class="select" name="state">${STATES.map(s => `<option ${s===item.state?'selected':''}>${s}</option>`).join('')}</select></div>
@@ -255,8 +279,8 @@ function openForm(item) {
   });
 }
 
-/** Al cambiar el tipo de MP, ajustar categorías disponibles y mostrar/ocultar campos */
-function onKindChange(kind) {
+/** Al cambiar el tipo de MP, ajustar categorías disponibles, código y mostrar/ocultar campos */
+function onKindChange(kind, isNew) {
   const sel = document.getElementById('cat-select');
   if (sel) {
     const cats = CATEGORIES_BY_KIND[kind] || [];
@@ -268,10 +292,23 @@ function onKindChange(kind) {
     const el = document.getElementById(id);
     if (el) el.style.display = isIngredient ? '' : 'none';
   });
+  // Mostrar/ocultar sección de envase
+  const pkgSection = document.getElementById('packaging-section');
+  if (pkgSection) pkgSection.style.display = kind === 'PACKAGING' ? '' : 'none';
+
   // Sugerencia de unidad: para envases/tapas/etiquetas → 'unidad'
   if (!isIngredient) {
     const unitSelect = document.querySelector('#rm-form select[name="unit"]');
     if (unitSelect) unitSelect.value = 'unidad';
+  }
+
+  // Si es nuevo, regenerar el código según el tipo
+  if (isNew) {
+    const newCode = nextCodeFor(kind);
+    const codeSpan = document.getElementById('form-code');
+    const hiddenCode = document.getElementById('hidden-code');
+    if (codeSpan) codeSpan.textContent = newCode;
+    if (hiddenCode) hiddenCode.value = newCode;
   }
 }
 
@@ -279,10 +316,32 @@ function saveItem(e, id) {
   e.preventDefault();
   const data = ui.formData(e.target);
   if (!data.name || !data.category) { ui.toast('Completa los campos obligatorios', 'error'); return; }
-  if (id) data.id = id;
+
+  // Validación específica para envases: capacidad obligatoria
+  if (data.kind === 'PACKAGING') {
+    const cap = parseFloat(data.capacityMl);
+    if (!cap || cap <= 0) { ui.toast('Para envases, la capacidad en mL es obligatoria', 'error'); return; }
+    data.capacityMl = cap;
+  }
+
+  if (id) {
+    // Si está editando un ítem existente y cambió el kind, re-asignar código
+    const existing = db.getById(db.COLLECTIONS.rawMaterials, id);
+    if (existing && existing.kind && existing.kind !== data.kind) {
+      const newPrefix = KINDS[data.kind]?.prefix || 'MP';
+      const oldPrefix = KINDS[existing.kind]?.prefix || 'MP';
+      // Solo regenerar si los prefijos son distintos
+      if (newPrefix !== oldPrefix) {
+        data.code = nextCodeFor(data.kind);
+        ui.toast(`Código actualizado: ${existing.code} → ${data.code}`, 'default', 4000);
+      }
+    }
+    data.id = id;
+  }
+
   db.save(db.COLLECTIONS.rawMaterials, data);
   ui.closeModal();
-  ui.toast(id ? 'MP actualizada' : 'MP creada', 'success');
+  ui.toast(id ? 'Ítem actualizado' : 'Ítem creado', 'success');
   render();
 }
 
@@ -295,6 +354,66 @@ function deleteItem(id) {
     ui.toast('MP eliminada', 'success');
     render();
   }, { danger: true, confirmLabel: 'Eliminar' });
+}
+
+/** Renumera todos los ítems cuyo código no coincide con su tipo */
+function fixMiscoded() {
+  const all = db.getAll(db.COLLECTIONS.rawMaterials);
+  const toFix = all.filter(i => {
+    const expectedPrefix = KINDS[i.kind || 'INGREDIENT']?.prefix || 'MP';
+    const currentPrefix = (i.code || '').split('-')[0];
+    return currentPrefix && currentPrefix !== expectedPrefix;
+  });
+
+  if (!toFix.length) { ui.toast('No hay ítems para corregir', 'default'); return; }
+
+  const previewList = toFix.slice(0, 8).map(i => {
+    const newCode = nextCodeFor(i.kind);
+    return `<li><strong>${ui.escape(i.name)}</strong>: ${i.code} → ${newCode}</li>`;
+  }).join('');
+
+  ui.openModal({
+    title: 'Corregir códigos',
+    body: `
+      <p style="font-size:13.5px;color:var(--ink-2);margin-bottom:16px;">
+        Hay <strong>${toFix.length} ítem(s)</strong> cuyo código no coincide con su tipo.
+        Voy a renumerarlos según los prefijos correctos:
+      </p>
+      <ul style="font-size:13px;line-height:1.6;color:var(--ink-2);max-height:240px;overflow:auto;">
+        ${previewList}
+        ${toFix.length > 8 ? `<li class="text-muted">...y ${toFix.length - 8} más</li>` : ''}
+      </ul>
+      <p style="font-size:12px;color:var(--ink-3);margin-top:16px;">
+        Esta operación no afecta lotes, fórmulas ni movimientos. Solo cambia el código del ítem.
+      </p>
+    `,
+    footer: `
+      <button class="btn btn-secondary" onclick="ui.closeModal()">Cancelar</button>
+      <button class="btn btn-primary" onclick="confirmFixMiscoded()">${ui.icon('check')} Renumerar ${toFix.length} ítem(s)</button>
+    `
+  });
+}
+
+function confirmFixMiscoded() {
+  const all = db.getAll(db.COLLECTIONS.rawMaterials);
+  const toFix = all.filter(i => {
+    const expectedPrefix = KINDS[i.kind || 'INGREDIENT']?.prefix || 'MP';
+    const currentPrefix = (i.code || '').split('-')[0];
+    return currentPrefix && currentPrefix !== expectedPrefix;
+  });
+
+  // Reasignar uno por uno (cada uno actualiza el contador del prefijo correspondiente)
+  let count = 0;
+  toFix.forEach(item => {
+    const newCode = nextCodeFor(item.kind);
+    item.code = newCode;
+    db.save(db.COLLECTIONS.rawMaterials, item);
+    count++;
+  });
+
+  ui.closeModal();
+  ui.toast(`${count} ítem(s) renumerados`, 'success', 4000);
+  render();
 }
 
 function newReceipt(rmId) {
@@ -422,6 +541,8 @@ Object.assign(window, {
   onKindChange: typeof onKindChange !== 'undefined' ? onKindChange : undefined,
   saveItem: typeof saveItem !== 'undefined' ? saveItem : undefined,
   deleteItem: typeof deleteItem !== 'undefined' ? deleteItem : undefined,
+  fixMiscoded: typeof fixMiscoded !== 'undefined' ? fixMiscoded : undefined,
+  confirmFixMiscoded: typeof confirmFixMiscoded !== 'undefined' ? confirmFixMiscoded : undefined,
   newReceipt: typeof newReceipt !== 'undefined' ? newReceipt : undefined,
   onRMChange: typeof onRMChange !== 'undefined' ? onRMChange : undefined,
   onWhChange: typeof onWhChange !== 'undefined' ? onWhChange : undefined,
