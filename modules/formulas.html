@@ -576,13 +576,13 @@ function renderEdit() {
         <div class="card-header"><div class="card-title">Información general</div></div>
         <div class="form-grid form-grid-2">
           <div class="field"><label class="field-label">Código</label><input class="input" value="${e.code}" disabled style="font-family:var(--font-mono);"></div>
-          <div class="field"><label class="field-label">Nombre *</label><input class="input" value="${ui.escape(e.name)}" oninput="editingVersion.name=this.value" placeholder="Shampoo Care Reparador"></div>
-          <div class="field" style="grid-column:1/-1;"><label class="field-label">Descripción</label><input class="input" value="${ui.escape(e.description||'')}" oninput="editingVersion.description=this.value"></div>
-          <div class="field"><label class="field-label">Categoría</label><input class="input" value="${ui.escape(e.category||'')}" oninput="editingVersion.category=this.value" placeholder="Shampoo, Acondicionador..."></div>
+          <div class="field"><label class="field-label">Nombre *</label><input class="input" id="formula-name-input" value="${ui.escape(e.name)}" oninput="editingVersion.name=this.value" onchange="editingVersion.name=this.value" placeholder="Shampoo Care Reparador"></div>
+          <div class="field" style="grid-column:1/-1;"><label class="field-label">Descripción</label><input class="input" id="formula-description-input" value="${ui.escape(e.description||'')}" oninput="editingVersion.description=this.value" onchange="editingVersion.description=this.value"></div>
+          <div class="field"><label class="field-label">Categoría</label><input class="input" id="formula-category-input" value="${ui.escape(e.category||'')}" oninput="editingVersion.category=this.value" onchange="editingVersion.category=this.value" placeholder="Shampoo, Acondicionador..."></div>
           <div class="field"><label class="field-label">Modo</label><select class="select" onchange="changeMode(this.value)"><option value="PERCENT" ${e.mode==='PERCENT'?'selected':''}>Por porcentaje</option><option value="FIXED" ${e.mode==='FIXED'?'selected':''}>Cantidad fija</option></select></div>
-          <div class="field"><label class="field-label">Batch base</label><input class="input" type="number" step="0.001" value="${e.batchSize}" oninput="editingVersion.batchSize=parseFloat(this.value)||0"></div>
+          <div class="field"><label class="field-label">Batch base</label><input class="input" type="number" step="0.001" value="${e.batchSize}" oninput="editingVersion.batchSize=parseFloat(this.value)||0" onchange="editingVersion.batchSize=parseFloat(this.value)||0"></div>
           <div class="field"><label class="field-label">Unidad</label><select class="select" onchange="editingVersion.batchUnit=this.value">${['kg','g','L','mL'].map(u => `<option ${u===e.batchUnit?'selected':''}>${u}</option>`).join('')}</select></div>
-          ${!e.isNew ? `<div class="field" style="grid-column:1/-1;"><label class="field-label">Nota de esta versión *</label><input class="input" value="${ui.escape(e.changeNote||'')}" oninput="editingVersion.changeNote=this.value" placeholder="¿Qué cambia?"></div>` : ''}
+          ${!e.isNew ? `<div class="field" style="grid-column:1/-1;"><label class="field-label">Nota de esta versión *</label><input class="input" id="formula-changenote-input" value="${ui.escape(e.changeNote||'')}" oninput="editingVersion.changeNote=this.value" onchange="editingVersion.changeNote=this.value" placeholder="¿Qué cambia?"></div>` : ''}
         </div>
       </div>
       <div class="action-bar">
@@ -626,6 +626,17 @@ function removeQC(idx) { editingVersion.qcParams.splice(idx, 1); render(); }
 
 function saveFormula() {
   const e = editingVersion;
+
+  // Leer valores del DOM como respaldo (por si algún oninput no se disparó)
+  const nameInput = document.getElementById('formula-name-input');
+  const descInput = document.getElementById('formula-description-input');
+  const catInput = document.getElementById('formula-category-input');
+  const noteInput = document.getElementById('formula-changenote-input');
+  if (nameInput && nameInput.value) e.name = nameInput.value.trim();
+  if (descInput) e.description = descInput.value.trim();
+  if (catInput) e.category = catInput.value.trim();
+  if (noteInput) e.changeNote = noteInput.value.trim();
+
   if (!e.name) { ui.toast('El nombre es obligatorio', 'error'); return; }
   if (e.batchSize <= 0) { ui.toast('Tamaño de batch inválido', 'error'); return; }
   let totalAmount = 0;
