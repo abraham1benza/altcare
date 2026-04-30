@@ -1,14 +1,6 @@
 /* ============================================
    module-init.js — Boot de módulos
-   Cada módulo HTML usa:
-     await moduleInit('nombre-del-modulo');
-   Esto:
-   1. Espera a que Firebase esté inicializado
-   2. Verifica que haya sesión activa
-   3. Carga el perfil del usuario
-   4. Verifica que tenga acceso al módulo
-   5. Inicializa db (carga colecciones desde Firestore)
-   6. Asegura datos por defecto
+   Espera Firebase + Auth + DB lista antes de seguir.
    ============================================ */
 
 window.moduleInit = async function(moduleName) {
@@ -34,38 +26,92 @@ window.moduleInit = async function(moduleName) {
   };
 
   try {
-    // 1. Esperar a Firebase
-    if (!window.fb) {
-      setText('Cargando Firebase...');
-      await new Promise(resolve => {
-        if (window.fb) return resolve();
-        window.addEventListener('firebase-ready', resolve, { once: true });
-        setTimeout(resolve, 5000);
-      });
+    // 1. ESPERAR A QUE FIREBASE ESTÉ DISPONIBLE
+    // firebase-init.js es un <script type="module"> que carga async/defer.
+    // Esperamos hasta 10 segundos comprobando cada 50ms si window.fb existe.
+    setText('Cargando Firebase...');
+    let waited = 0;
+    while (!window.fb && waited < 10000) {
+      await new Promise(r => setTimeout(r, 50));
+      waited += 50;
     }
-    if (!window.fb) throw new Error('Firebase no se pudo cargar');
+    if (!window.fb) throw new Error('Firebase no se pudo cargar (timeout)');
 
-    // 2. Verificar sesión
+    // 2. ESPERAR A QUE AUTH DETERMINE ESTADO
+    // onAuthStateChanged dispara con el estado inicial (puede ser null al principio
+    // y luego con el user). Esperamos a que tenga UN estado definitivo.
     setText('Verificando sesión...');
-    const profile = await auth.waitReady();
+    const profile = await new Promise((resolve) => {
+      let resolved = false;
+      const unsub = window.fb.onAuthStateChanged(window.fb.auth, async (user) => {
+        if (resolved) return;
+        if (!user) {
+          // Esperar un poquito más por si la sesión está cargándose
+          // Firebase Auth a veces dispara primero null y después el usuario
+          await new Promise(r => setTimeout(r, 300));
+          // Verificar de nuevo
+          const currentUser = window.fb.auth.currentUser;
+          if (!currentUser) {
+            resolved = true;
+            unsub();
+            return resolve(null);
+          }
+          // Hay usuario, cargar perfil
+          try {
+            await auth.loadProfile();
+            resolved = true;
+            unsub();
+            resolve(auth._profile);
+          } catch (err) {
+            console.error('[moduleInit] Error cargando perfil:', err.message);
+            resolved = true;
+            unsub();
+            resolve(null);
+          }
+        } else {
+          // Hay usuario inmediatamente
+          try {
+            await auth.loadProfile();
+            resolved = true;
+            unsub();
+            resolve(auth._profile);
+          } catch (err) {
+            console.error('[moduleInit] Error cargando perfil:', err.message);
+            resolved = true;
+            unsub();
+            resolve(null);
+          }
+        }
+      });
+      // Timeout de seguridad: 8 segundos
+      setTimeout(() => {
+        if (!resolved) {
+          resolved = true;
+          unsub();
+          resolve(null);
+        }
+      }, 8000);
+    });
+
     if (!profile) {
+      console.warn('[moduleInit] No hay sesión activa, redirigiendo al login');
       window.location.href = '../index.html';
       return false;
     }
 
-    // 3. Verificar acceso al módulo
+    // 3. VERIFICAR ACCESO AL MÓDULO
     if (!auth.canAccess(moduleName)) {
       alert('No tenés permiso para acceder a este módulo.');
       window.location.href = '../index.html';
       return false;
     }
 
-    // 4. Cargar datos
+    // 4. CARGAR DATOS DESDE FIRESTORE
     setText('Cargando datos...');
     await db.init();
     await db.seedDefaults();
 
-    // 5. Ocultar loading
+    // 5. OCULTAR LOADING
     loading.remove();
     return true;
   } catch (err) {
