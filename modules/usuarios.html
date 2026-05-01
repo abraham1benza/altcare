@@ -113,20 +113,25 @@ function openForm(item) {
     body: `
       <form id="usr-form" onsubmit="saveItem(event, '${item.id || ''}')">
         <div class="form-grid form-grid-2">
+          <div class="field" style="grid-column:1/-1;">
+            <label class="field-label">Email * (para iniciar sesión)</label>
+            <input class="input" type="email" name="email" required value="${ui.escape(item.email||'')}" ${!isNew?'readonly':''} placeholder="usuario@empresa.com">
+            ${!isNew ? '<div class="field-hint">El email no se puede cambiar desde acá. Usá Firebase Console si necesitás modificarlo.</div>' : '<div class="field-hint">Este email se usará para iniciar sesión</div>'}
+          </div>
           <div class="field">
-            <label class="field-label">Usuario *</label>
+            <label class="field-label">Usuario (alias) *</label>
             <input class="input" name="username" required value="${ui.escape(item.username||'')}" ${!isNew?'readonly':''} placeholder="ej: maria.lopez">
-            ${!isNew ? '<div class="field-hint">El nombre de usuario no se puede cambiar</div>' : ''}
+            ${!isNew ? '<div class="field-hint">El alias no se puede cambiar</div>' : '<div class="field-hint">Solo para mostrar internamente</div>'}
           </div>
           <div class="field">
             <label class="field-label">Nombre completo *</label>
             <input class="input" name="fullName" required value="${ui.escape(item.fullName||'')}">
           </div>
-          <div class="field" style="grid-column:1/-1;">
-            <label class="field-label">Contraseña ${isNew?'*':'(dejar en blanco para mantener)'}</label>
-            <input class="input" type="password" name="password" ${isNew?'required':''} placeholder="${isNew?'':'••••••••'}">
-            <div class="field-hint">⚠️ En esta fase las contraseñas se guardan localmente. Con Firebase usaremos autenticación segura.</div>
-          </div>
+          ${isNew ? `<div class="field" style="grid-column:1/-1;">
+            <label class="field-label">Contraseña *</label>
+            <input class="input" type="password" name="password" required minlength="6" placeholder="Mínimo 6 caracteres">
+            <div class="field-hint">⚠️ Después de crear el usuario, vas a tener que volver a iniciar sesión con tu cuenta de admin.</div>
+          </div>` : ''}
           <div class="field">
             <label class="field-label">Rol *</label>
             <select class="select" name="role" required ${isMe?'disabled':''}>
@@ -173,11 +178,12 @@ function openForm(item) {
   });
 }
 
-function saveItem(e, id) {
+async function saveItem(e, id) {
   e.preventDefault();
   const data = ui.formData(e.target);
   data.active = data.active === true || data.active === 'true';
-  if (!data.username || !data.fullName) { ui.toast('Completa los campos obligatorios', 'error'); return; }
+  if (!data.fullName) { ui.toast('Completa el nombre completo', 'error'); return; }
+  if (!id && !data.email) { ui.toast('El email es obligatorio', 'error'); return; }
 
   // Procesar modos permitidos
   const fd = new FormData(e.target);
@@ -185,35 +191,61 @@ function saveItem(e, id) {
   if (fd.get('mode_gerencial')) modes.push('gerencial');
   if (fd.get('mode_contable')) modes.push('contable');
   if (data.role === 'admin') {
-    data.allowedModes = ['gerencial', 'contable']; // admin siempre ambos
+    data.allowedModes = ['gerencial', 'contable'];
   } else if (modes.length === 0) {
     ui.toast('Asigná al menos un modo permitido', 'error');
     return;
   } else {
     data.allowedModes = modes;
   }
-  // Limpiar campos auxiliares del form
   delete data.mode_gerencial;
   delete data.mode_contable;
 
-  // Validar usuario único en creación
   if (!id) {
-    const existing = db.query(db.COLLECTIONS.users, u => u.username === data.username);
-    if (existing.length) { ui.toast('Ya existe un usuario con ese nombre', 'error'); return; }
-    if (!data.password) { ui.toast('La contraseña es obligatoria', 'error'); return; }
-  } else {
-    // Si no se cambió la contraseña, conservar la anterior
-    if (!data.password) {
-      const old = db.getById(db.COLLECTIONS.users, id);
-      data.password = old.password;
-    }
-    data.id = id;
-  }
+    // CREACIÓN: validar y crear en Firebase Auth + Firestore
+    const existing = db.query(db.COLLECTIONS.users, u => u.username === data.username || u.email === data.email);
+    if (existing.length) { ui.toast('Ya existe un usuario con ese email o alias', 'error'); return; }
+    if (!data.password || data.password.length < 6) { ui.toast('La contraseña debe tener al menos 6 caracteres', 'error'); return; }
 
-  db.save(db.COLLECTIONS.users, data);
-  ui.closeModal();
-  ui.toast(id ? 'Usuario actualizado' : 'Usuario creado', 'success');
-  render();
+    // Confirmar al admin que va a tener que volver a loguearse
+    const confirmMsg = `Se creará el usuario "${data.fullName}" (${data.email}).\n\n` +
+      `⚠️ IMPORTANTE: Por cómo funciona Firebase, después de crear el usuario tu sesión actual se va a cerrar y vas a tener que volver a iniciar sesión.\n\n` +
+      `¿Continuar?`;
+    if (!confirm(confirmMsg)) return;
+
+    ui.toast('Creando usuario...', 'info');
+    const result = await auth.createUser({
+      email: data.email,
+      password: data.password,
+      username: data.username,
+      fullName: data.fullName,
+      role: data.role,
+      allowedModes: data.allowedModes,
+      active: data.active
+    });
+
+    if (!result.ok) {
+      ui.toast('Error: ' + result.error, 'error', 6000);
+      return;
+    }
+
+    ui.closeModal();
+    ui.toast(`Usuario "${data.fullName}" creado correctamente. Volvé a iniciar sesión.`, 'success', 6000);
+    // Redirigir al login en 2 segundos
+    setTimeout(() => {
+      window.location.href = '../index.html';
+    }, 2000);
+
+  } else {
+    // EDICIÓN: solo actualizar el documento Firestore (no se cambian email/password desde acá)
+    delete data.email; // no editable
+    delete data.password; // no editable desde acá
+    data.id = id;
+    db.save(db.COLLECTIONS.users, data);
+    ui.closeModal();
+    ui.toast('Usuario actualizado', 'success');
+    render();
+  }
 }
 
 function deleteItem(id) {
