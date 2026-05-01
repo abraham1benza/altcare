@@ -252,10 +252,20 @@ function renderDashboard() {
   const fgQuarantine = db.getAll(db.COLLECTIONS.finishedGoods).filter(l => l.status === 'CUARENTENA' && !l.qcTestId).length;
 
   // Inventario
-  const lowStockCount = db.getAll(db.COLLECTIONS.rawMaterials).filter(rm => {
+  const lowStockList = db.getAll(db.COLLECTIONS.rawMaterials).filter(rm => {
     const min = rm.minStock || 0;
     return min > 0 && inventory.getStockForRM(rm.id) < min;
-  }).length;
+  }).map(rm => {
+    const stock = inventory.getStockForRM(rm.id);
+    // Buscar último proveedor
+    const lots = db.getAll(db.COLLECTIONS.rmLots)
+      .filter(l => l.rawMaterialId === rm.id && l.supplierId)
+      .sort((a, b) => (b.receiptDate || '').localeCompare(a.receiptDate || ''));
+    const lastSupplierId = lots[0]?.supplierId;
+    const lastSupplier = lastSupplierId ? db.getById(db.COLLECTIONS.suppliers, lastSupplierId) : null;
+    return { rm, stock, min: rm.minStock, lastSupplier };
+  }).sort((a, b) => a.stock - b.stock);
+  const lowStockCount = lowStockList.length;
   const expiring = inventory.getExpiringLots();
   const expSoon = expiring.mp.length + expiring.fg.length;
 
@@ -410,14 +420,18 @@ function renderDashboard() {
         ${upcomingCXC.length ? upcomingCXC.map(d => {
           const overdue = d.dueDate && d.dueDate < today;
           const remaining = d.total - (d.paidAmount||0);
-          return `<a href="modules/ventas.html" class="list-row" style="grid-template-columns:1fr auto auto;text-decoration:none;color:inherit;">
-            <div>
+          const customer = db.getById(db.COLLECTIONS.customers, d.customerId);
+          const hasPhone = customer && (customer.whatsapp || customer.phone);
+          const notifyUrl = `modules/notificaciones.html?quickSend=1&type=customer&id=${d.customerId}&template=COBRO_PENDIENTE_CLIENTE&docId=${d.id}`;
+          return `<div class="list-row" style="grid-template-columns:1fr auto auto auto;align-items:center;">
+            <a href="modules/ventas.html" style="text-decoration:none;color:inherit;">
               <div class="td-strong" style="font-size:13px;">${ui.escape(d.customerName)}</div>
               <div class="text-muted" style="font-size:11px;">${ui.escape(d.invoiceNumber||d.code)}${d.dueDate?' · vence '+ui.formatDate(d.dueDate):''}</div>
-            </div>
+            </a>
             ${overdue ? '<span class="badge badge-danger" style="font-size:10px;">Vencida</span>' : '<span></span>'}
             <span class="td-mono td-strong">${currency.formatInMode(remaining, d.currency)}</span>
-          </a>`;
+            ${hasPhone ? `<a href="${notifyUrl}" class="btn btn-secondary btn-sm" title="Enviar recordatorio por WhatsApp" style="font-size:11px;padding:4px 8px;white-space:nowrap;">📱 Avisar</a>` : `<span class="text-muted" title="Sin WhatsApp guardado" style="font-size:11px;">—</span>`}
+          </div>`;
         }).join('') : '<div style="padding:32px;text-align:center;color:var(--ink-3);font-size:13px;">Todo cobrado ✓</div>'}
       </div>
 
@@ -432,18 +446,57 @@ function renderDashboard() {
         ${upcomingCXP.length ? upcomingCXP.map(i => {
           const overdue = i.dueDate && i.dueDate < today;
           const remaining = i.totalToPay - (i.paidAmount||0);
-          return `<a href="modules/compras.html" class="list-row" style="grid-template-columns:1fr auto auto;text-decoration:none;color:inherit;">
-            <div>
+          const supplier = db.getById(db.COLLECTIONS.suppliers, i.supplierId);
+          const hasPhone = supplier && (supplier.whatsapp || supplier.phone);
+          const notifyUrl = `modules/notificaciones.html?quickSend=1&type=supplier&id=${i.supplierId}&template=RECORDATORIO_PAGO_PROVEEDOR&docId=${i.id}`;
+          return `<div class="list-row" style="grid-template-columns:1fr auto auto auto;align-items:center;">
+            <a href="modules/compras.html" style="text-decoration:none;color:inherit;">
               <div class="td-strong" style="font-size:13px;">${ui.escape(i.supplierName)}</div>
               <div class="text-muted" style="font-size:11px;">${ui.escape(i.code)}${i.dueDate?' · vence '+ui.formatDate(i.dueDate):''}</div>
-            </div>
+            </a>
             ${overdue ? '<span class="badge badge-danger" style="font-size:10px;">Vencida</span>' : '<span></span>'}
             <span class="td-mono td-strong">${currency.formatInMode(remaining, i.currency)}</span>
-          </a>`;
+            ${hasPhone ? `<a href="${notifyUrl}" class="btn btn-secondary btn-sm" title="Enviar recordatorio por WhatsApp" style="font-size:11px;padding:4px 8px;white-space:nowrap;">📱 Avisar</a>` : `<span class="text-muted" title="Sin WhatsApp guardado" style="font-size:11px;">—</span>`}
+          </div>`;
         }).join('') : '<div style="padding:32px;text-align:center;color:var(--ink-3);font-size:13px;">Sin deudas ✓</div>'}
       </div>
 
     </div>
+
+    <!-- Materiales por terminarse -->
+    ${lowStockList.length ? `
+    <div class="card mb-24" style="padding:0;">
+      <div style="padding:18px 20px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center;">
+        <div>
+          <div class="card-title" style="display:flex;align-items:center;gap:8px;">⚠️ Materiales por terminarse</div>
+          <div class="text-muted" style="font-size:12px;margin-top:2px;">${lowStockList.length} material${lowStockList.length!==1?'es':''} bajo el stock mínimo</div>
+        </div>
+        <a href="modules/materias-primas.html" class="btn btn-secondary btn-sm">Ver todos</a>
+      </div>
+      ${lowStockList.slice(0, 8).map(item => {
+        const sup = item.lastSupplier;
+        const hasPhone = sup && (sup.whatsapp || sup.phone);
+        const notifyUrl = sup ? `modules/notificaciones.html?quickSend=1&type=supplier&id=${sup.id}&template=SOLICITAR_REPOSICION&materialId=${item.rm.id}` : '';
+        const stockColor = item.stock === 0 ? 'var(--danger)' : (item.stock < item.min * 0.3 ? 'var(--danger)' : 'var(--warning)');
+        return `<div class="list-row" style="grid-template-columns:auto 1fr auto auto auto;align-items:center;">
+          <span class="badge badge-plain" style="font-size:10px;">${ui.escape(item.rm.code||'')}</span>
+          <div>
+            <div class="td-strong" style="font-size:13px;">${ui.escape(item.rm.name)}</div>
+            <div class="text-muted" style="font-size:11px;">
+              ${sup ? `Último proveedor: ${ui.escape(sup.name)}` : '<span style="color:var(--warning);">Sin proveedor registrado</span>'}
+            </div>
+          </div>
+          <div style="text-align:right;font-size:11px;">
+            <div class="td-mono td-strong" style="color:${stockColor};">${item.stock.toFixed(2)} ${ui.escape(item.rm.unit||'')}</div>
+            <div class="text-muted">mín: ${item.min} ${ui.escape(item.rm.unit||'')}</div>
+          </div>
+          ${item.stock === 0 ? '<span class="badge badge-danger" style="font-size:10px;">Agotado</span>' : '<span class="badge badge-warning" style="font-size:10px;">Stock bajo</span>'}
+          ${sup && hasPhone ? `<a href="${notifyUrl}" class="btn btn-secondary btn-sm" title="Pedir reposición por WhatsApp" style="font-size:11px;padding:4px 8px;white-space:nowrap;">📱 Avisar</a>` : `<span class="text-muted" title="Sin proveedor o WhatsApp" style="font-size:11px;">—</span>`}
+        </div>`;
+      }).join('')}
+      ${lowStockList.length > 8 ? `<div style="padding:12px 20px;border-top:1px solid var(--border);text-align:center;font-size:12px;"><a href="modules/materias-primas.html" class="text-muted">Ver ${lowStockList.length - 8} más →</a></div>` : ''}
+    </div>
+    ` : ''}
 
     <!-- Listas operativas -->
     <div class="grid" style="grid-template-columns:1fr 1fr;gap:16px;margin-bottom:24px;">
