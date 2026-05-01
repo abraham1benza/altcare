@@ -132,7 +132,26 @@ const auth = {
     if (!window.fb) return { ok: false, error: 'Firebase no inicializado' };
     try {
       await window.fb.signInWithEmailAndPassword(window.fb.auth, email.trim(), password);
-      await this.loadProfile();
+      try {
+        await this.loadProfile();
+      } catch (profileErr) {
+        // Auth pasó pero Firestore falló al leer perfil
+        const isBlocked = profileErr.message?.includes('ERR_BLOCKED') ||
+                         profileErr.code === 'unavailable' ||
+                         profileErr.message?.includes('Failed to fetch') ||
+                         profileErr.message?.includes('offline');
+        if (isBlocked) {
+          // Cerrar sesión si no podemos leer perfil
+          await window.fb.signOut(window.fb.auth);
+          return {
+            ok: false,
+            error: '🛡️ Conexión a Firestore bloqueada. Desactivá Brave Shields o tu AdBlocker para este sitio (firestore.googleapis.com está bloqueado). Click en el icono escudo Brave al lado de la URL → bajar Shields → recargar.'
+          };
+        }
+        // Otro error (ej: no tiene perfil)
+        await window.fb.signOut(window.fb.auth);
+        return { ok: false, error: profileErr.message || 'No se pudo cargar tu perfil' };
+      }
       return { ok: true };
     } catch (err) {
       let msg = 'Error de login';
@@ -141,7 +160,7 @@ const auth = {
       } else if (err.code === 'auth/too-many-requests') {
         msg = 'Demasiados intentos. Esperá unos minutos.';
       } else if (err.code === 'auth/network-request-failed') {
-        msg = 'Sin conexión a internet';
+        msg = '🛡️ Sin conexión a Firebase. Puede ser Brave Shields o AdBlocker bloqueando. Desactivalo para este sitio.';
       }
       return { ok: false, error: msg };
     }
@@ -259,14 +278,15 @@ const auth = {
     if (!data.email || !data.password) return { ok: false, error: 'Email y contraseña son obligatorios' };
     if (data.password.length < 6) return { ok: false, error: 'La contraseña debe tener al menos 6 caracteres' };
 
-    // Recordar quién está logueado ahora (el admin)
     const currentAdminEmail = this._profile?.email || (this._user?.email);
+    let createdAuthUser = null; // Para rollback si falla Firestore
 
     try {
       // 1. Crear usuario en Firebase Auth
       const cred = await window.fb.createUserWithEmailAndPassword(
         window.fb.auth, data.email.trim(), data.password
       );
+      createdAuthUser = cred.user;
       const newUid = cred.user.uid;
 
       // 2. Crear documento en Firestore con el MISMO UID
@@ -280,19 +300,50 @@ const auth = {
         createdAt: new Date().toISOString(),
         createdBy: currentAdminEmail || 'sistema'
       };
-      await window.fb.setDoc(window.fb.doc(window.fb.db, 'users', newUid), profile);
+
+      try {
+        await window.fb.setDoc(window.fb.doc(window.fb.db, 'users', newUid), profile);
+      } catch (firestoreErr) {
+        // ¡Firestore falló! El usuario quedó solo en Auth, hay que rollback
+        console.error('[auth.createUser] Firestore falló, rollback de Auth:', firestoreErr);
+
+        // Detectar si es bloqueo de adblocker/Brave Shields
+        const isBlocked = firestoreErr.message?.includes('ERR_BLOCKED') ||
+                         firestoreErr.code === 'unavailable' ||
+                         firestoreErr.name === 'FirebaseError' && firestoreErr.message?.includes('Failed to fetch');
+
+        // Intentar borrar el usuario de Auth para no dejar huérfano
+        try {
+          if (createdAuthUser && window.fb.deleteUser) {
+            await window.fb.deleteUser(createdAuthUser);
+            console.log('[auth.createUser] Usuario de Auth borrado (rollback OK)');
+          }
+        } catch (rollbackErr) {
+          console.error('[auth.createUser] No se pudo hacer rollback:', rollbackErr);
+        }
+
+        // Mensaje al usuario
+        if (isBlocked) {
+          return {
+            ok: false,
+            error: '🛡️ Conexión a Firestore bloqueada por el navegador (Brave Shields o AdBlocker). Desactivá Brave Shields para este sitio: click en el escudo Brave al lado de la URL → bajar el toggle de Shields → recargar la página. También puede ser un AdBlocker bloqueando firestore.googleapis.com'
+          };
+        }
+        return { ok: false, error: 'Error guardando perfil en Firestore: ' + (firestoreErr.message || 'desconocido') };
+      }
 
       // 3. Cerrar sesión del usuario recién creado (Firebase nos logueó como él)
       await window.fb.signOut(window.fb.auth);
 
       return { ok: true, uid: newUid, needsRelogin: true, adminEmail: currentAdminEmail };
+
     } catch (err) {
-      // Mensajes amigables según código de error
       let msg = err.message || 'Error desconocido';
-      if (err.code === 'auth/email-already-in-use') msg = 'Ya existe un usuario con ese email en Firebase Auth';
+      if (err.code === 'auth/email-already-in-use') msg = 'Ya existe un usuario con ese email en Firebase Auth. Si necesitás recrearlo, eliminálo primero desde Firebase Console.';
       else if (err.code === 'auth/invalid-email') msg = 'El email no es válido';
       else if (err.code === 'auth/weak-password') msg = 'La contraseña es muy débil (mínimo 6 caracteres)';
       else if (err.code === 'auth/operation-not-allowed') msg = 'Email/password no está habilitado en Firebase. Habilítalo en Firebase Console → Authentication → Sign-in method';
+      else if (err.code === 'auth/network-request-failed') msg = '🛡️ Sin conexión a Firebase. Puede ser Brave Shields/AdBlocker bloqueando. Desactivá los shields para este sitio.';
       return { ok: false, error: msg };
     }
   },

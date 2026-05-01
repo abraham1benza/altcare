@@ -7,7 +7,7 @@
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.13.2/firebase-app.js";
 import {
   initializeAuth, getAuth, signInWithEmailAndPassword, signOut, onAuthStateChanged,
-  createUserWithEmailAndPassword, sendPasswordResetEmail, updatePassword,
+  createUserWithEmailAndPassword, sendPasswordResetEmail, updatePassword, deleteUser,
   browserLocalPersistence, indexedDBLocalPersistence
 } from "https://www.gstatic.com/firebasejs/10.13.2/firebase-auth.js";
 import {
@@ -60,7 +60,7 @@ try {
 window.fb = {
   app, auth, db: dbFs,
   signInWithEmailAndPassword, signOut, onAuthStateChanged,
-  createUserWithEmailAndPassword, sendPasswordResetEmail, updatePassword,
+  createUserWithEmailAndPassword, sendPasswordResetEmail, updatePassword, deleteUser,
   browserLocalPersistence, indexedDBLocalPersistence,
   collection, doc, getDoc, getDocs, setDoc, addDoc, updateDoc, deleteDoc,
   query, where, orderBy, limit, serverTimestamp, onSnapshot, writeBatch, Timestamp
