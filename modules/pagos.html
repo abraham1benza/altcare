@@ -517,8 +517,74 @@ function updateAmount(val) {
 }
 
 function updateCurrency(ccy) {
-  creating.currency = ccy;
-  // No reset cuenta — el usuario puede elegir cuenta de cualquier moneda
+  const c = creating;
+  const oldCcy = c.currency;
+  c.currency = ccy;
+
+  // ¿Cambió la moneda? Convertir el monto automáticamente para que sea coherente
+  if (oldCcy !== ccy) {
+    const oldAmount = parseFloat(c.amount) || 0;
+
+    if (oldAmount > 0) {
+      // Convertir el monto viejo a la nueva moneda
+      let newAmount = oldAmount;
+
+      if (oldCcy === ccy) {
+        // No hace falta convertir
+      } else {
+        // Pasar a VES como pivote, después a la moneda destino
+        let amountInVES = 0;
+        if (oldCcy === 'VES') amountInVES = oldAmount;
+        else if (oldCcy === 'USD') {
+          const r = currency.getRate('BCV_USD');
+          amountInVES = r?.value ? oldAmount * r.value : 0;
+        } else if (oldCcy === 'EUR') {
+          const r = currency.getRate('BCV_EUR');
+          amountInVES = r?.value ? oldAmount * r.value : 0;
+        }
+
+        if (ccy === 'VES') newAmount = amountInVES;
+        else if (ccy === 'USD') {
+          const r = currency.getRate('BCV_USD');
+          newAmount = r?.value ? amountInVES / r.value : 0;
+        } else if (ccy === 'EUR') {
+          const r = currency.getRate('BCV_EUR');
+          newAmount = r?.value ? amountInVES / r.value : 0;
+        }
+      }
+
+      c.amount = Math.round(newAmount * 100) / 100;
+    }
+
+    // Si ahora es conversión cruzada y no había una tasa elegida, asignar BCV por defecto
+    const isCrossNow = c.currency !== c.docCurrency;
+    if (isCrossNow) {
+      // Elegir la tasa BCV apropiada según las monedas involucradas
+      let defaultRateType = null;
+      if ((c.currency === 'USD' && c.docCurrency === 'VES') ||
+          (c.currency === 'VES' && c.docCurrency === 'USD')) {
+        defaultRateType = 'BCV_USD';
+      } else if ((c.currency === 'EUR' && c.docCurrency === 'VES') ||
+                 (c.currency === 'VES' && c.docCurrency === 'EUR')) {
+        defaultRateType = 'BCV_EUR';
+      }
+      if (defaultRateType) {
+        const rate = currency.getRate(defaultRateType);
+        if (rate?.value) {
+          c.conversionRateType = defaultRateType;
+          c.conversionRate = rate.value;
+          c.conversionRateLabel = rate.label || defaultRateType;
+          c.useCustomRate = false;
+          // Para SENIAT
+          if (defaultRateType === 'BCV_USD') {
+            c.rateAtPayment = rate.value;
+            c.rateTypeAtPayment = 'BCV_USD';
+          }
+        }
+      }
+    }
+  }
+
   render();
 }
 
