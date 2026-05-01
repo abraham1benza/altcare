@@ -86,12 +86,105 @@ function renderList() {
 
       ${tabContent}
 
+      <!-- Cuadro: Cuentas por pagar -->
+      ${renderCuentasPorPagar(invoices)}
+
       <!-- Botón abajo -->
       <div style="display:flex;justify-content:flex-end;gap:8px;padding:24px 0;border-top:1px solid var(--border);margin-top:24px;">
         ${tab === 'pos' ? `<button class="btn btn-primary" onclick="newPO()">${ui.icon('plus')} Nueva OC</button>` : ''}
       </div>
     `
   });
+}
+
+/** Cuadro de Cuentas por Pagar: todas las facturas pendientes ordenadas por vencimiento */
+function renderCuentasPorPagar(invoices) {
+  const today = new Date().toISOString().slice(0,10);
+  const pending = invoices
+    .filter(i => i.status !== 'CANCELLED' && i.status !== 'PAID')
+    .filter(i => (i.totalToPay - (i.paidAmount||0)) > 0.01)
+    .sort((a, b) => {
+      // Sin vencimiento van al final
+      if (!a.dueDate) return 1;
+      if (!b.dueDate) return -1;
+      return a.dueDate.localeCompare(b.dueDate);
+    });
+
+  if (!pending.length) {
+    return `<div class="card mb-24" style="margin-top:32px;padding:0;">
+      <div style="padding:18px 20px;border-bottom:1px solid var(--border);background:linear-gradient(180deg, var(--accent-soft) 0%, transparent 100%);">
+        <div class="card-title" style="display:flex;align-items:center;gap:8px;">💸 Cuentas por pagar</div>
+      </div>
+      <div style="padding:32px;text-align:center;color:var(--ink-3);">
+        ✓ No tenés facturas pendientes de pago
+      </div>
+    </div>`;
+  }
+
+  // Total adeudado en USD
+  const totalUSD = pending.reduce((s, i) => {
+    const remaining = i.totalToPay - (i.paidAmount||0);
+    if (i.currency === 'USD') return s + remaining;
+    if (i.currency === 'VES') {
+      const r = currency.getRate('BCV_USD');
+      return s + (r?.value ? remaining / r.value : 0);
+    }
+    return s + remaining;
+  }, 0);
+
+  return `<div class="card mb-24" style="margin-top:32px;padding:0;">
+    <div style="padding:18px 20px;border-bottom:1px solid var(--border);background:linear-gradient(180deg, #fef3c7 0%, transparent 100%);display:flex;justify-content:space-between;align-items:center;">
+      <div>
+        <div class="card-title" style="display:flex;align-items:center;gap:8px;">💸 Cuentas por pagar</div>
+        <div class="text-muted" style="font-size:11px;margin-top:2px;">${pending.length} factura${pending.length!==1?'s':''} pendiente${pending.length!==1?'s':''} · Total: ${currency.format(totalUSD, 'USD')} aprox.</div>
+      </div>
+    </div>
+    <div class="table-wrap" style="border-radius:0;">
+      <table>
+        <thead><tr><th>Factura</th><th>Proveedor</th><th>Emitida</th><th>Vence</th><th style="text-align:right;">Total</th><th style="text-align:right;">Pagado</th><th style="text-align:right;">Pendiente</th><th>Estado</th><th style="text-align:right;width:280px;">Acciones</th></tr></thead>
+        <tbody>${pending.map(i => {
+          const remaining = i.totalToPay - (i.paidAmount||0);
+          const overdue = i.dueDate && i.dueDate < today;
+          const supplier = db.getById(db.COLLECTIONS.suppliers, i.supplierId);
+          const hasPhone = supplier && (supplier.whatsapp || supplier.phone);
+          const notifyUrl = hasPhone
+            ? `notificaciones.html?quickSend=1&type=supplier&id=${i.supplierId}&template=RECORDATORIO_PAGO_PROVEEDOR&docId=${i.id}`
+            : `proveedores.html`;
+          const btnTitle = hasPhone ? 'Avisar al proveedor por WhatsApp' : 'Sin WhatsApp · click para agregarlo';
+          const isNote = i.inventoryType === 'NOTA_ENTREGA';
+          const s = purchases.INV_STATUS[i.status] || { label: i.status, color: 'badge-plain' };
+
+          return `<tr ${overdue?'style="background:#fef2f2;"':''}>
+            <td>
+              <div style="display:flex;align-items:center;gap:6px;">
+                <span class="td-mono td-strong">${i.code}</span>
+                ${isNote ? '<span class="badge badge-note" style="font-size:9px;">📋 NE</span>' : ''}
+              </div>
+              ${i.supplierInvoiceNumber ? `<div class="text-muted" style="font-size:11px;">${ui.escape(i.supplierInvoiceNumber)}</div>` : ''}
+            </td>
+            <td>${ui.escape(i.supplierName)}</td>
+            <td><span class="text-muted" style="font-size:12px;">${ui.formatDate(i.issueDate)}</span></td>
+            <td>
+              ${i.dueDate
+                ? `<span class="badge ${overdue?'badge-overdue':'badge-plain'}" style="font-size:10px;">${ui.formatDate(i.dueDate)}</span>`
+                : '<span class="text-muted">—</span>'}
+            </td>
+            <td style="text-align:right;"><span class="td-mono">${currency.format(i.totalToPay, i.currency)}</span></td>
+            <td style="text-align:right;"><span class="td-mono text-muted">${currency.format(i.paidAmount||0, i.currency)}</span></td>
+            <td style="text-align:right;"><span class="td-mono td-strong" style="${overdue?'color:var(--danger);':''}">${currency.format(remaining, i.currency)}</span></td>
+            <td><span class="badge ${s.color}" style="font-size:10px;">${s.label}</span></td>
+            <td>
+              <div style="display:flex;gap:4px;justify-content:flex-end;flex-wrap:wrap;">
+                <button class="btn btn-ghost btn-sm" onclick="openInvoice('${i.id}')" title="Ver detalle" style="font-size:11px;padding:4px 8px;">${ui.icon('eye')||'👁'} Ver</button>
+                <a href="pagos.html?invoice=${i.id}" class="btn btn-secondary btn-sm" title="Registrar pago" style="font-size:11px;padding:4px 8px;text-decoration:none;">$ Pagar</a>
+                <a href="${notifyUrl}" class="btn ${hasPhone?'btn-secondary':'btn-ghost'} btn-sm" title="${btnTitle}" style="font-size:11px;padding:4px 8px;${!hasPhone?'opacity:0.5;':''}">📱 Avisar</a>
+              </div>
+            </td>
+          </tr>`;
+        }).join('')}</tbody>
+      </table>
+    </div>
+  </div>`;
 }
 
 function changeTab(t) { tab = t; render(); }
@@ -155,7 +248,7 @@ function renderInvoiceTable(invoices) {
 
       return `<tr style="cursor:pointer;" onclick="openInvoice('${inv.id}')">
         <td><span class="td-mono td-strong">${inv.code}</span></td>
-        <td><span class="badge ${isNote?'badge-warning':'badge-success'}" style="font-size:10px;">${isNote?'📋 Nota':'📄 Factura'}</span></td>
+        <td><span class="badge ${isNote?'badge-note':'badge-invoice'}" style="font-size:10px;">${isNote?'📋 Nota':'📄 Factura'}</span></td>
         <td><span class="td-mono">${ui.escape(inv.supplierInvoiceNumber||'—')}</span></td>
         <td>${ui.escape(inv.supplierName)}</td>
         <td><span class="text-muted">${ui.formatDate(inv.issueDate)}</span></td>
@@ -937,7 +1030,7 @@ function renderInvoiceDetail() {
         <div class="action-bar-left">
           <button class="btn btn-ghost btn-sm" onclick="backToList()">← Volver</button>
           <span style="margin-left:16px;">
-            <span class="badge ${inv.inventoryType==='NOTA_ENTREGA'?'badge-warning':'badge-success'}" style="margin-right:6px;">${inv.inventoryType==='NOTA_ENTREGA'?'📋 Nota de Entrega':'📄 Factura'}</span>
+            <span class="badge ${inv.inventoryType==='NOTA_ENTREGA'?'badge-note':'badge-invoice'}" style="margin-right:6px;">${inv.inventoryType==='NOTA_ENTREGA'?'📋 Nota de Entrega':'📄 Factura'}</span>
             <span class="badge ${s.color}">${s.label}</span>
           </span>
         </div>
@@ -1160,6 +1253,7 @@ Object.assign(window, {
   changeTab: typeof changeTab !== 'undefined' ? changeTab : undefined,
   renderPOTable: typeof renderPOTable !== 'undefined' ? renderPOTable : undefined,
   renderInvoiceTable: typeof renderInvoiceTable !== 'undefined' ? renderInvoiceTable : undefined,
+  renderCuentasPorPagar: typeof renderCuentasPorPagar !== 'undefined' ? renderCuentasPorPagar : undefined,
   newPO: typeof newPO !== 'undefined' ? newPO : undefined,
   renderPOCreate: typeof renderPOCreate !== 'undefined' ? renderPOCreate : undefined,
   onSupplierChange: typeof onSupplierChange !== 'undefined' ? onSupplierChange : undefined,

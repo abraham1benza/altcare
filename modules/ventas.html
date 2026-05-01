@@ -88,7 +88,7 @@ function renderList() {
     <tbody>${docs.map(d => {
       const today = new Date().toISOString().slice(0,10);
       const overdue = d.dueDate && d.dueDate < today && d.status !== 'PAID' && d.type === 'FACTURA';
-      const tBadge = d.type === 'PEDIDO' ? 'badge-plain' : d.type === 'COTIZACION' ? 'badge-accent' : d.type === 'NOTA_ENTREGA' ? 'badge-warning' : 'badge-success';
+      const tBadge = sales.STATUS[d.type]?.color || 'badge-plain';
       const sBadge = sales.STATUS[d.status]?.color || 'badge-plain';
 
       // Calcular USD y VES
@@ -117,7 +117,7 @@ function renderList() {
         </td>
         ${isGerencial ? `<td style="text-align:right;"><span class="td-mono text-muted" style="font-size:12px;">${currency.format(vesValue, 'VES')}</span></td>` : ''}
         <td><span class="badge ${tBadge}">${d.type}</span></td>
-        <td>${d.cancelled ? '<span class="badge badge-danger">Anulada</span>' : `<span class="badge ${sBadge}">${sales.STATUS[d.status]?.label || d.status}</span>`}</td>
+        <td>${d.cancelled ? '<span class="badge badge-cancelled">Anulada</span>' : `<span class="badge ${sBadge}">${sales.STATUS[d.status]?.label || d.status}</span>`}</td>
         <td class="td-actions" onclick="event.stopPropagation()">
           <button class="btn-icon" onclick="openDetail('${d.id}')">${ui.icon('edit')}</button>
         </td>
@@ -165,12 +165,100 @@ function renderList() {
         ${tableHtml}
       </div>
 
+      <!-- Cuadro: Cuentas por cobrar -->
+      ${renderCuentasPorCobrar(all)}
+
       <div style="display:flex;justify-content:flex-end;gap:8px;padding:24px 0;border-top:1px solid var(--border);margin-top:24px;">
         <button class="btn btn-secondary" onclick="newDoc('NOTA_ENTREGA')" title="Sin IVA, no entra en libros fiscales">${ui.icon('file')} Nueva Nota de Entrega</button>
         <button class="btn btn-primary" onclick="newDoc('PEDIDO')">${ui.icon('plus')} Nuevo Pedido</button>
       </div>
     `
   });
+}
+
+/** Cuadro de Cuentas por Cobrar: facturas con saldo pendiente, ordenadas por vencimiento */
+function renderCuentasPorCobrar(allDocs) {
+  const today = new Date().toISOString().slice(0,10);
+  const pending = allDocs
+    .filter(d => d.type === 'FACTURA' && !d.cancelled)
+    .filter(d => (d.total - (d.paidAmount||0)) > 0.01)
+    .sort((a, b) => {
+      if (!a.dueDate) return 1;
+      if (!b.dueDate) return -1;
+      return a.dueDate.localeCompare(b.dueDate);
+    });
+
+  if (!pending.length) {
+    return `<div class="card mb-24" style="margin-top:32px;padding:0;">
+      <div style="padding:18px 20px;border-bottom:1px solid var(--border);background:linear-gradient(180deg, var(--accent-soft) 0%, transparent 100%);">
+        <div class="card-title" style="display:flex;align-items:center;gap:8px;">💰 Cuentas por cobrar</div>
+      </div>
+      <div style="padding:32px;text-align:center;color:var(--ink-3);">
+        ✓ No tenés facturas pendientes de cobro
+      </div>
+    </div>`;
+  }
+
+  // Total por cobrar en USD
+  const totalUSD = pending.reduce((s, d) => {
+    const remaining = d.total - (d.paidAmount||0);
+    if (d.currency === 'USD') return s + remaining;
+    if (d.currency === 'VES') {
+      const r = currency.getRate('BCV_USD');
+      return s + (r?.value ? remaining / r.value : 0);
+    }
+    return s + remaining;
+  }, 0);
+
+  return `<div class="card mb-24" style="margin-top:32px;padding:0;">
+    <div style="padding:18px 20px;border-bottom:1px solid var(--border);background:linear-gradient(180deg, #d1fae5 0%, transparent 100%);display:flex;justify-content:space-between;align-items:center;">
+      <div>
+        <div class="card-title" style="display:flex;align-items:center;gap:8px;">💰 Cuentas por cobrar</div>
+        <div class="text-muted" style="font-size:11px;margin-top:2px;">${pending.length} factura${pending.length!==1?'s':''} con saldo pendiente · Total: ${currency.format(totalUSD, 'USD')} aprox.</div>
+      </div>
+    </div>
+    <div class="table-wrap" style="border-radius:0;">
+      <table>
+        <thead><tr><th>Factura</th><th>Cliente</th><th>Emitida</th><th>Vence</th><th style="text-align:right;">Total</th><th style="text-align:right;">Cobrado</th><th style="text-align:right;">Pendiente</th><th>Estado</th><th style="text-align:right;width:280px;">Acciones</th></tr></thead>
+        <tbody>${pending.map(d => {
+          const remaining = d.total - (d.paidAmount||0);
+          const overdue = d.dueDate && d.dueDate < today;
+          const customer = db.getById(db.COLLECTIONS.customers, d.customerId);
+          const hasPhone = customer && (customer.whatsapp || customer.phone);
+          const notifyUrl = hasPhone
+            ? `notificaciones.html?quickSend=1&type=customer&id=${d.customerId}&template=COBRO_PENDIENTE_CLIENTE&docId=${d.id}`
+            : `clientes.html`;
+          const btnTitle = hasPhone ? 'Avisar al cliente por WhatsApp' : 'Sin WhatsApp · click para agregarlo';
+          const s = sales.STATUS[d.status] || { label: d.status, color: 'badge-plain' };
+
+          return `<tr ${overdue?'style="background:#fef2f2;"':''}>
+            <td>
+              <span class="td-mono td-strong">${d.invoiceNumber||d.code}</span>
+              ${d.controlNumber ? `<div class="text-muted" style="font-size:11px;">Ctrl: ${d.controlNumber}</div>` : ''}
+            </td>
+            <td>${ui.escape(d.customerName)}</td>
+            <td><span class="text-muted" style="font-size:12px;">${ui.formatDate(d.issueDate)}</span></td>
+            <td>
+              ${d.dueDate
+                ? `<span class="badge ${overdue?'badge-overdue':'badge-plain'}" style="font-size:10px;">${ui.formatDate(d.dueDate)}</span>`
+                : '<span class="text-muted">—</span>'}
+            </td>
+            <td style="text-align:right;"><span class="td-mono">${currency.format(d.total, d.currency)}</span></td>
+            <td style="text-align:right;"><span class="td-mono text-muted">${currency.format(d.paidAmount||0, d.currency)}</span></td>
+            <td style="text-align:right;"><span class="td-mono td-strong" style="${overdue?'color:var(--danger);':''}">${currency.format(remaining, d.currency)}</span></td>
+            <td><span class="badge ${s.color}" style="font-size:10px;">${s.label}</span></td>
+            <td>
+              <div style="display:flex;gap:4px;justify-content:flex-end;flex-wrap:wrap;">
+                <button class="btn btn-ghost btn-sm" onclick="openDetail('${d.id}')" title="Ver detalle" style="font-size:11px;padding:4px 8px;">${ui.icon('eye')||'👁'} Ver</button>
+                <a href="pagos.html?doc=${d.id}" class="btn btn-secondary btn-sm" title="Registrar cobro" style="font-size:11px;padding:4px 8px;text-decoration:none;">$ Cobrar</a>
+                <a href="${notifyUrl}" class="btn ${hasPhone?'btn-secondary':'btn-ghost'} btn-sm" title="${btnTitle}" style="font-size:11px;padding:4px 8px;${!hasPhone?'opacity:0.5;':''}">📱 Avisar</a>
+              </div>
+            </td>
+          </tr>`;
+        }).join('')}</tbody>
+      </table>
+    </div>
+  </div>`;
 }
 
 function onSearch(v) { searchTerm = v; render(); }
@@ -457,9 +545,9 @@ function backToList() { view = 'list'; selectedId = null; render(); }
 function renderDetail() {
   const d = db.getById(db.COLLECTIONS.salesOrders, selectedId);
   if (!d) { backToList(); return; }
-  const sBadge = d.cancelled ? 'badge-danger' : (sales.STATUS[d.status]?.color || 'badge-plain');
+  const sBadge = d.cancelled ? 'badge-cancelled' : (sales.STATUS[d.status]?.color || 'badge-plain');
   const sLabel = d.cancelled ? 'Anulada' : (sales.STATUS[d.status]?.label || d.status);
-  const tBadge = d.type === 'PEDIDO' ? 'badge-plain' : d.type === 'COTIZACION' ? 'badge-accent' : d.type === 'NOTA_ENTREGA' ? 'badge-warning' : 'badge-success';
+  const tBadge = sales.STATUS[d.type]?.color || 'badge-plain';
   const remaining = d.total - (d.paidAmount||0);
   const paymentsForDoc = payments.getPaymentsForDoc('IN', d.id);
   const isGerencial = (typeof auth !== 'undefined' && auth.getActiveMode() === 'gerencial');
@@ -1147,6 +1235,7 @@ try { Object.defineProperty(window, 'typeFilter', { get: () => typeFilter, set: 
 Object.assign(window, {
   render: typeof render !== 'undefined' ? render : undefined,
   renderList: typeof renderList !== 'undefined' ? renderList : undefined,
+  renderCuentasPorCobrar: typeof renderCuentasPorCobrar !== 'undefined' ? renderCuentasPorCobrar : undefined,
   onSearch: typeof onSearch !== 'undefined' ? onSearch : undefined,
   onTypeFilter: typeof onTypeFilter !== 'undefined' ? onTypeFilter : undefined,
   newDoc: typeof newDoc !== 'undefined' ? newDoc : undefined,
