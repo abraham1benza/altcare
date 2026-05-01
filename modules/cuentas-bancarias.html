@@ -242,14 +242,14 @@ function openForm(item) {
             <input type="radio" name="countsForFiscal" value="true" ${isCompany?'checked':''} style="margin-top:2px;">
             <div>
               <div style="font-weight:600;font-size:13px;">🏢 Cuenta de la empresa</div>
-              <div class="text-muted" style="font-size:11.5px;margin-top:2px;">Los pagos en esta cuenta cuentan para los reportes fiscales (Libro de Compras/Ventas, SENIAT)</div>
+              <div class="text-muted" style="font-size:11.5px;margin-top:2px;">Los pagos y cobros en esta cuenta cuentan para los reportes fiscales (Libro de Compras/Ventas, SENIAT).</div>
             </div>
           </label>
           <label class="checkbox-row" style="flex:1;padding:14px;background:var(--surface-2);border:1px solid var(--border);border-radius:8px;cursor:pointer;display:flex;align-items:start;gap:10px;">
             <input type="radio" name="countsForFiscal" value="false" ${!isCompany?'checked':''} style="margin-top:2px;">
             <div>
               <div style="font-weight:600;font-size:13px;">👤 Cuenta personal</div>
-              <div class="text-muted" style="font-size:11.5px;margin-top:2px;">Cuenta de paso o personal. Sus pagos NO entran en libros fiscales pero sí en reportes operativos.</div>
+              <div class="text-muted" style="font-size:11.5px;margin-top:2px;">Cuenta de paso o personal. Sus pagos y cobros NO entran en libros fiscales, pero sí en reportes operativos.</div>
             </div>
           </label>
         </div>
