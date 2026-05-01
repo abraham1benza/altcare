@@ -430,8 +430,9 @@ const currency = {
   },
 
   /**
-   * Genera un texto formateado "$100,00 · (BCV 35,50: Bs 3.550,00)" o similar.
-   * Útil para mostrar inline ambos valores.
+   * Genera un texto formateado "$100,00 · (Bs 3.550,00)" o similar.
+   * Solo muestra el monto convertido entre paréntesis (sin la tasa, que es obvia para el usuario).
+   * Si está congelado, agrega un candado.
    */
   formatBoth(amount, fromCcy, frozen = null) {
     const original = this.format(amount, fromCcy);
@@ -440,12 +441,7 @@ const currency = {
     const conv = this.toFiscal(amount, fromCcy, targetCcy, frozen);
     if (!conv.value) return original;
 
-    const rateLabel = conv.rateType === 'BCV_USD' ? 'BCV' :
-                      conv.rateType === 'BINANCE' ? 'P2P' :
-                      conv.rateType === 'BCV_EUR' ? 'BCV €' :
-                      conv.rateType.replace('_', ' ');
-    const rateStr = (conv.rate || 0).toLocaleString('es-VE', { maximumFractionDigits: 2 });
     const lockIcon = conv.isFrozen ? ' 🔒' : '';
-    return `${original} · (${rateLabel} ${rateStr}: ${this.format(conv.value, targetCcy)}${lockIcon})`;
+    return `${original} · (${this.format(conv.value, targetCcy)}${lockIcon})`;
   }
 };
