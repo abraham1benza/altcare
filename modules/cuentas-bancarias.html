@@ -98,18 +98,27 @@ function renderList() {
                      'badge-caja';
 
     return `
-      <div class="card account-card" style="padding:0;overflow:hidden;border-radius:12px;${isPersonal?'border-color:#fcd34d;':''}">
+      <div class="card account-card" style="padding:0;overflow:hidden;border-radius:12px;${
+        isPersonal
+          ? 'border:2px solid #d97706;background:linear-gradient(180deg, #fffbeb 0%, #fef9e7 100%);box-shadow:0 1px 3px rgba(217, 119, 6, 0.08);'
+          : 'border:2px solid var(--accent);background:linear-gradient(180deg, #f3f6f0 0%, #f8faf6 100%);box-shadow:0 1px 3px rgba(91, 122, 90, 0.08);'
+      }">
         <!-- Header con badge moneda -->
-        <div style="padding:18px 20px 12px;${isPersonal?'background:linear-gradient(180deg, #fffbf0 0%, #fff 100%);':'background:linear-gradient(180deg, var(--accent-soft) 0%, #fff 100%);'}">
+        <div style="padding:18px 20px 12px;${
+          isPersonal
+            ? 'background:linear-gradient(180deg, #fef3c7 0%, transparent 100%);border-bottom:1px solid #fde68a;'
+            : 'background:linear-gradient(180deg, var(--accent-soft) 0%, transparent 100%);border-bottom:1px solid #d4ddd0;'
+        }">
           <div style="display:flex;justify-content:space-between;align-items:start;gap:8px;">
             <div style="flex:1;min-width:0;">
-              <div class="text-muted" style="font-size:10px;text-transform:uppercase;letter-spacing:0.08em;font-weight:600;margin-bottom:6px;">CUENTA BANCARIA</div>
-              <div style="font-family:var(--font-display);font-size:18px;line-height:1.2;font-weight:500;${isPersonal?'color:#92400e;':'color:var(--accent-ink);'}">${ui.escape(a.name)}</div>
+              <div class="text-muted" style="font-size:10px;text-transform:uppercase;letter-spacing:0.08em;font-weight:600;margin-bottom:6px;color:${isPersonal?'#92400e':'var(--accent-ink)'};">
+                ${isPersonal ? '👤 CUENTA PERSONAL' : '🏢 CUENTA DE EMPRESA'}
+              </div>
+              <div style="font-family:var(--font-display);font-size:18px;line-height:1.2;font-weight:500;${isPersonal?'color:#78350f;':'color:var(--accent-ink);'}">${ui.escape(a.name)}</div>
               <div class="text-muted" style="font-size:11px;margin-top:4px;">${ui.escape(a.bank||'')}${a.accountNumber?` · ····${a.accountNumber.slice(-4)}`:''}</div>
             </div>
             <div style="display:flex;flex-direction:column;align-items:flex-end;gap:4px;flex-shrink:0;">
               <span class="badge ${ccyBadge}" style="font-size:10px;font-weight:700;">${a.currency}</span>
-              ${isPersonal ? `<span class="badge" style="background:#fef3c7;color:#92400e;font-size:9px;">👤 PERSONAL</span>` : ''}
             </div>
           </div>
         </div>
@@ -206,12 +215,28 @@ function renderList() {
       </p>
 
       ${companyAccounts.length ? `
-        ${showPersonal && personalAccounts.length > 0 ? '<div class="divider-section"><span class="section-title" style="margin:0;">🏢 Cuentas de la empresa</span></div>' : ''}
+        ${showPersonal && personalAccounts.length > 0 ? `
+          <div style="display:flex;align-items:center;gap:12px;margin:8px 0 16px;padding:10px 16px;background:var(--accent-soft);border-radius:8px;border-left:4px solid var(--accent);">
+            <span style="font-size:18px;">🏢</span>
+            <div style="flex:1;">
+              <div style="font-family:var(--font-display);font-size:16px;color:var(--accent-ink);font-weight:600;">Cuentas de la Empresa</div>
+              <div class="text-muted" style="font-size:11px;">Entran en libros fiscales SENIAT · Total: <strong>${currency.format(totalCompany, modeCcy)}</strong></div>
+            </div>
+            <span class="badge" style="background:var(--accent);color:white;">${companyAccounts.length} cuenta${companyAccounts.length!==1?'s':''}</span>
+          </div>
+        ` : ''}
         <div class="grid grid-3 mb-24">${companyCards}</div>
       ` : ''}
 
       ${showPersonal && personalAccounts.length > 0 ? `
-        <div class="divider-section"><span class="section-title" style="margin:0;">👤 Cuentas personales</span></div>
+        <div style="display:flex;align-items:center;gap:12px;margin:24px 0 16px;padding:10px 16px;background:#fef3c7;border-radius:8px;border-left:4px solid #d97706;">
+          <span style="font-size:18px;">👤</span>
+          <div style="flex:1;">
+            <div style="font-family:var(--font-display);font-size:16px;color:#78350f;font-weight:600;">Cuentas Personales</div>
+            <div class="text-muted" style="font-size:11px;color:#92400e;">No entran en libros fiscales · Total: <strong>${currency.format(totalPersonal, modeCcy)}</strong></div>
+          </div>
+          <span class="badge" style="background:#d97706;color:white;">${personalAccounts.length} cuenta${personalAccounts.length!==1?'s':''}</span>
+        </div>
         <div class="grid grid-3 mb-24">${personalCards}</div>
       ` : ''}
 
@@ -238,17 +263,28 @@ function renderDetail() {
   const debits = moves.filter(m => m.direction === 'OUT').reduce((s,m)=>s+Math.abs(m.amount||0), 0);
 
   const movesTable = moves.length ? `<table>
-    <thead><tr><th>Fecha</th><th>Tipo</th><th>Concepto</th><th>Referencia</th><th style="text-align:right;">Monto</th><th style="text-align:right;">Saldo</th></tr></thead>
+    <thead><tr><th>Fecha</th><th>Tipo</th><th>Concepto</th><th style="text-align:right;">Monto original</th><th style="text-align:right;">Aplicado a la cuenta</th><th style="text-align:right;">Saldo</th></tr></thead>
     <tbody>${moves.map(m => {
       const sign = m.direction === 'IN' ? '+' : '−';
       const color = m.direction === 'IN' ? 'var(--success)' : 'var(--danger)';
       const typeLabel = ({'OPENING':'Saldo inicial','PAYMENT_OUT':'Pago a proveedor','PAYMENT_IN':'Cobro de cliente','DEPOSIT':'Depósito','WITHDRAWAL':'Retiro','TRANSFER_IN':'Transferencia recibida','TRANSFER_OUT':'Transferencia enviada','FEE':'Comisión','ADJUSTMENT':'Ajuste'}[m.type]) || m.type;
+
+      // Distinguir si hubo conversión cruzada
+      const wasConverted = m.conversionApplied && m.currency !== a.currency;
+      const accountAmount = m.amountInAccountCurrency != null ? m.amountInAccountCurrency : m.amount;
+
       return `<tr>
         <td><span class="text-muted" style="font-size:12px;">${ui.formatDate(m.date)}</span></td>
         <td><span class="badge badge-plain" style="font-size:10px;">${typeLabel}</span></td>
-        <td><div class="td-strong" style="font-size:13px;">${ui.escape(m.counterpartyName||m.reference||'—')}</div>${m.counterpartyName && m.reference !== m.counterpartyName ? `<div class="text-muted" style="font-size:11px;">${ui.escape(m.reference||'')}</div>` : ''}</td>
-        <td><span class="text-muted" style="font-size:12px;">${ui.escape(m.reference||'—')}</span></td>
-        <td style="text-align:right;color:${color};font-weight:600;font-family:var(--font-mono);">${sign}${currency.format(Math.abs(m.amount||0), m.currency)}</td>
+        <td>
+          <div class="td-strong" style="font-size:13px;">${ui.escape(m.counterpartyName||m.reference||'—')}</div>
+          ${m.reference && m.counterpartyName && m.reference !== m.counterpartyName ? `<div class="text-muted" style="font-size:11px;">${ui.escape(m.reference)}</div>` : ''}
+        </td>
+        <td style="text-align:right;color:${color};font-weight:600;font-family:var(--font-mono);font-size:13px;">${sign}${currency.format(Math.abs(m.amount||0), m.currency)}</td>
+        <td style="text-align:right;font-family:var(--font-mono);">
+          <div style="color:${color};font-weight:600;">${sign}${currency.format(Math.abs(accountAmount||0), a.currency)}</div>
+          ${wasConverted ? `<div class="text-muted" style="font-size:10px;font-weight:400;">${m.conversionRateType||'tasa'}: ${(m.conversionRate||0).toLocaleString('es-VE',{maximumFractionDigits:2})}</div>` : ''}
+        </td>
         <td style="text-align:right;"><span class="td-mono td-strong">${currency.format(m.runningBalance||0, a.currency)}</span></td>
       </tr>`;
     }).join('')}</tbody></table>` : '<div class="empty-state"><div class="empty-state-title">Sin movimientos</div><div class="empty-state-text">Los pagos y cobros realizados desde esta cuenta aparecerán aquí.</div></div>';
