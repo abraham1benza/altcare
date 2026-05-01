@@ -91,7 +91,16 @@ const db = {
         _cache[name][d.id] = { ...d.data(), id: d.id };
       });
     } catch (err) {
-      console.warn(`[db] Error cargando ${name}:`, err.message);
+      // Distinguir entre permiso denegado (esperado para algunos roles)
+      // vs error real (problema de configuración o conexión)
+      const isPermissionError = err.code === 'permission-denied'
+        || err.message?.includes('Missing or insufficient permissions');
+      if (isPermissionError) {
+        // Silenciar: es esperado que algunos roles no puedan leer ciertas colecciones
+        console.debug(`[db] Sin permisos para ${name} (esperado por rol)`);
+      } else {
+        console.warn(`[db] Error cargando ${name}:`, err.message);
+      }
       _cache[name] = {};
     }
   },
@@ -218,10 +227,21 @@ const db = {
 
   /**
    * Asegura que existan los datos por defecto (config, rates, paymentMethods, etc.).
+   * SOLO se ejecuta si el usuario es admin (roles inferiores no tienen permiso).
    * Solo crea si la colección está vacía.
    */
   async seedDefaults() {
     const fb = window.fb;
+
+    // Solo admin puede hacer seed (los otros roles no tienen permiso de escritura
+    // en config/rates/paymentMethods según reglas Firestore)
+    const profile = window.auth?._profile;
+    const isAdmin = profile?.role === 'admin';
+    if (!isAdmin) {
+      console.log('[db] seedDefaults: omitido (usuario no admin)');
+      return;
+    }
+
     const today = new Date().toISOString().slice(0,10);
 
     // Config
