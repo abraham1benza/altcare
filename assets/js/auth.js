@@ -246,11 +246,60 @@ const auth = {
   // ====== GESTIÓN DE USUARIOS (admin) ======
 
   /**
-   * Crea un usuario nuevo. Solo admin puede hacerlo.
-   * IMPORTANTE: createUserWithEmailAndPassword desloguea al admin actual,
-   * por lo que después de crear hay que volver a loguear al admin.
-   * Por eso preferimos crear desde la consola Firebase manualmente,
-   * y solo guardar el perfil en Firestore.
+   * Crea un usuario nuevo en Firebase Auth Y en Firestore con el mismo UID.
+   * IMPORTANTE: createUserWithEmailAndPassword desloguea al admin actual y
+   * loguea automáticamente al usuario recién creado. Por eso, después de
+   * crearlo, deslogueamos y pedimos al admin que vuelva a loguearse.
+   *
+   * @param {object} data - { email, password, fullName, username, role, allowedModes, active }
+   * @returns {Promise<{ok, error?, uid?}>}
+   */
+  async createUser(data) {
+    if (!window.fb) return { ok: false, error: 'Firebase no inicializado' };
+    if (!data.email || !data.password) return { ok: false, error: 'Email y contraseña son obligatorios' };
+    if (data.password.length < 6) return { ok: false, error: 'La contraseña debe tener al menos 6 caracteres' };
+
+    // Recordar quién está logueado ahora (el admin)
+    const currentAdminEmail = this._profile?.email || (this._user?.email);
+
+    try {
+      // 1. Crear usuario en Firebase Auth
+      const cred = await window.fb.createUserWithEmailAndPassword(
+        window.fb.auth, data.email.trim(), data.password
+      );
+      const newUid = cred.user.uid;
+
+      // 2. Crear documento en Firestore con el MISMO UID
+      const profile = {
+        email: data.email.trim(),
+        username: data.username,
+        fullName: data.fullName,
+        role: data.role,
+        allowedModes: data.allowedModes,
+        active: data.active !== false,
+        createdAt: new Date().toISOString(),
+        createdBy: currentAdminEmail || 'sistema'
+      };
+      await window.fb.setDoc(window.fb.doc(window.fb.db, 'users', newUid), profile);
+
+      // 3. Cerrar sesión del usuario recién creado (Firebase nos logueó como él)
+      await window.fb.signOut(window.fb.auth);
+
+      return { ok: true, uid: newUid, needsRelogin: true, adminEmail: currentAdminEmail };
+    } catch (err) {
+      // Mensajes amigables según código de error
+      let msg = err.message || 'Error desconocido';
+      if (err.code === 'auth/email-already-in-use') msg = 'Ya existe un usuario con ese email en Firebase Auth';
+      else if (err.code === 'auth/invalid-email') msg = 'El email no es válido';
+      else if (err.code === 'auth/weak-password') msg = 'La contraseña es muy débil (mínimo 6 caracteres)';
+      else if (err.code === 'auth/operation-not-allowed') msg = 'Email/password no está habilitado en Firebase. Habilítalo en Firebase Console → Authentication → Sign-in method';
+      return { ok: false, error: msg };
+    }
+  },
+
+  /**
+   * Crea solo el documento Firestore del usuario, asumiendo que ya existe en Firebase Auth.
+   * Útil para registrar manualmente un usuario que ya fue creado en consola Firebase.
    */
   async createUserProfile(uid, profile) {
     const fb = window.fb;
