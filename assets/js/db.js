@@ -41,6 +41,7 @@ const COLLECTIONS = {
   supplierInvoices: 'supplierInvoices',
   withholdingVouchers: 'withholdingVouchers',
   salesOrders: 'salesOrders',
+  creditNotes: 'creditNotes',
   salesInvoices: 'salesInvoices',
   paymentMethods: 'paymentMethods',
   bankAccounts: 'bankAccounts',

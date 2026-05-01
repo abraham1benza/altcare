@@ -185,6 +185,9 @@ const reports = {
       .filter(d => d.type === 'FACTURA' && this.inRange(d.issueDate, from, to))
       .sort((a,b) => (a.issueDate||'').localeCompare(b.issueDate||''));
 
+    const creditNotes = db.getAll(db.COLLECTIONS.creditNotes)
+      .filter(n => n.status !== 'CANCELLED' && this.inRange(n.issueDate, from, to));
+
     const rows = docs.map((d, idx) => {
       const isCancelled = d.cancelled;
       let baseVES = d.taxableBase;
@@ -223,6 +226,7 @@ const reports = {
         nombreCliente: d.customerName,
         nFactura: d.invoiceNumber || d.code,
         nControl: d.controlNumber || '',
+        tipoDoc: 'FACTURA',
         baseImponible: isCancelled ? 0 : baseVES,
         ivaRate: d.ivaRate,
         iva: isCancelled ? 0 : ivaVES,
@@ -238,14 +242,69 @@ const reports = {
       };
     });
 
-    const totals = rows.reduce((t, r) => ({
+    // Agregar NCs con monto NEGATIVO (restan del libro de ventas)
+    const ncRows = creditNotes.map((n, idx) => {
+      let baseVES = n.taxableBase;
+      let ivaVES = n.ivaAmount;
+      let totalVES = n.total;
+      let exemptVES = n.exemptBase;
+      let rateUsed = 0;
+      let rateLabel = '—';
+
+      if (n.currency !== 'VES') {
+        rateUsed = parseFloat(n.rateValue) || 0;
+        rateLabel = 'al emitir NC';
+        if (!rateUsed) {
+          const r = currency.getRate('BCV_USD');
+          rateUsed = r?.value || 0;
+          rateLabel = 'BCV hoy';
+        }
+        if (rateUsed > 0) {
+          baseVES *= rateUsed;
+          ivaVES *= rateUsed;
+          totalVES *= rateUsed;
+          exemptVES *= rateUsed;
+        }
+      }
+
+      return {
+        n: rows.length + idx + 1,
+        fecha: n.issueDate,
+        rifCliente: n.customerRif || '',
+        nombreCliente: n.customerName,
+        nFactura: n.code + (n.ncInvoiceNumber ? ` (${n.ncInvoiceNumber})` : ''),
+        nControl: n.ncControlNumber || '',
+        tipoDoc: 'NOTA_CREDITO',
+        nFacturaAfectada: n.invoiceNumber || n.invoiceCode,
+        // Montos NEGATIVOS porque restan
+        baseImponible: -baseVES,
+        ivaRate: n.ivaRate,
+        iva: -ivaVES,
+        exento: -exemptVES,
+        total: -totalVES,
+        cancelled: false,
+        currency: n.currency,
+        docId: n.id,
+        rateUsed,
+        rateLabel,
+        isFrozen: false,
+        status: n.status
+      };
+    });
+
+    // Combinar y ordenar por fecha
+    const allRows = [...rows, ...ncRows].sort((a, b) => (a.fecha||'').localeCompare(b.fecha||''));
+    // Renumerar
+    allRows.forEach((r, idx) => r.n = idx + 1);
+
+    const totals = allRows.reduce((t, r) => ({
       baseImponible: t.baseImponible + r.baseImponible,
       iva: t.iva + r.iva,
       exento: t.exento + r.exento,
       total: t.total + r.total
     }), { baseImponible: 0, iva: 0, exento: 0, total: 0 });
 
-    return { rows, totals };
+    return { rows: allRows, totals };
   },
 
   // ====== ESTADO DE CUENTA CLIENTE ======

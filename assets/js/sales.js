@@ -635,6 +635,418 @@ const sales = {
     doc.ivaAmount = round(doc.taxableBase * ivaRate / 100);
     doc.total = round(doc.subtotal + doc.ivaAmount);
     return doc;
+  },
+
+  // ==========================================================================
+  // ====== NOTAS DE CRÉDITO ======
+  // ==========================================================================
+
+  /** Motivos posibles de NC */
+  CREDIT_NOTE_REASONS: {
+    DISCOUNT:      { label: 'Descuento post-facturación', icon: '💸' },
+    RETURN:        { label: 'Devolución de mercancía',    icon: '↩️' },
+    CANCELLATION:  { label: 'Anulación parcial/total',    icon: '❌' },
+    OTHER:         { label: 'Otro motivo',                icon: '📝' }
+  },
+
+  /** Estados posibles de NC */
+  CREDIT_NOTE_STATUS: {
+    ISSUED:    { label: 'Emitida',  color: 'badge-invoice' },
+    APPLIED:   { label: 'Aplicada', color: 'badge-paid'    },
+    CANCELLED: { label: 'Anulada',  color: 'badge-cancelled' }
+  },
+
+  /** Devuelve las NCs de una factura */
+  getCreditNotesForInvoice(invoiceId) {
+    return db.query(db.COLLECTIONS.creditNotes, n => n.invoiceId === invoiceId && n.status !== 'CANCELLED');
+  },
+
+  /** Total acreditado a una factura (suma de todas sus NCs activas) */
+  getCreditedAmount(invoiceId) {
+    return this.getCreditNotesForInvoice(invoiceId).reduce((s, n) => s + (n.total || 0), 0);
+  },
+
+  /**
+   * Verifica si se puede crear una NC de cierto monto sobre una factura.
+   * No permite acreditar más que el total restante de la factura.
+   */
+  canCreditAmount(invoiceId, amount) {
+    const inv = db.getById(db.COLLECTIONS.salesOrders, invoiceId);
+    if (!inv) return { ok: false, reason: 'Factura no encontrada' };
+    if (inv.cancelled) return { ok: false, reason: 'Factura anulada' };
+    if (inv.type !== 'FACTURA') return { ok: false, reason: 'Solo se pueden emitir NC sobre facturas' };
+    const alreadyCredited = this.getCreditedAmount(invoiceId);
+    const maxCreditable = inv.total - alreadyCredited;
+    if (amount > maxCreditable + 0.01) {
+      return { ok: false, reason: `El máximo acreditable es ${maxCreditable.toFixed(2)} ${inv.currency} (ya hay ${alreadyCredited.toFixed(2)} acreditado)` };
+    }
+    return { ok: true, maxCreditable };
+  },
+
+  /**
+   * Crea una Nota de Crédito.
+   *
+   * @param {object} args
+   * @param {string} args.invoiceId       - ID de la factura origen (obligatorio)
+   * @param {string} args.reason          - 'DISCOUNT'|'RETURN'|'CANCELLATION'|'OTHER'
+   * @param {string} args.mode            - 'BY_ITEMS' | 'FREE_AMOUNT'
+   * @param {array}  args.items           - solo si mode = BY_ITEMS. [{rawMaterialId|formulaId, formulaName, quantity, unit, unitPrice, exempt, stockAction(LIBERADO|CUARENTENA|DISCARD), originalLotId}]
+   * @param {number} args.freeAmount      - solo si mode = FREE_AMOUNT (subtotal)
+   * @param {boolean} args.freeAmountExempt - si el monto libre va exento de IVA
+   * @param {string} args.invoiceNumber   - número fiscal NC (opcional, autogen)
+   * @param {string} args.controlNumber   - número de control NC
+   * @param {string} args.notes           - notas
+   * @param {string} args.moneyAction     - 'REFUND'|'CREDIT_BALANCE'|'REDUCE_DEBT'
+   * @param {string} args.refundAccountId - si moneyAction === REFUND
+   * @param {number} args.refundAmount    - monto a reembolsar (puede ser distinto al total NC si decide reembolso parcial)
+   */
+  createCreditNote(args) {
+    const inv = db.getById(db.COLLECTIONS.salesOrders, args.invoiceId);
+    if (!inv) throw new Error('Factura no encontrada');
+    if (inv.cancelled) throw new Error('No se puede emitir NC sobre factura anulada');
+    if (inv.type !== 'FACTURA') throw new Error('Solo se pueden emitir NC sobre facturas');
+
+    const reason = args.reason || 'OTHER';
+    const mode = args.mode === 'FREE_AMOUNT' ? 'FREE_AMOUNT' : 'BY_ITEMS';
+    const cfg = db.getById(db.COLLECTIONS.config, 'main') || {};
+    const ivaRate = inv.ivaRate || cfg.ivaRate || 16;
+
+    // Calcular subtotal e IVA según modo
+    let items = [];
+    let subtotal = 0;
+    let taxableBase = 0;
+    let exemptBase = 0;
+
+    if (mode === 'BY_ITEMS') {
+      if (!args.items || !args.items.length) throw new Error('Debe haber al menos un ítem');
+      items = args.items.map(it => {
+        const qty = parseFloat(it.quantity) || 0;
+        const price = parseFloat(it.unitPrice) || 0;
+        const sub = round(qty * price);
+        const exempt = !!it.exempt;
+        if (exempt) exemptBase += sub;
+        else taxableBase += sub;
+        return {
+          formulaId: it.formulaId || null,
+          formulaName: it.formulaName || it.description || '',
+          rawMaterialId: it.rawMaterialId || null,
+          quantity: qty,
+          unit: it.unit || '',
+          unitPrice: price,
+          subtotal: sub,
+          exempt,
+          // Para devolución: qué hacer con el stock
+          stockAction: it.stockAction || null,  // LIBERADO | CUARENTENA | DISCARD | null (no aplica)
+          originalLotId: it.originalLotId || null
+        };
+      });
+      subtotal = taxableBase + exemptBase;
+    } else {
+      // FREE_AMOUNT
+      const amt = parseFloat(args.freeAmount) || 0;
+      if (amt <= 0) throw new Error('El monto debe ser mayor a 0');
+      const exempt = !!args.freeAmountExempt;
+      subtotal = amt;
+      if (exempt) exemptBase = amt;
+      else taxableBase = amt;
+      // Item dummy
+      items = [{
+        formulaId: null,
+        formulaName: 'Ajuste / Crédito',
+        quantity: 1,
+        unit: '—',
+        unitPrice: amt,
+        subtotal: amt,
+        exempt
+      }];
+    }
+
+    const ivaAmount = round(taxableBase * ivaRate / 100);
+    const total = round(subtotal + ivaAmount);
+
+    // Validar que no se acredite más que el total restante de la factura
+    const check = this.canCreditAmount(args.invoiceId, total);
+    if (!check.ok) throw new Error(check.reason);
+
+    const code = db.nextCode(db.COLLECTIONS.creditNotes, 'NC');
+
+    const note = {
+      code,
+      invoiceId: inv.id,
+      invoiceCode: inv.code,
+      invoiceNumber: inv.invoiceNumber || '',
+      // Cliente (heredado de la factura)
+      customerId: inv.customerId,
+      customerName: inv.customerName,
+      customerRif: inv.customerRif || '',
+      // Datos fiscales NC
+      ncInvoiceNumber: args.invoiceNumber || '',
+      ncControlNumber: args.controlNumber || '',
+      // Datos
+      reason,
+      mode,
+      items,
+      // Tasa: heredada de la factura origen para coherencia con SENIAT
+      currency: inv.currency,
+      rateType: inv.rateType || 'BCV_USD',
+      rateValue: inv.rateValue || 0,
+      // Cálculos
+      subtotal: round(subtotal),
+      taxableBase: round(taxableBase),
+      exemptBase: round(exemptBase),
+      ivaRate,
+      ivaAmount,
+      total,
+      // Plata
+      moneyAction: args.moneyAction || 'REDUCE_DEBT',  // REFUND | CREDIT_BALANCE | REDUCE_DEBT
+      refundAccountId: args.refundAccountId || null,
+      refundAmount: parseFloat(args.refundAmount) || 0,
+      refundDate: null,
+      // Estado
+      status: 'ISSUED',
+      issueDate: new Date().toISOString().slice(0,10),
+      issuedBy: window.auth?.currentUser()?.email || 'sistema',
+      notes: args.notes || '',
+      // Para auditoría
+      createdAt: new Date().toISOString()
+    };
+
+    const saved = db.save(db.COLLECTIONS.creditNotes, note);
+
+    // ============ EFECTOS DE LA NC ============
+
+    // 1. Stock: si es devolución y los items tienen stockAction, devolver al inventario
+    if (mode === 'BY_ITEMS' && reason === 'RETURN') {
+      saved.items.forEach(item => {
+        if (!item.formulaId) return;
+        if (item.stockAction === 'LIBERADO' || item.stockAction === 'CUARENTENA') {
+          this._returnStockFromCreditNote(item, saved, inv);
+        } else if (item.stockAction === 'DISCARD') {
+          // No regresa al stock pero registramos movimiento de descarte
+          if (typeof inventory !== 'undefined' && inventory.registerMove) {
+            inventory.registerMove({
+              type: 'DISCARD',
+              itemKind: 'PT',
+              itemId: item.formulaId,
+              itemName: item.formulaName,
+              quantity: -item.quantity,
+              unit: item.unit,
+              reference: `NC ${saved.code} · descarte`
+            });
+          }
+        }
+      });
+    }
+
+    // 2. Plata: si reembolso, generar movimiento bancario
+    if (saved.moneyAction === 'REFUND' && saved.refundAccountId && saved.refundAmount > 0) {
+      try {
+        if (typeof payments !== 'undefined' && payments.registerBankMove) {
+          payments.registerBankMove({
+            accountId: saved.refundAccountId,
+            type: 'WITHDRAWAL',
+            amount: saved.refundAmount,
+            currency: saved.currency,
+            date: saved.issueDate,
+            reference: `Reembolso NC ${saved.code} a ${saved.customerName}`,
+            counterpartyName: saved.customerName
+          });
+          saved.refundDate = saved.issueDate;
+          db.save(db.COLLECTIONS.creditNotes, saved);
+        }
+      } catch (e) {
+        console.warn('[sales] No se pudo registrar reembolso:', e.message);
+      }
+    }
+
+    // 3. Si es CREDIT_BALANCE: agregar al saldo a favor del cliente
+    if (saved.moneyAction === 'CREDIT_BALANCE') {
+      const customer = db.getById(db.COLLECTIONS.customers, saved.customerId);
+      if (customer) {
+        customer.creditBalance = (customer.creditBalance || 0) + total;
+        customer.creditBalanceCurrency = saved.currency;
+        db.save(db.COLLECTIONS.customers, customer);
+      }
+    }
+
+    // 4. Actualizar factura: registrar el monto acreditado
+    inv.creditedAmount = (inv.creditedAmount || 0) + total;
+    inv.creditNotes = inv.creditNotes || [];
+    inv.creditNotes.push(saved.id);
+    // Si la NC cubre todo el total, marcar factura como totalmente acreditada
+    if (Math.abs(inv.creditedAmount - inv.total) < 0.01) {
+      inv.fullyCredited = true;
+    }
+    db.save(db.COLLECTIONS.salesOrders, inv);
+
+    return saved;
+  },
+
+  /**
+   * Helper interno: devuelve mercancía al stock cuando hay devolución.
+   * Crea o reactiva un lote según corresponda.
+   */
+  _returnStockFromCreditNote(item, creditNote, invoice) {
+    if (typeof inventory === 'undefined') return;
+
+    const lotStatus = item.stockAction === 'CUARENTENA' ? 'CUARENTENA' : 'LIBERADO';
+
+    // Buscar el lote original si está informado, para revivirlo o agregarle balance
+    if (item.originalLotId) {
+      const lot = db.getById(db.COLLECTIONS.finishedGoods, item.originalLotId);
+      if (lot && lot.formulaId === item.formulaId) {
+        // Si el estado del lote es el mismo, sumar balance
+        if (lot.status === lotStatus) {
+          lot.balance = round((lot.balance || 0) + item.quantity);
+          db.save(db.COLLECTIONS.finishedGoods, lot);
+          if (inventory.registerMove) {
+            inventory.registerMove({
+              type: 'RETURN_IN',
+              itemKind: 'PT',
+              itemId: lot.formulaId,
+              itemCode: lot.code,
+              itemName: lot.formulaName || item.formulaName,
+              lotId: lot.id,
+              lotCode: lot.code,
+              quantity: item.quantity,
+              unit: lot.unit,
+              unitCost: lot.unitCost,
+              costCurrency: lot.costCurrency,
+              warehouseId: lot.warehouseId,
+              reference: `NC ${creditNote.code} · devolución (${item.quantity} ${item.unit||''})`
+            });
+          }
+          return;
+        }
+      }
+    }
+
+    // No hay lote original o cambió de estado: crear lote nuevo
+    const newLot = {
+      code: db.nextCode(db.COLLECTIONS.finishedGoods, 'PT'),
+      formulaId: item.formulaId,
+      formulaName: item.formulaName,
+      quantity: item.quantity,
+      balance: item.quantity,
+      unit: item.unit || 'un',
+      unitCost: item.unitPrice || 0,
+      costCurrency: creditNote.currency,
+      status: lotStatus,
+      warehouseId: null,
+      manufactureDate: new Date().toISOString().slice(0,10),
+      expiryDate: null,
+      ofId: null,
+      qcTestId: null,
+      sourceNoteCode: creditNote.code,
+      isReturn: true,
+      returnDate: new Date().toISOString().slice(0,10)
+    };
+    const saved = db.save(db.COLLECTIONS.finishedGoods, newLot);
+    if (inventory.registerMove) {
+      inventory.registerMove({
+        type: 'RETURN_IN',
+        itemKind: 'PT',
+        itemId: saved.formulaId,
+        itemCode: saved.code,
+        itemName: saved.formulaName,
+        lotId: saved.id,
+        lotCode: saved.code,
+        quantity: item.quantity,
+        unit: saved.unit,
+        unitCost: saved.unitCost,
+        costCurrency: saved.costCurrency,
+        warehouseId: null,
+        reference: `NC ${creditNote.code} · devolución a ${lotStatus.toLowerCase()}`
+      });
+    }
+  },
+
+  /**
+   * Anular una NC. Reversa todos sus efectos (stock, plata, factura).
+   */
+  cancelCreditNote(noteId, reason) {
+    const note = db.getById(db.COLLECTIONS.creditNotes, noteId);
+    if (!note) throw new Error('Nota de crédito no encontrada');
+    if (note.status === 'CANCELLED') throw new Error('La NC ya está anulada');
+
+    // 1. Devolver el stock que se había devuelto al inventario
+    if (note.mode === 'BY_ITEMS' && note.reason === 'RETURN') {
+      note.items.forEach(item => {
+        if (item.stockAction === 'LIBERADO' || item.stockAction === 'CUARENTENA') {
+          // Buscar el lote que se creó por la devolución y descontarlo
+          const lots = db.query(db.COLLECTIONS.finishedGoods, l =>
+            l.sourceNoteCode === note.code && l.formulaId === item.formulaId
+          );
+          if (lots.length > 0) {
+            const lot = lots[0];
+            lot.balance = round((lot.balance || 0) - item.quantity);
+            if (lot.balance < 0) lot.balance = 0;
+            db.save(db.COLLECTIONS.finishedGoods, lot);
+            if (typeof inventory !== 'undefined' && inventory.registerMove) {
+              inventory.registerMove({
+                type: 'RETURN_REVERSE',
+                itemKind: 'PT',
+                itemId: lot.formulaId,
+                itemCode: lot.code,
+                itemName: lot.formulaName,
+                lotId: lot.id,
+                lotCode: lot.code,
+                quantity: -item.quantity,
+                unit: lot.unit,
+                reference: `Anulación NC ${note.code} · ${reason || ''}`
+              });
+            }
+          }
+        }
+      });
+    }
+
+    // 2. Reversar reembolso si lo hubo
+    if (note.moneyAction === 'REFUND' && note.refundAccountId && note.refundAmount > 0) {
+      try {
+        if (typeof payments !== 'undefined' && payments.registerBankMove) {
+          payments.registerBankMove({
+            accountId: note.refundAccountId,
+            type: 'DEPOSIT',
+            amount: note.refundAmount,
+            currency: note.currency,
+            date: new Date().toISOString().slice(0,10),
+            reference: `Reversa reembolso NC ${note.code} (anulación)`,
+            counterpartyName: note.customerName
+          });
+        }
+      } catch (e) {
+        console.warn('[sales] Error reversando reembolso:', e.message);
+      }
+    }
+
+    // 3. Quitar saldo a favor del cliente si era CREDIT_BALANCE
+    if (note.moneyAction === 'CREDIT_BALANCE') {
+      const customer = db.getById(db.COLLECTIONS.customers, note.customerId);
+      if (customer) {
+        customer.creditBalance = Math.max(0, (customer.creditBalance || 0) - note.total);
+        db.save(db.COLLECTIONS.customers, customer);
+      }
+    }
+
+    // 4. Liberar el monto acreditado de la factura
+    const inv = db.getById(db.COLLECTIONS.salesOrders, note.invoiceId);
+    if (inv) {
+      inv.creditedAmount = Math.max(0, (inv.creditedAmount || 0) - note.total);
+      inv.creditNotes = (inv.creditNotes || []).filter(id => id !== note.id);
+      if (Math.abs(inv.creditedAmount - inv.total) >= 0.01) {
+        inv.fullyCredited = false;
+      }
+      db.save(db.COLLECTIONS.salesOrders, inv);
+    }
+
+    // 5. Marcar NC como anulada
+    note.status = 'CANCELLED';
+    note.cancellationReason = reason || '';
+    note.cancelledAt = new Date().toISOString();
+    db.save(db.COLLECTIONS.creditNotes, note);
+
+    return note;
   }
 };
 
