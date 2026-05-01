@@ -1,0 +1,515 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Notificaciones · altcare</title>
+<link rel="stylesheet" href="../assets/css/styles.css">
+</head>
+<body>
+<script type="module" src="../assets/js/firebase-init.js"></script>
+<script src="../assets/js/module-init-v2.js"></script>
+<script src="../assets/js/db.js"></script>
+<script src="../assets/js/auth.js"></script>
+<script src="../assets/js/currency.js"></script>
+<script src="../assets/js/tax.js"></script>
+<script src="../assets/js/ui.js"></script>
+<script src="../assets/js/notifications.js"></script>
+<script>
+moduleInit('notificaciones').then(async (ok) => {
+if (!ok) return;
+
+// Sembrar plantillas predeterminadas si admin (otros roles no tienen permiso de write)
+if (auth._profile?.role === 'admin' || auth._profile?.role === 'gerente') {
+  notifications.seedDefaultTemplates();
+}
+
+let activeTab = 'send';
+let editing = null;
+
+function render() {
+  if (editing) return renderTemplateEdit();
+  if (activeTab === 'templates') return renderTemplates();
+  if (activeTab === 'history') return renderHistory();
+  return renderSendNew();
+}
+
+// ====== TAB: ENVIAR NUEVO ======
+
+function renderSendNew() {
+  const templates = notifications.getTemplates().filter(t => t.enabled !== false);
+  const customers = db.getAll(db.COLLECTIONS.customers).filter(c => c.active !== false);
+  const suppliers = db.getAll(db.COLLECTIONS.suppliers).filter(s => s.active !== false);
+
+  ui.renderLayout({
+    activeModule: 'notificaciones', pageEyebrow: 'Comunicación', pageTitle: 'Notificaciones',
+    contentHtml: `
+      ${tabsHtml('send')}
+      <div class="card mb-24">
+        <div class="card-header"><div class="card-title">Enviar mensaje por WhatsApp</div></div>
+        <div class="form-grid form-grid-2">
+          <div class="field" style="grid-column:1/-1;">
+            <label class="field-label">Destinatario</label>
+            <select class="select" id="contact-select" onchange="onContactChange()">
+              <option value="">— Selecciona destinatario —</option>
+              <optgroup label="👥 Clientes">
+                ${customers.map(c => `<option value="customer:${c.id}">${ui.escape(c.name)} ${c.phone||c.whatsapp?`· ${ui.escape(c.whatsapp||c.phone)}`:''}</option>`).join('')}
+              </optgroup>
+              <optgroup label="🏭 Proveedores">
+                ${suppliers.map(s => `<option value="supplier:${s.id}">${ui.escape(s.name)} ${s.phone||s.whatsapp?`· ${ui.escape(s.whatsapp||s.phone)}`:''}</option>`).join('')}
+              </optgroup>
+              <option value="manual">+ Número manual (sin contacto guardado)</option>
+            </select>
+          </div>
+
+          <div id="manual-phone-field" class="field" style="grid-column:1/-1;display:none;">
+            <label class="field-label">Número de WhatsApp</label>
+            <input id="manual-phone" class="input" placeholder="Ej: 04121234567 o +584121234567">
+            <div class="field-hint">Se acepta cualquier formato. Se convierte automáticamente.</div>
+          </div>
+
+          <div class="field" style="grid-column:1/-1;">
+            <label class="field-label">Plantilla</label>
+            <select class="select" id="template-select" onchange="onTemplateChange()">
+              <option value="">— Sin plantilla (mensaje libre) —</option>
+              ${Object.entries(notifications.CATEGORIES).map(([cat, def]) => {
+                const tplsCat = templates.filter(t => t.category === cat);
+                if (!tplsCat.length) return '';
+                return `<optgroup label="${def.icon} ${def.label}">
+                  ${tplsCat.map(t => `<option value="${t.id}">${ui.escape(t.name)}</option>`).join('')}
+                </optgroup>`;
+              }).join('')}
+            </select>
+          </div>
+
+          <div class="field" style="grid-column:1/-1;">
+            <label class="field-label">Mensaje</label>
+            <textarea id="message-text" class="textarea" rows="6" placeholder="Escribe tu mensaje o selecciona una plantilla arriba..."></textarea>
+            <div class="field-hint">Puedes editar el mensaje antes de enviarlo. Se abrirá WhatsApp en una nueva pestaña.</div>
+          </div>
+        </div>
+
+        <div style="display:flex;justify-content:space-between;gap:8px;padding:24px 0 0;border-top:1px solid var(--border);margin-top:16px;">
+          <button class="btn btn-ghost" onclick="resetForm()">Limpiar</button>
+          <button class="btn btn-primary" onclick="doSend()">${ui.icon('check')} 📱 Enviar por WhatsApp</button>
+        </div>
+      </div>
+    `
+  });
+}
+
+let _selectedContact = null;
+
+function onContactChange() {
+  const val = document.getElementById('contact-select').value;
+  const manualField = document.getElementById('manual-phone-field');
+  if (val === 'manual') {
+    manualField.style.display = 'block';
+    _selectedContact = null;
+  } else if (val) {
+    manualField.style.display = 'none';
+    const [type, id] = val.split(':');
+    const coll = type === 'customer' ? db.COLLECTIONS.customers : db.COLLECTIONS.suppliers;
+    const contact = db.getById(coll, id);
+    _selectedContact = { type, id, contact };
+  } else {
+    manualField.style.display = 'none';
+    _selectedContact = null;
+  }
+  // Re-aplicar la plantilla con los datos del nuevo contacto
+  onTemplateChange();
+}
+
+function onTemplateChange() {
+  const tplId = document.getElementById('template-select').value;
+  const textarea = document.getElementById('message-text');
+  if (!tplId) {
+    return; // dejar el textarea como está
+  }
+  const tpl = notifications.getTemplates().find(t => t.id === tplId);
+  if (!tpl) return;
+
+  // Aplicar variables si hay contacto seleccionado
+  const cfg = db.getById(db.COLLECTIONS.config, 'main') || {};
+  const data = {
+    nombre: _selectedContact?.contact?.name || '',
+    empresa: cfg.companyName || '',
+    numero: '',
+    monto: '',
+    moneda: '',
+    vencimiento: '',
+    fecha_emision: new Date().toLocaleDateString('es-VE'),
+    material: '',
+    stock: '',
+    unidad: ''
+  };
+  textarea.value = notifications.applyTemplate(tpl.message, data);
+}
+
+function resetForm() {
+  document.getElementById('contact-select').value = '';
+  document.getElementById('template-select').value = '';
+  document.getElementById('message-text').value = '';
+  document.getElementById('manual-phone-field').style.display = 'none';
+  _selectedContact = null;
+}
+
+function doSend() {
+  const message = document.getElementById('message-text').value.trim();
+  if (!message) { ui.toast('El mensaje no puede estar vacío', 'error'); return; }
+
+  let phone = '';
+  let contactType = 'other';
+  let contactId = '';
+  let contactName = '';
+
+  if (_selectedContact) {
+    phone = notifications.getContactPhone(_selectedContact.contact);
+    contactType = _selectedContact.type;
+    contactId = _selectedContact.id;
+    contactName = _selectedContact.contact.name;
+    if (!phone) {
+      ui.toast(`${contactName} no tiene WhatsApp ni teléfono guardado`, 'error');
+      return;
+    }
+  } else {
+    phone = document.getElementById('manual-phone').value;
+    if (!notifications.isValidPhone(phone)) {
+      ui.toast('Número de WhatsApp inválido', 'error');
+      return;
+    }
+  }
+
+  const tplId = document.getElementById('template-select').value;
+  const tpl = tplId ? notifications.getTemplates().find(t => t.id === tplId) : null;
+
+  try {
+    notifications.send({
+      phone, message, contactType, contactId, contactName,
+      templateKey: tpl?.key || null
+    });
+    ui.toast('Abriendo WhatsApp...', 'success');
+    setTimeout(() => resetForm(), 500);
+  } catch (err) {
+    ui.toast(err.message, 'error');
+  }
+}
+
+// ====== TAB: PLANTILLAS ======
+
+function renderTemplates() {
+  const templates = notifications.getTemplates();
+
+  const groups = Object.entries(notifications.CATEGORIES).map(([key, def]) => {
+    const tpls = templates.filter(t => t.category === key);
+    return `
+      <div class="card mb-24">
+        <div class="card-header" style="display:flex;justify-content:space-between;align-items:center;">
+          <div class="card-title">${def.icon} ${def.label} <span class="text-muted" style="font-weight:400;">(${tpls.length})</span></div>
+        </div>
+        ${tpls.length ? `
+          <div style="display:flex;flex-direction:column;gap:8px;">
+            ${tpls.map(t => `
+              <div class="list-row" style="grid-template-columns:1fr auto;padding:12px 14px;background:${t.enabled===false?'var(--surface-2)':'white'};border:1px solid var(--border);border-radius:8px;">
+                <div>
+                  <div class="td-strong" style="display:flex;align-items:center;gap:6px;">
+                    ${ui.escape(t.name)}
+                    ${t.enabled===false?'<span class="badge badge-plain" style="font-size:9px;">Desactivada</span>':''}
+                  </div>
+                  <div class="text-muted" style="font-size:11px;margin-top:4px;line-height:1.5;">${ui.escape(t.message.length > 150 ? t.message.slice(0,150) + '...' : t.message)}</div>
+                </div>
+                <div class="td-actions">
+                  <button class="btn-icon" onclick="editTemplate('${t.id}')" title="Editar">${ui.icon('edit')}</button>
+                  <button class="btn-icon" onclick="deleteTemplate('${t.id}')" title="Eliminar">${ui.icon('trash')}</button>
+                </div>
+              </div>
+            `).join('')}
+          </div>
+        ` : '<div class="text-muted" style="font-size:13px;padding:16px 0;">Sin plantillas en esta categoría</div>'}
+      </div>
+    `;
+  }).join('');
+
+  ui.renderLayout({
+    activeModule: 'notificaciones', pageEyebrow: 'Comunicación', pageTitle: 'Notificaciones',
+    contentHtml: `
+      ${tabsHtml('templates')}
+      <div class="action-bar">
+        <div></div>
+        <button class="btn btn-primary" onclick="newTemplate()">${ui.icon('plus')} Nueva plantilla</button>
+      </div>
+      ${groups}
+    `
+  });
+}
+
+function newTemplate() {
+  editing = {
+    id: '',
+    key: '',
+    name: '',
+    category: 'CLIENTE',
+    message: '',
+    enabled: true,
+    isNew: true
+  };
+  render();
+}
+
+function editTemplate(id) {
+  const t = notifications.getTemplates().find(t => t.id === id);
+  if (!t) return;
+  editing = { ...t, isNew: false };
+  render();
+}
+
+function renderTemplateEdit() {
+  const e = editing;
+  ui.renderLayout({
+    activeModule: 'notificaciones',
+    pageEyebrow: e.isNew ? 'Nueva plantilla' : 'Editar plantilla',
+    pageTitle: e.isNew ? 'Crear plantilla de mensaje' : ui.escape(e.name || 'Plantilla'),
+    contentHtml: `
+      <div class="action-bar">
+        <button class="btn btn-ghost btn-sm" onclick="cancelTemplateEdit()">← Volver</button>
+      </div>
+
+      <div class="grid" style="grid-template-columns:1fr 320px;gap:16px;align-items:flex-start;">
+        <div>
+          <div class="card mb-24">
+            <div class="card-header"><div class="card-title">Datos de la plantilla</div></div>
+            <div class="form-grid form-grid-2">
+              <div class="field">
+                <label class="field-label">Nombre *</label>
+                <input id="tpl-name" class="input" value="${ui.escape(e.name||'')}" placeholder="Ej: Recordatorio de pago">
+              </div>
+              <div class="field">
+                <label class="field-label">Categoría *</label>
+                <select id="tpl-category" class="select">
+                  ${Object.entries(notifications.CATEGORIES).map(([k, def]) => `<option value="${k}" ${k===e.category?'selected':''}>${def.icon} ${def.label}</option>`).join('')}
+                </select>
+              </div>
+              <div class="field" style="grid-column:1/-1;">
+                <label class="field-label">Mensaje *</label>
+                <textarea id="tpl-message" class="textarea" rows="8" placeholder="Hola {{nombre}}, ...">${ui.escape(e.message||'')}</textarea>
+                <div class="field-hint">Usa <code>{{variable}}</code> para insertar datos. Ver lista de variables a la derecha →</div>
+              </div>
+              <div class="field" style="grid-column:1/-1;">
+                <label class="field-row">
+                  <input type="checkbox" id="tpl-enabled" ${e.enabled!==false?'checked':''}>
+                  <span style="margin-left:8px;">Plantilla activa (visible al enviar)</span>
+                </label>
+              </div>
+            </div>
+          </div>
+
+          <div style="display:flex;justify-content:space-between;gap:8px;padding-top:16px;border-top:1px solid var(--border);">
+            <button class="btn btn-secondary" onclick="cancelTemplateEdit()">Cancelar</button>
+            <button class="btn btn-primary" onclick="saveTemplate()">${ui.icon('check')} Guardar plantilla</button>
+          </div>
+        </div>
+
+        <div>
+          <div class="card" style="position:sticky;top:80px;">
+            <div class="card-header"><div class="card-title" style="font-size:13px;">Variables disponibles</div></div>
+            <div style="font-size:12px;line-height:1.7;">
+              ${notifications.VARIABLES.map(v => `
+                <div style="padding:6px 0;border-bottom:1px solid var(--border);cursor:pointer;" onclick="insertVariable('${v.key}')" title="Click para insertar">
+                  <code style="font-size:11px;background:var(--surface-2);padding:2px 6px;border-radius:4px;">{{${v.key}}}</code>
+                  <div class="text-muted" style="font-size:11px;margin-top:2px;">${v.desc}</div>
+                </div>
+              `).join('')}
+            </div>
+            <div class="text-muted" style="font-size:11px;padding:10px;background:var(--surface-2);border-radius:6px;margin-top:12px;">
+              💡 Click en una variable para insertarla en el mensaje.
+            </div>
+          </div>
+        </div>
+      </div>
+    `
+  });
+}
+
+function insertVariable(key) {
+  const ta = document.getElementById('tpl-message');
+  if (!ta) return;
+  const start = ta.selectionStart || 0;
+  const end = ta.selectionEnd || 0;
+  const text = ta.value;
+  const variable = `{{${key}}}`;
+  ta.value = text.slice(0, start) + variable + text.slice(end);
+  ta.focus();
+  ta.setSelectionRange(start + variable.length, start + variable.length);
+}
+
+function saveTemplate() {
+  const name = document.getElementById('tpl-name').value.trim();
+  const category = document.getElementById('tpl-category').value;
+  const message = document.getElementById('tpl-message').value.trim();
+  const enabled = document.getElementById('tpl-enabled').checked;
+
+  if (!name) { ui.toast('El nombre es obligatorio', 'error'); return; }
+  if (!message) { ui.toast('El mensaje es obligatorio', 'error'); return; }
+
+  const tpl = {
+    ...editing,
+    name, category, message, enabled
+  };
+  delete tpl.isNew;
+  if (!tpl.id) tpl.id = 'tpl_' + Date.now();
+  if (!tpl.key) tpl.key = 'CUSTOM_' + Date.now();
+
+  try {
+    notifications.saveTemplate(tpl);
+    ui.toast(editing.isNew ? 'Plantilla creada' : 'Plantilla actualizada', 'success');
+    editing = null;
+    activeTab = 'templates';
+    render();
+  } catch (err) {
+    ui.toast(err.message, 'error');
+  }
+}
+
+function cancelTemplateEdit() {
+  editing = null;
+  activeTab = 'templates';
+  render();
+}
+
+function deleteTemplate(id) {
+  const t = notifications.getTemplates().find(t => t.id === id);
+  if (!t) return;
+  ui.confirm(
+    `¿Eliminar la plantilla "${t.name}"?`,
+    () => {
+      try {
+        notifications.deleteTemplate(id);
+        ui.toast('Plantilla eliminada', 'success');
+        render();
+      } catch (err) { ui.toast(err.message, 'error'); }
+    },
+    { danger: true, confirmLabel: 'Eliminar' }
+  );
+}
+
+// ====== TAB: HISTORIAL ======
+
+function renderHistory() {
+  const logs = notifications.getHistory();
+
+  ui.renderLayout({
+    activeModule: 'notificaciones', pageEyebrow: 'Comunicación', pageTitle: 'Notificaciones',
+    contentHtml: `
+      ${tabsHtml('history')}
+      <div class="card mb-24">
+        <div class="card-header"><div class="card-title">Mensajes enviados (${logs.length})</div></div>
+        ${logs.length ? `<div class="table-wrap"><table>
+          <thead><tr><th>Fecha</th><th>Destinatario</th><th>Mensaje</th><th>Plantilla</th><th>Enviado por</th></tr></thead>
+          <tbody>${logs.slice(0, 200).map(l => `<tr>
+            <td><span class="text-muted" style="font-size:11px;">${ui.formatDateTime(l.sentAt)}</span></td>
+            <td>
+              <div class="td-strong">${ui.escape(l.contactName||'(manual)')}</div>
+              <div class="text-muted" style="font-size:11px;">${ui.escape(l.phone)}</div>
+            </td>
+            <td><div style="max-width:400px;font-size:12px;line-height:1.5;color:var(--ink-2);">${ui.escape(l.message.length > 200 ? l.message.slice(0,200) + '...' : l.message)}</div></td>
+            <td><span class="text-muted" style="font-size:11px;">${ui.escape(l.templateKey||'libre')}</span></td>
+            <td><span class="text-muted" style="font-size:11px;">${ui.escape(l.sentBy||'—')}</span></td>
+          </tr>`).join('')}</tbody>
+        </table></div>` : '<div class="empty-state"><div class="empty-state-title">Sin mensajes enviados</div></div>'}
+      </div>
+    `
+  });
+}
+
+// ====== TABS HEADER ======
+
+function tabsHtml(active) {
+  const tabs = [
+    { id: 'send',      label: '📱 Enviar mensaje' },
+    { id: 'templates', label: '📝 Plantillas' },
+    { id: 'history',   label: '📜 Historial' }
+  ];
+  return `<div style="display:flex;gap:4px;margin-bottom:24px;border-bottom:1px solid var(--border);padding-bottom:0;">
+    ${tabs.map(t => `<button onclick="changeTab('${t.id}')" style="padding:10px 18px;background:none;border:none;border-bottom:2px solid ${t.id===active?'var(--accent)':'transparent'};color:${t.id===active?'var(--accent-ink)':'var(--ink-3)'};font-weight:${t.id===active?'600':'400'};cursor:pointer;font-size:13px;">${t.label}</button>`).join('')}
+  </div>`;
+}
+
+function changeTab(tab) {
+  activeTab = tab;
+  render();
+}
+
+// ====== HANDLER PARA URL CON PARAMS ======
+// Soporta abrir el módulo con quickSend desde dashboard u otros lados.
+// Ej: notificaciones.html?quickSend=1&type=supplier&id=XXX&template=RECORDATORIO_PAGO_PROVEEDOR&docId=YYY
+
+function handleUrlParams() {
+  const params = new URLSearchParams(window.location.search);
+  if (params.get('quickSend') !== '1') return;
+
+  const type = params.get('type');           // 'supplier' | 'customer'
+  const id = params.get('id');                // contact id
+  const templateKey = params.get('template'); // template key
+  const docId = params.get('docId');          // optional: invoice/sales doc id
+  const materialId = params.get('materialId'); // optional: para low stock
+
+  setTimeout(() => {
+    let prepared = null;
+    if (docId && type === 'supplier') {
+      prepared = notifications.prepareDataFromSupplierInvoice(docId);
+    } else if (docId && type === 'customer') {
+      prepared = notifications.prepareDataFromSalesDoc(docId);
+    } else if (materialId) {
+      prepared = notifications.prepareDataFromLowStockMaterial(materialId);
+    } else if (id) {
+      const coll = type === 'supplier' ? db.COLLECTIONS.suppliers : db.COLLECTIONS.customers;
+      const contact = db.getById(coll, id);
+      const cfg = db.getById(db.COLLECTIONS.config, 'main') || {};
+      prepared = { contact, data: { nombre: contact?.name || '', empresa: cfg.companyName || '' } };
+    }
+
+    if (!prepared || !prepared.contact) {
+      ui.toast('No se pudo cargar el contacto', 'error');
+      return;
+    }
+
+    // Pre-seleccionar contacto
+    const contactSelect = document.getElementById('contact-select');
+    if (contactSelect) {
+      contactSelect.value = `${type}:${prepared.contact.id}`;
+      onContactChange();
+    }
+
+    // Pre-seleccionar plantilla
+    if (templateKey) {
+      const tpl = notifications.getTemplateByKey(templateKey);
+      if (tpl) {
+        const tplSelect = document.getElementById('template-select');
+        if (tplSelect) {
+          tplSelect.value = tpl.id;
+          // Renderizar mensaje con datos preparados
+          const textarea = document.getElementById('message-text');
+          if (textarea) {
+            textarea.value = notifications.applyTemplate(tpl.message, prepared.data);
+          }
+        }
+      }
+    }
+  }, 200);
+}
+
+render();
+handleUrlParams();
+
+// Exponer al window
+Object.assign(window, {
+  render, renderSendNew, renderTemplates, renderTemplateEdit, renderHistory,
+  onContactChange, onTemplateChange, doSend, resetForm,
+  newTemplate, editTemplate, saveTemplate, cancelTemplateEdit, deleteTemplate, insertVariable,
+  changeTab
+});
+
+});
+</script>
+</body>
+</html>

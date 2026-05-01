@@ -174,6 +174,11 @@ function openForm(item) {
             <input class="input" name="phone" value="${ui.escape(item.phone||'')}">
           </div>
           <div class="field">
+            <label class="field-label">WhatsApp</label>
+            <input class="input" name="whatsapp" value="${ui.escape(item.whatsapp||'')}" placeholder="Si es distinto al teléfono">
+            <div class="field-hint">Para enviar notificaciones. Si vacío, se usa el teléfono.</div>
+          </div>
+          <div class="field">
             <label class="field-label">Email</label>
             <input class="input" type="email" name="email" value="${ui.escape(item.email||'')}">
           </div>
