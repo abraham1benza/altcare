@@ -61,9 +61,9 @@ const auth = {
     if (!this._profile) return null;
     return {
       ...this._profile,
-      // Compatibilidad: nombres de campos viejos
-      username: this._profile.email,
-      fullName: this._profile.name || this._profile.email
+      // Compatibilidad: garantizar que username y fullName estén definidos
+      username: this._profile.username || this._profile.email || 'usuario',
+      fullName: this._profile.fullName || this._profile.name || this._profile.username || this._profile.email || 'Usuario'
     };
   },
 

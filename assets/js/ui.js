@@ -82,7 +82,8 @@ const ui = {
       </div>`;
     }).join('');
 
-    const initials = (user.fullName || user.username).split(' ').map(s=>s[0]).slice(0,2).join('').toUpperCase();
+    const nameForInitials = user.fullName || user.username || user.email || 'Usuario';
+    const initials = String(nameForInitials).split(' ').map(s=>s[0]).slice(0,2).join('').toUpperCase() || 'U';
     const roleLabel = auth.ROLES[user.role]?.label || user.role;
 
     const activeRate = currency.getActiveRate();
