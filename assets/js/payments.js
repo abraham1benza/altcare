@@ -74,6 +74,115 @@ const payments = {
     return db.save(db.COLLECTIONS.bankMoves, move);
   },
 
+  /**
+   * Transferencia entre dos cuentas bancarias.
+   * Si las cuentas tienen monedas distintas, requiere rate (tasa de conversión).
+   *
+   * @param {object} args
+   * @param {string} args.fromAccountId - cuenta origen
+   * @param {string} args.toAccountId - cuenta destino
+   * @param {number} args.amount - monto en moneda ORIGEN
+   * @param {number} args.rate - tasa (solo si monedas distintas). Significa: cuántas unidades de la moneda más débil (VES) equivalen a 1 unidad de la moneda más fuerte (USD/EUR).
+   * @param {string} args.rateType - 'BCV_USD' | 'BINANCE' | 'BCV_EUR' | 'P2P_EUR' | 'CUSTOM'
+   * @param {string} args.rateLabel - etiqueta para mostrar
+   * @param {string} args.date
+   * @param {string} args.notes
+   */
+  transferBetweenAccounts({ fromAccountId, toAccountId, amount, rate, rateType, rateLabel, date, notes }) {
+    if (fromAccountId === toAccountId) throw new Error('No podés transferir a la misma cuenta');
+    const from = db.getById(db.COLLECTIONS.bankAccounts, fromAccountId);
+    const to = db.getById(db.COLLECTIONS.bankAccounts, toAccountId);
+    if (!from) throw new Error('Cuenta origen no encontrada');
+    if (!to) throw new Error('Cuenta destino no encontrada');
+    const amt = parseFloat(amount) || 0;
+    if (amt <= 0) throw new Error('El monto debe ser mayor a 0');
+    if ((from.balance || 0) < amt - 0.001) {
+      throw new Error(`Saldo insuficiente en ${from.name}: ${from.balance} ${from.currency}`);
+    }
+
+    const sameCurrency = from.currency === to.currency;
+    let amountInDest = amt;
+
+    if (!sameCurrency) {
+      const r = parseFloat(rate) || 0;
+      if (r <= 0) throw new Error('Para transferencias entre monedas distintas, debés indicar la tasa');
+
+      // Convertir: usar VES como pivote
+      // r es la tasa de la moneda fuerte (USD/EUR) en VES (cuántos Bs por 1 USD)
+      let amtInVES = 0;
+      if (from.currency === 'VES') amtInVES = amt;
+      else if (from.currency === 'USD') amtInVES = amt * r;
+      else if (from.currency === 'EUR') {
+        // Si la tasa pasada es BCV_USD, no aplica para EUR. Asumimos que rate es la del par involucrado.
+        // Si es EUR<->VES, r es Bs/EUR
+        amtInVES = amt * r;
+      }
+
+      if (to.currency === 'VES') amountInDest = amtInVES;
+      else if (to.currency === 'USD') amountInDest = r > 0 ? amtInVES / r : 0;
+      else if (to.currency === 'EUR') amountInDest = r > 0 ? amtInVES / r : 0;
+    }
+
+    amountInDest = Math.round(amountInDest * 100) / 100;
+    const transferDate = date || new Date().toISOString().slice(0,10);
+    const transferRef = `TRF-${Date.now()}`;
+    const noteText = notes ? ` · ${notes}` : '';
+
+    // Movimiento OUT en cuenta origen
+    const outMove = this.registerBankMove({
+      accountId: fromAccountId,
+      type: 'TRANSFER_OUT',
+      amount: amt,
+      currency: from.currency,
+      date: transferDate,
+      reference: `Transferencia a ${to.name}${noteText}`,
+      counterpartyName: to.name
+    });
+    // Datos extras de la transferencia para trazabilidad
+    outMove.transferRef = transferRef;
+    outMove.transferToAccountId = toAccountId;
+    outMove.transferToAccountName = to.name;
+    if (!sameCurrency) {
+      outMove.crossCurrency = true;
+      outMove.transferRate = parseFloat(rate);
+      outMove.transferRateType = rateType || 'CUSTOM';
+      outMove.transferRateLabel = rateLabel || rateType || 'Tasa personalizada';
+      outMove.transferAmountInDest = amountInDest;
+    }
+    db.save(db.COLLECTIONS.bankMoves, outMove);
+
+    // Movimiento IN en cuenta destino
+    const inMove = this.registerBankMove({
+      accountId: toAccountId,
+      type: 'TRANSFER_IN',
+      amount: amountInDest,
+      currency: to.currency,
+      date: transferDate,
+      reference: `Transferencia desde ${from.name}${noteText}`,
+      counterpartyName: from.name
+    });
+    inMove.transferRef = transferRef;
+    inMove.transferFromAccountId = fromAccountId;
+    inMove.transferFromAccountName = from.name;
+    if (!sameCurrency) {
+      inMove.crossCurrency = true;
+      inMove.transferRate = parseFloat(rate);
+      inMove.transferRateType = rateType || 'CUSTOM';
+      inMove.transferRateLabel = rateLabel || rateType || 'Tasa personalizada';
+      inMove.transferAmountInSource = amt;
+    }
+    db.save(db.COLLECTIONS.bankMoves, inMove);
+
+    return {
+      ok: true,
+      transferRef,
+      from: { account: from, amount: amt, currency: from.currency },
+      to: { account: to, amount: amountInDest, currency: to.currency },
+      crossCurrency: !sameCurrency,
+      rate: !sameCurrency ? parseFloat(rate) : null
+    };
+  },
+
   // ====== PAGOS ======
 
   /**
