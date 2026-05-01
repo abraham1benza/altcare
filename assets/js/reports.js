@@ -96,7 +96,11 @@ const reports = {
    */
   libroCompras(from, to) {
     const invoices = db.getAll(db.COLLECTIONS.supplierInvoices)
-      .filter(i => i.status !== 'CANCELLED' && this.inRange(i.issueDate, from, to))
+      .filter(i =>
+        i.status !== 'CANCELLED'
+        && this.inRange(i.issueDate, from, to)
+        && i.inventoryType !== 'NOTA_ENTREGA'  // Excluir notas de entrega (no fiscales)
+      )
       .sort((a,b) => (a.issueDate||'').localeCompare(b.issueDate||''));
 
     const rows = invoices.map((i, idx) => {

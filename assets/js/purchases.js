@@ -22,6 +22,11 @@ const purchases = {
     CANCELLED:{ label: 'Anulada',           color: 'badge-danger'  }
   },
 
+  // Tipos de documento de proveedor (recepción)
+  INVENTORY_TYPES: ['NOTA_ENTREGA', 'FACTURA'],
+  // Tipos que entran al libro fiscal SENIAT
+  FISCAL_TYPES: ['FACTURA'],
+
   // ====== ÓRDENES DE COMPRA ======
 
   /** Crea OC. Cabecera + items con MP, cantidad, precio. */
@@ -67,7 +72,10 @@ const purchases = {
   updatePO(poId, data) {
     const po = db.getById(db.COLLECTIONS.purchaseOrders, poId);
     if (!po) throw new Error('OC no encontrada');
-    if (po.status !== 'DRAFT' && po.status !== 'SENT') throw new Error('Solo se pueden editar OCs en borrador o enviadas');
+    // Permitir editar mientras no esté facturada (puede tener factura tipo NE pendiente, ahí sí se permite)
+    const hasInvoice = po.invoiceId && po.invoiceType === 'FACTURA';
+    if (hasInvoice) throw new Error('No se puede editar una OC ya facturada (con factura legal). Si necesita cambios, anúlela y cree una nueva.');
+    if (po.status === 'CANCELLED') throw new Error('No se puede editar una OC anulada');
     Object.assign(po, data);
     if (data.items) po.subtotal = data.items.reduce((s, it) => s + (it.quantity * it.unitPrice), 0);
     return db.save(db.COLLECTIONS.purchaseOrders, po);
@@ -157,29 +165,38 @@ const purchases = {
   /**
    * Crea factura del proveedor. Calcula IVA + retenciones automáticamente.
    */
-  createSupplierInvoice({ poId, supplierInvoiceNumber, supplierInvoiceControl, issueDate, dueDate, items, exempt, applyIVAWithholding, islrRate, notes }) {
+  createSupplierInvoice({ poId, supplierInvoiceNumber, supplierInvoiceControl, issueDate, dueDate, items, exempt, applyIVAWithholding, islrRate, notes, inventoryType }) {
     const po = poId ? db.getById(db.COLLECTIONS.purchaseOrders, poId) : null;
     const supplier = po ? db.getById(db.COLLECTIONS.suppliers, po.supplierId) : null;
     if (!supplier) throw new Error('Proveedor no encontrado');
 
-    const code = db.nextCode(db.COLLECTIONS.supplierInvoices, 'FP');
+    // Tipo: FACTURA (default, fiscal) o NOTA_ENTREGA (no fiscal)
+    const docType = inventoryType === 'NOTA_ENTREGA' ? 'NOTA_ENTREGA' : 'FACTURA';
+    const isNote = docType === 'NOTA_ENTREGA';
+
+    // Código según tipo: NE-XXXX para notas, FP-XXXX para facturas
+    const codePrefix = isNote ? 'NE' : 'FP';
+    const code = db.nextCode(db.COLLECTIONS.supplierInvoices, codePrefix);
+
     const subtotal = items.reduce((s, it) => s + (parseFloat(it.quantity) * parseFloat(it.unitPrice)), 0);
     const calc = tax.computeInvoiceWithWithholdings({
       subtotal,
       exempt: !!exempt,
-      applyIVAWithholding: applyIVAWithholding !== false,
-      islrRate: parseFloat(islrRate) || 0
+      // Las NE no aplican retenciones (no son fiscales)
+      applyIVAWithholding: isNote ? false : (applyIVAWithholding !== false),
+      islrRate: isNote ? 0 : (parseFloat(islrRate) || 0)
     });
 
     const invoice = {
       code,
+      inventoryType: docType,             // 'FACTURA' | 'NOTA_ENTREGA'
       poId: poId || null,
       poCode: po?.code || null,
       supplierId: supplier.id,
       supplierName: supplier.name,
       supplierRif: supplier.rif,
-      supplierInvoiceNumber: supplierInvoiceNumber || '',
-      supplierInvoiceControl: supplierInvoiceControl || '',
+      supplierInvoiceNumber: isNote ? '' : (supplierInvoiceNumber || ''),  // las NE no tienen número fiscal
+      supplierInvoiceControl: isNote ? '' : (supplierInvoiceControl || ''),
       issueDate: issueDate || new Date().toISOString().slice(0,10),
       dueDate: dueDate || null,
       currency: po?.currency || supplier.preferredCurrency || 'USD',
@@ -194,45 +211,127 @@ const purchases = {
         unitPrice: parseFloat(it.unitPrice) || 0,
         subtotal: parseFloat(it.quantity) * parseFloat(it.unitPrice)
       })),
-      exempt: !!exempt,
-      // Cálculos fiscales
+      exempt: isNote ? true : !!exempt,   // NE no aplica IVA
+      // Cálculos fiscales (NE: solo subtotal, sin IVA, sin retenciones)
       subtotal: calc.subtotal,
-      ivaRate: calc.ivaRate,
-      ivaAmount: calc.ivaAmount,
+      ivaRate: isNote ? 0 : calc.ivaRate,
+      ivaAmount: isNote ? 0 : calc.ivaAmount,
       total: calc.total,
-      // Retenciones
-      applyIVAWithholding: applyIVAWithholding !== false,
-      ivaWithholdingRate: calc.ivaWithholdingRate,
-      ivaWithheld: calc.ivaWithheld,
-      islrRate: calc.islrRate,
-      islrWithheld: calc.islrWithheld,
+      applyIVAWithholding: isNote ? false : (applyIVAWithholding !== false),
+      ivaWithholdingRate: isNote ? 0 : calc.ivaWithholdingRate,
+      ivaWithheld: isNote ? 0 : calc.ivaWithheld,
+      islrRate: isNote ? 0 : calc.islrRate,
+      islrWithheld: isNote ? 0 : calc.islrWithheld,
       totalToPay: calc.totalToPay,
       // Pago
       paidAmount: 0,
       paidPercent: 0,
-      payments: [],     // ids de payments aplicados
+      payments: [],
       status: 'PENDING',
-      voucherId: null,  // comprobante de retención
+      voucherId: null,
       notes: notes || ''
     };
 
     const saved = db.save(db.COLLECTIONS.supplierInvoices, invoice);
 
-    // Si la factura está vinculada a una OC, marcar OC como facturada
+    // Si está vinculado a OC, marcarla
     if (po) {
-      po.status = 'INVOICED';
+      po.status = isNote ? 'RECEIVED' : 'INVOICED';
       po.invoiceId = saved.id;
+      po.invoiceType = docType;
       db.save(db.COLLECTIONS.purchaseOrders, po);
     }
 
-    // Generar comprobante de retención si hay retenciones
-    if ((calc.ivaWithheld + calc.islrWithheld) > 0) {
+    // Solo facturas generan comprobante de retención (las NE no tienen retenciones)
+    if (!isNote && (calc.ivaWithheld + calc.islrWithheld) > 0) {
       const v = this.createWithholdingVoucher(saved.id);
       saved.voucherId = v.id;
       db.save(db.COLLECTIONS.supplierInvoices, saved);
     }
 
     return saved;
+  },
+
+  /**
+   * Convierte una Nota de Entrega de proveedor en una Factura.
+   * Recalcula IVA y retenciones, asigna nuevo código, y entra al libro fiscal.
+   */
+  convertNoteToInvoice(noteId, invoiceData) {
+    const note = db.getById(db.COLLECTIONS.supplierInvoices, noteId);
+    if (!note) throw new Error('Documento no encontrado');
+    if (note.inventoryType !== 'NOTA_ENTREGA') throw new Error('Solo se pueden convertir Notas de Entrega');
+    if (note.status === 'CANCELLED') throw new Error('No se puede convertir una nota anulada');
+
+    // Datos nuevos: número fiscal, control, IVA, retenciones
+    const supplierInvoiceNumber = invoiceData?.supplierInvoiceNumber || '';
+    const supplierInvoiceControl = invoiceData?.supplierInvoiceControl || '';
+    const applyIVAWithholding = invoiceData?.applyIVAWithholding !== false;
+    const islrRate = parseFloat(invoiceData?.islrRate) || 0;
+    const exempt = !!invoiceData?.exempt;
+
+    if (!supplierInvoiceNumber) throw new Error('El número de factura del proveedor es obligatorio');
+
+    // Recalcular con IVA y retenciones
+    const subtotal = note.items.reduce((s, it) => s + (it.quantity * it.unitPrice), 0);
+    const calc = tax.computeInvoiceWithWithholdings({
+      subtotal,
+      exempt,
+      applyIVAWithholding,
+      islrRate
+    });
+
+    // Cambiar código: de NE-XXXX a FP-XXXX
+    const newCode = db.nextCode(db.COLLECTIONS.supplierInvoices, 'FP');
+
+    note.code = newCode;
+    note.inventoryType = 'FACTURA';
+    note.supplierInvoiceNumber = supplierInvoiceNumber;
+    note.supplierInvoiceControl = supplierInvoiceControl;
+    note.exempt = exempt;
+    note.subtotal = calc.subtotal;
+    note.ivaRate = calc.ivaRate;
+    note.ivaAmount = calc.ivaAmount;
+    note.total = calc.total;
+    note.applyIVAWithholding = applyIVAWithholding;
+    note.ivaWithholdingRate = calc.ivaWithholdingRate;
+    note.ivaWithheld = calc.ivaWithheld;
+    note.islrRate = calc.islrRate;
+    note.islrWithheld = calc.islrWithheld;
+
+    // Recalcular totalToPay considerando lo ya pagado
+    const remainingTotal = calc.totalToPay;
+    note.totalToPay = remainingTotal;
+    // El estado se recalcula
+    if (note.paidAmount >= remainingTotal - 0.01) {
+      note.status = 'PAID';
+    } else if (note.paidAmount > 0) {
+      note.status = 'PARTIAL';
+    } else {
+      note.status = 'PENDING';
+    }
+    note.paidPercent = remainingTotal > 0 ? (note.paidAmount / remainingTotal) * 100 : 0;
+
+    note.convertedFromNoteAt = new Date().toISOString();
+    db.save(db.COLLECTIONS.supplierInvoices, note);
+
+    // Si tiene OC, actualizarla
+    if (note.poId) {
+      const po = db.getById(db.COLLECTIONS.purchaseOrders, note.poId);
+      if (po) {
+        po.status = 'INVOICED';
+        po.invoiceType = 'FACTURA';
+        db.save(db.COLLECTIONS.purchaseOrders, po);
+      }
+    }
+
+    // Generar comprobante de retención si corresponde
+    if ((calc.ivaWithheld + calc.islrWithheld) > 0) {
+      const v = this.createWithholdingVoucher(note.id);
+      note.voucherId = v.id;
+      db.save(db.COLLECTIONS.supplierInvoices, note);
+    }
+
+    return note;
   },
 
   /** Crea comprobante de retención (CR) */
