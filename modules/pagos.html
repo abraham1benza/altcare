@@ -221,6 +221,7 @@ function newPaymentForInvoice(invoiceId) {
   const inv = db.getById(db.COLLECTIONS.supplierInvoices, invoiceId);
   if (!inv) { ui.toast('Factura no encontrada', 'error'); return; }
   const remaining = inv.totalToPay - (inv.paidAmount||0);
+  const bcv = currency.getRate('BCV_USD');
   creating = {
     direction: 'OUT',
     relatedDocId: inv.id,
@@ -236,6 +237,14 @@ function newPaymentForInvoice(invoiceId) {
     amount: remaining,
     amountInDocCurrency: remaining,
     rateUsed: null,
+    // === Tasa congelada del pago (BCV de hoy) ===
+    rateAtPayment: bcv?.value || 0,
+    rateTypeAtPayment: 'BCV_USD',
+    // === Conversión cruzada ===
+    conversionRate: bcv?.value || 0,
+    conversionRateType: 'BCV_USD',
+    conversionRateLabel: 'BCV de hoy',
+    conversionMode: 'apply_full', // 'apply_full' | 'apply_at_rate'
     paymentMethodId: '',
     paymentMethodName: '',
     bankAccountId: '',
@@ -250,6 +259,7 @@ function newPaymentForDoc(docId) {
   const doc = db.getById(db.COLLECTIONS.salesOrders, docId);
   if (!doc) { ui.toast('Documento no encontrado', 'error'); return; }
   const remaining = doc.total - (doc.paidAmount||0);
+  const bcv = currency.getRate('BCV_USD');
   creating = {
     direction: 'IN',
     relatedDocId: doc.id,
@@ -265,6 +275,12 @@ function newPaymentForDoc(docId) {
     amount: remaining,
     amountInDocCurrency: remaining,
     rateUsed: null,
+    rateAtPayment: bcv?.value || 0,
+    rateTypeAtPayment: 'BCV_USD',
+    conversionRate: bcv?.value || 0,
+    conversionRateType: 'BCV_USD',
+    conversionRateLabel: 'BCV de hoy',
+    conversionMode: 'apply_full',
     paymentMethodId: '',
     paymentMethodName: '',
     bankAccountId: '',
@@ -281,38 +297,120 @@ function renderCreate() {
   const accounts = db.getAll(db.COLLECTIONS.bankAccounts).filter(a => a.active !== false);
   const selectedMethod = methods.find(m => m.id === c.paymentMethodId);
 
-  // Filtrar cuentas por la moneda del pago
-  const matchingAccounts = accounts.filter(a => a.currency === c.currency);
+  // En modo Contable solo mostrar cuentas empresa; Gerencial todas
+  const isGerencial = (typeof auth !== 'undefined' && auth.getActiveMode() === 'gerencial');
+  const visibleAccounts = accounts.filter(a => isGerencial || a.countsForFiscal !== false);
 
-  // Si moneda del pago != moneda de doc, calcular conversión
-  let conversionInfo = '';
-  if (c.currency !== c.docCurrency) {
-    const rate = currency.getActiveRate();
-    if (rate && rate.value) {
-      // Caso típico: factura en VES, pago en USD → convertir USD a VES
-      let amountInDoc;
-      if (c.docCurrency === 'VES' && c.currency !== 'VES') {
-        amountInDoc = parseFloat(c.amount) * rate.value;
-      } else if (c.docCurrency !== 'VES' && c.currency === 'VES') {
-        amountInDoc = parseFloat(c.amount) / rate.value;
-      } else {
-        amountInDoc = parseFloat(c.amount); // USD ↔ EUR no soportado por simplicidad
-      }
+  // === Cálculo de conversión cruzada ===
+  const isCrossCurrency = c.currency !== c.docCurrency;
+
+  // Tasas disponibles para conversión
+  const allRates = currency.getRates().filter(r => r.value > 0);
+
+  if (isCrossCurrency) {
+    // Calcular el equivalente en moneda del documento según la tasa elegida
+    const rate = parseFloat(c.conversionRate) || 0;
+    const amt = parseFloat(c.amount) || 0;
+    let amountInDoc = 0;
+    if (c.docCurrency === 'VES' && c.currency === 'USD') {
+      amountInDoc = amt * rate;
+    } else if (c.docCurrency === 'USD' && c.currency === 'VES') {
+      amountInDoc = rate > 0 ? amt / rate : 0;
+    } else if (c.docCurrency === 'VES' && c.currency === 'EUR') {
+      const eurRate = currency.getRate('BCV_EUR');
+      amountInDoc = eurRate?.value ? amt * eurRate.value : 0;
+    } else if (c.docCurrency === 'EUR' && c.currency === 'VES') {
+      const eurRate = currency.getRate('BCV_EUR');
+      amountInDoc = eurRate?.value ? amt / eurRate.value : 0;
+    } else if (c.docCurrency === 'USD' && c.currency === 'EUR') {
+      const eurRate = currency.getRate('BCV_EUR');
+      const inVES = eurRate?.value ? amt * eurRate.value : 0;
+      amountInDoc = rate > 0 ? inVES / rate : 0;
+    } else if (c.docCurrency === 'EUR' && c.currency === 'USD') {
+      const eurRate = currency.getRate('BCV_EUR');
+      const inVES = amt * rate;
+      amountInDoc = eurRate?.value ? inVES / eurRate.value : 0;
+    }
+
+    if (c.conversionMode === 'apply_full') {
+      // Aplica todo lo que dijo el usuario al pendiente (asume que se acordó esa conversión)
+      c.amountInDocCurrency = Math.min(Math.round(amountInDoc * 100) / 100, c.docRemaining);
+    } else {
+      // Aplica el monto exacto convertido (puede dejar saldo si la tasa está más baja)
       c.amountInDocCurrency = Math.round(amountInDoc * 100) / 100;
-      c.rateUsed = rate.value;
-      conversionInfo = `
-        <div class="card mb-24" style="background:var(--accent-soft);border-color:#cdd9c8;padding:16px;">
-          <div style="font-size:12px;color:var(--accent-ink);font-weight:600;margin-bottom:8px;">Conversión de moneda</div>
-          <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:16px;font-size:13px;">
-            <div><div class="text-muted" style="font-size:11px;">Pago recibido</div><div class="td-mono td-strong" style="font-size:16px;">${currency.format(c.amount, c.currency)}</div></div>
-            <div><div class="text-muted" style="font-size:11px;">Tasa usada</div><div class="td-mono td-strong" style="font-size:16px;">${c.rateUsed.toFixed(4)} (${rate.label})</div></div>
-            <div><div class="text-muted" style="font-size:11px;">Equivale a</div><div class="td-mono td-strong" style="font-size:16px;color:var(--accent-ink);">${currency.format(c.amountInDocCurrency, c.docCurrency)}</div></div>
-          </div>
-        </div>
-      `;
     }
   } else {
-    c.amountInDocCurrency = parseFloat(c.amount);
+    c.amountInDocCurrency = parseFloat(c.amount) || 0;
+  }
+
+  // === HTML conversión cruzada ===
+  let conversionPanelHtml = '';
+  if (isCrossCurrency) {
+    const equivAtSelectedRate = c.amountInDocCurrency;
+    const remainingAfter = Math.round((c.docRemaining - equivAtSelectedRate) * 100) / 100;
+
+    conversionPanelHtml = `
+      <div class="card mb-24" style="background:#fef3c7;border:1px solid #fcd34d;padding:16px;">
+        <div style="font-weight:600;font-size:13px;color:#92400e;margin-bottom:12px;">⚠️ Conversión cruzada detectada</div>
+        <p class="text-muted" style="font-size:12px;margin-bottom:14px;">
+          Estás ${c.direction==='OUT'?'pagando':'cobrando'} en <strong>${c.currency}</strong> pero la factura es en <strong>${c.docCurrency}</strong>. Elegí la tasa de conversión:
+        </p>
+
+        <div style="display:flex;flex-direction:column;gap:8px;margin-bottom:16px;">
+          ${allRates.filter(r => isRateApplicable(r.type, c.currency, c.docCurrency)).map(r => `
+            <label class="checkbox-row" style="padding:10px 14px;background:white;border:1px solid var(--border);border-radius:6px;cursor:pointer;display:flex;align-items:center;gap:10px;${c.conversionRateType===r.type && !c.useCustomRate?'border-color:var(--accent);background:#f3f6f0;':''}">
+              <input type="radio" name="convrate" ${c.conversionRateType===r.type && !c.useCustomRate?'checked':''} onchange="selectConversionRate('${r.type}', ${r.value})">
+              <div style="flex:1;">
+                <div style="font-weight:600;font-size:13px;">${r.label} · ${r.value.toLocaleString('es-VE',{maximumFractionDigits:4})}</div>
+                <div class="text-muted" style="font-size:11px;">Actualizado: ${r.updatedDate || '—'}</div>
+              </div>
+            </label>
+          `).join('')}
+          <label class="checkbox-row" style="padding:10px 14px;background:white;border:1px solid var(--border);border-radius:6px;cursor:pointer;display:flex;align-items:center;gap:10px;${c.useCustomRate?'border-color:var(--accent);background:#f3f6f0;':''}">
+            <input type="radio" name="convrate" ${c.useCustomRate?'checked':''} onchange="useCustomRate()">
+            <div style="flex:1;">
+              <div style="font-weight:600;font-size:13px;">Personalizada</div>
+              ${c.useCustomRate ? `<input type="number" step="0.0001" class="input" style="margin-top:6px;" value="${c.conversionRate}" oninput="updateCustomRate(this.value)" placeholder="Ej: 35.5">` : `<div class="text-muted" style="font-size:11px;">Para Zelle, P2P privado, acuerdo especial...</div>`}
+            </div>
+          </label>
+        </div>
+
+        <div style="padding:12px;background:white;border-radius:6px;border:1px solid var(--border);">
+          <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;align-items:center;font-size:12px;">
+            <div>
+              <div class="text-muted" style="font-size:11px;">Monto del ${c.direction==='OUT'?'pago':'cobro'}</div>
+              <div class="td-mono td-strong" style="font-size:15px;">${currency.format(c.amount, c.currency)}</div>
+            </div>
+            <div style="text-align:center;">
+              <div class="text-muted" style="font-size:11px;">Tasa</div>
+              <div class="td-mono td-strong" style="font-size:15px;">${(parseFloat(c.conversionRate)||0).toLocaleString('es-VE',{maximumFractionDigits:4})}</div>
+            </div>
+            <div style="text-align:right;">
+              <div class="text-muted" style="font-size:11px;">Equivale a</div>
+              <div class="td-mono td-strong" style="font-size:15px;color:var(--accent-ink);">${currency.format(equivAtSelectedRate, c.docCurrency)}</div>
+            </div>
+          </div>
+        </div>
+
+        <div style="margin-top:14px;padding:12px;background:white;border-radius:6px;border:1px solid var(--border);">
+          <div style="font-weight:600;font-size:12px;margin-bottom:8px;">¿Cómo aplicar este ${c.direction==='OUT'?'pago':'cobro'}?</div>
+          <label style="display:flex;align-items:start;gap:8px;padding:6px 0;cursor:pointer;font-size:13px;">
+            <input type="radio" name="convmode" value="apply_full" ${c.conversionMode==='apply_full'?'checked':''} onchange="creating.conversionMode='apply_full';render();" style="margin-top:3px;">
+            <div>
+              <strong>Aplicar todo y cerrar la factura</strong>
+              <div class="text-muted" style="font-size:11px;">Acordaste esa conversión con la otra parte. Aplica ${currency.format(c.amount, c.currency)} = ${currency.format(equivAtSelectedRate, c.docCurrency)} y descuenta de la deuda. Si fuera mayor al pendiente, se ajusta al pendiente.</div>
+            </div>
+          </label>
+          <label style="display:flex;align-items:start;gap:8px;padding:6px 0;cursor:pointer;font-size:13px;">
+            <input type="radio" name="convmode" value="apply_at_rate" ${c.conversionMode==='apply_at_rate'?'checked':''} onchange="creating.conversionMode='apply_at_rate';render();" style="margin-top:3px;">
+            <div>
+              <strong>Aplicar solo lo que da la tasa exacta</strong>
+              <div class="text-muted" style="font-size:11px;">Si queda saldo, queda pendiente. Útil cuando la tasa cambió y querés ajuste preciso.</div>
+            </div>
+          </label>
+        </div>
+      </div>
+    `;
   }
 
   ui.renderLayout({
@@ -330,8 +428,7 @@ function renderCreate() {
         <div class="form-grid form-grid-2">
           <div class="field">
             <label class="field-label">Monto *</label>
-            <input class="input" type="number" step="0.01" id="amount" value="${c.amount}" onchange="updateAmount(this.value)">
-            <div class="field-hint">Sale del campo para actualizar conversión</div>
+            <input class="input" type="number" step="0.01" id="amount" value="${c.amount}" onchange="updateAmount(this.value)" oninput="updateAmount(this.value)">
           </div>
           <div class="field">
             <label class="field-label">Moneda del ${c.direction==='OUT'?'pago':'cobro'} *</label>
@@ -339,7 +436,7 @@ function renderCreate() {
               <option value="${c.docCurrency}" ${c.currency===c.docCurrency?'selected':''}>${c.docCurrency} (misma de la factura)</option>
               ${['VES','USD','EUR'].filter(cc => cc !== c.docCurrency).map(cc => `<option value="${cc}" ${c.currency===cc?'selected':''}>${cc}</option>`).join('')}
             </select>
-            <div class="field-hint">Si recibiste/pagaste en moneda distinta a la factura, se hará conversión con la tasa activa</div>
+            <div class="field-hint">Si pagaste/cobraste en moneda distinta a la factura, vas a poder elegir tasa de conversión abajo.</div>
           </div>
           <div class="field">
             <label class="field-label">Fecha *</label>
@@ -357,9 +454,9 @@ function renderCreate() {
               <label class="field-label">Cuenta bancaria *</label>
               <select class="select" onchange="creating.bankAccountId=this.value">
                 <option value="">— Selecciona —</option>
-                ${matchingAccounts.length ? matchingAccounts.map(a => `<option value="${a.id}" ${a.id===c.bankAccountId?'selected':''}>${ui.escape(a.name)} · saldo ${currency.format(a.balance, a.currency)}</option>`).join('') : `<option value="" disabled>Sin cuentas en ${c.currency}</option>`}
+                ${visibleAccounts.length ? visibleAccounts.map(a => `<option value="${a.id}" ${a.id===c.bankAccountId?'selected':''}>${ui.escape(a.name)} · ${a.currency} · saldo ${currency.format(a.balance, a.currency)}${a.countsForFiscal===false?' · 👤 Personal':''}</option>`).join('') : `<option value="" disabled>Sin cuentas</option>`}
               </select>
-              ${!matchingAccounts.length ? `<div class="field-hint" style="color:var(--danger);">No tenés cuentas en ${c.currency}. <a href="cuentas-bancarias.html">Crear una →</a></div>` : ''}
+              <div class="field-hint">Podés elegir cualquier cuenta. Si la moneda difiere de la del pago, se hará conversión.</div>
             </div>
           ` : '<div></div>'}
           ${selectedMethod && selectedMethod.requiresReference ? `
@@ -380,14 +477,15 @@ function renderCreate() {
         </div>
       </div>
 
-      ${conversionInfo}
+      ${conversionPanelHtml}
 
       <div class="card mb-24" style="background:var(--surface-2);padding:16px;">
-        <div style="font-size:12px;color:var(--ink-3);">Al registrar:</div>
+        <div style="font-size:12px;color:var(--ink-3);font-weight:600;">Resumen al registrar:</div>
         <ul style="margin:8px 0 0 20px;font-size:13px;color:var(--ink-2);line-height:1.8;">
-          <li>Se aplicará ${currency.format(c.amountInDocCurrency, c.docCurrency)} a la factura ${c.relatedDocCode}</li>
+          <li>Se aplicará <strong>${currency.format(c.amountInDocCurrency, c.docCurrency)}</strong> a la factura ${c.relatedDocCode}</li>
           ${c.bankAccountId ? `<li>${c.direction==='OUT'?'Saldrá':'Entrará'} ${currency.format(c.amount, c.currency)} de la cuenta seleccionada</li>` : ''}
-          <li>Quedaría pendiente: ${currency.format(c.docRemaining - c.amountInDocCurrency, c.docCurrency)}</li>
+          <li>Pendiente después: <strong>${currency.format(Math.max(0, c.docRemaining - c.amountInDocCurrency), c.docCurrency)}</strong></li>
+          ${(c.docRemaining - c.amountInDocCurrency) <= 0.01 ? `<li style="color:var(--success);">✓ La factura quedará <strong>pagada al 100%</strong>. Tasa congelada: ${(c.rateAtPayment||0).toLocaleString('es-VE',{maximumFractionDigits:4})} BCV</li>` : ''}
         </ul>
       </div>
 
@@ -408,11 +506,7 @@ function updateAmount(val) {
 
 function updateCurrency(ccy) {
   creating.currency = ccy;
-  // Reset cuenta bancaria si cambió moneda
-  if (creating.bankAccountId) {
-    const a = db.getById(db.COLLECTIONS.bankAccounts, creating.bankAccountId);
-    if (!a || a.currency !== ccy) creating.bankAccountId = '';
-  }
+  // No reset cuenta — el usuario puede elegir cuenta de cualquier moneda
   render();
 }
 
@@ -420,8 +514,53 @@ function updateMethod(mid) {
   creating.paymentMethodId = mid;
   const m = db.getById(db.COLLECTIONS.paymentMethods, mid);
   creating.paymentMethodName = m?.name || '';
-  // Si no requiere banco, limpiar cuenta
   if (m && !m.requiresBank) creating.bankAccountId = '';
+  render();
+}
+
+/** ¿Esta tasa aplica para convertir entre estas dos monedas? */
+function isRateApplicable(rateType, paymentCcy, docCcy) {
+  // BCV_USD y BINANCE → involucra USD y VES
+  if (rateType === 'BCV_USD' || rateType === 'BINANCE') {
+    return (paymentCcy === 'USD' && docCcy === 'VES') ||
+           (paymentCcy === 'VES' && docCcy === 'USD');
+  }
+  // BCV_EUR y P2P_EUR → involucra EUR y VES
+  if (rateType === 'BCV_EUR' || rateType === 'P2P_EUR') {
+    return (paymentCcy === 'EUR' && docCcy === 'VES') ||
+           (paymentCcy === 'VES' && docCcy === 'EUR');
+  }
+  return false;
+}
+
+function selectConversionRate(rateType, value) {
+  creating.conversionRateType = rateType;
+  creating.conversionRate = parseFloat(value) || 0;
+  creating.conversionRateLabel = currency.getRate(rateType)?.label || rateType;
+  creating.useCustomRate = false;
+  // Para tasa USD-VES, esta también es la rateAtPayment (relevante para SENIAT)
+  if (rateType === 'BCV_USD') {
+    creating.rateAtPayment = creating.conversionRate;
+    creating.rateTypeAtPayment = 'BCV_USD';
+  }
+  render();
+}
+
+function useCustomRate() {
+  creating.useCustomRate = true;
+  creating.conversionRateType = 'CUSTOM';
+  creating.conversionRateLabel = 'Personalizada';
+  render();
+}
+
+function updateCustomRate(val) {
+  creating.conversionRate = parseFloat(val) || 0;
+  // Si la conversión es USD↔VES y se usó tasa custom, también es la rateAtPayment
+  if ((creating.currency === 'USD' && creating.docCurrency === 'VES') ||
+      (creating.currency === 'VES' && creating.docCurrency === 'USD')) {
+    creating.rateAtPayment = creating.conversionRate;
+    creating.rateTypeAtPayment = 'CUSTOM';
+  }
   render();
 }
 
@@ -536,6 +675,10 @@ Object.assign(window, {
   updateAmount: typeof updateAmount !== 'undefined' ? updateAmount : undefined,
   updateCurrency: typeof updateCurrency !== 'undefined' ? updateCurrency : undefined,
   updateMethod: typeof updateMethod !== 'undefined' ? updateMethod : undefined,
+  isRateApplicable: typeof isRateApplicable !== 'undefined' ? isRateApplicable : undefined,
+  selectConversionRate: typeof selectConversionRate !== 'undefined' ? selectConversionRate : undefined,
+  useCustomRate: typeof useCustomRate !== 'undefined' ? useCustomRate : undefined,
+  updateCustomRate: typeof updateCustomRate !== 'undefined' ? updateCustomRate : undefined,
   cancelCreate: typeof cancelCreate !== 'undefined' ? cancelCreate : undefined,
   savePayment: typeof savePayment !== 'undefined' ? savePayment : undefined,
   recalcStatuses: typeof recalcStatuses !== 'undefined' ? recalcStatuses : undefined,

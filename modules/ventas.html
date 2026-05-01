@@ -70,21 +70,52 @@ function renderList() {
   };
   const billedParts = fmtMulti(billedByCcy);
 
+  const isGerencial = (typeof auth !== 'undefined' && auth.getActiveMode() === 'gerencial');
+
   const tableHtml = docs.length ? `<table>
-    <thead><tr><th>Código</th><th>N° Factura</th><th>Cliente</th><th>Fecha</th><th>Vence</th><th style="text-align:right;">Total</th><th>Moneda</th><th>Tipo</th><th>Estado</th><th style="text-align:right;width:100px;">Acciones</th></tr></thead>
+    <thead><tr>
+      <th>Código</th>
+      <th>N° Factura</th>
+      <th>Cliente</th>
+      <th>Fecha</th>
+      <th>Vence</th>
+      <th style="text-align:right;">Total ${isGerencial ? 'USD' : 'Bs'}</th>
+      ${isGerencial ? `<th style="text-align:right;">Total Bs</th>` : ''}
+      <th>Tipo</th>
+      <th>Estado</th>
+      <th style="text-align:right;width:100px;">Acciones</th>
+    </tr></thead>
     <tbody>${docs.map(d => {
       const today = new Date().toISOString().slice(0,10);
       const overdue = d.dueDate && d.dueDate < today && d.status !== 'PAID' && d.type === 'FACTURA';
-      const tBadge = d.type === 'PEDIDO' ? 'badge-plain' : d.type === 'COTIZACION' ? 'badge-accent' : 'badge-success';
+      const tBadge = d.type === 'PEDIDO' ? 'badge-plain' : d.type === 'COTIZACION' ? 'badge-accent' : d.type === 'NOTA_ENTREGA' ? 'badge-warning' : 'badge-success';
       const sBadge = sales.STATUS[d.status]?.color || 'badge-plain';
+
+      // Calcular USD y VES
+      const isFrozen = !!d.rateAtFullPayment;
+      let usdValue, vesValue;
+      if (isFrozen) {
+        usdValue = d.totalUSD_atFullPayment || 0;
+        vesValue = d.totalVES_atFullPayment || 0;
+      } else {
+        const convVES = currency.toFiscal(d.total, d.currency, 'VES');
+        const convUSD = currency.toFiscal(d.total, d.currency, 'USD');
+        usdValue = d.currency === 'USD' ? d.total : convUSD.value;
+        vesValue = d.currency === 'VES' ? d.total : convVES.value;
+      }
+      const lockIcon = isFrozen ? '<span title="Tasa congelada al pagar" style="opacity:0.6;font-size:10px;">🔒</span>' : '';
+
       return `<tr style="cursor:pointer;${d.cancelled?'opacity:0.5;':''}" onclick="openDetail('${d.id}')">
         <td><span class="td-mono td-strong">${d.code}</span></td>
         <td>${d.invoiceNumber ? `<span class="td-mono">${d.invoiceNumber}</span><div class="text-muted" style="font-size:11px;">Ctrl: ${d.controlNumber||'—'}</div>` : '<span class="td-muted">—</span>'}</td>
         <td><div class="td-strong">${ui.escape(d.customerName)}</div><div class="text-muted" style="font-size:11px;">${ui.escape(d.customerRif||'')}</div></td>
         <td><span class="text-muted">${ui.formatDate(d.issueDate)}</span></td>
         <td>${d.dueDate ? `<span class="${overdue?'badge badge-danger':'text-muted'}">${ui.formatDate(d.dueDate)}</span>` : '<span class="td-muted">—</span>'}</td>
-        <td style="text-align:right;"><span class="td-mono td-strong">${currency.format(d.total, d.currency)}</span></td>
-        <td><span class="badge ${d.currency==='USD'?'badge-accent':d.currency==='EUR'?'badge-warning':'badge-plain'}">${d.currency}</span></td>
+        <td style="text-align:right;">
+          <span class="td-mono td-strong">${currency.format(isGerencial ? usdValue : vesValue, isGerencial ? 'USD' : 'VES')}</span>
+          ${lockIcon}
+        </td>
+        ${isGerencial ? `<td style="text-align:right;"><span class="td-mono text-muted" style="font-size:12px;">${currency.format(vesValue, 'VES')}</span></td>` : ''}
         <td><span class="badge ${tBadge}">${d.type}</span></td>
         <td>${d.cancelled ? '<span class="badge badge-danger">Anulada</span>' : `<span class="badge ${sBadge}">${sales.STATUS[d.status]?.label || d.status}</span>`}</td>
         <td class="td-actions" onclick="event.stopPropagation()">

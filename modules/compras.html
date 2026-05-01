@@ -119,18 +119,55 @@ function renderPOTable(pos) {
 
 function renderInvoiceTable(invoices) {
   if (!invoices.length) return `<div class="empty-state"><div class="empty-state-title">Sin facturas registradas</div><div class="empty-state-text">Las facturas se crean desde una OC recibida o directamente.</div><button class="btn btn-primary" onclick="newInvoice()">${ui.icon('plus')} Nueva factura</button></div>`;
+  const isGerencial = (typeof auth !== 'undefined' && auth.getActiveMode() === 'gerencial');
+
   return `<div class="table-wrap"><table>
-    <thead><tr><th>Código</th><th>N° Factura prov.</th><th>Proveedor</th><th>Fecha</th><th style="text-align:right;">Total</th><th style="text-align:right;">A pagar</th><th>Moneda</th><th>Estado</th><th style="text-align:right;width:120px;">Acciones</th></tr></thead>
+    <thead><tr>
+      <th>Código</th>
+      <th>N° Factura prov.</th>
+      <th>Proveedor</th>
+      <th>Fecha</th>
+      <th style="text-align:right;">Total ${isGerencial ? 'USD' : 'Bs'}</th>
+      ${isGerencial ? `<th style="text-align:right;">Total Bs</th>` : ''}
+      <th style="text-align:right;">A pagar</th>
+      <th>Estado</th>
+      <th style="text-align:right;width:120px;">Acciones</th>
+    </tr></thead>
     <tbody>${invoices.map(inv => {
       const s = purchases.INV_STATUS[inv.status] || { label: inv.status, color: 'badge-plain' };
+      const isPaid = inv.status === 'PAID';
+      const isFrozen = !!inv.rateAtFullPayment;
+
+      // Calcular USD y VES según el modo
+      let usdValue, vesValue;
+      if (isFrozen) {
+        usdValue = inv.totalUSD_atFullPayment || 0;
+        vesValue = inv.totalVES_atFullPayment || 0;
+      } else {
+        // No congelado, usar tasa actual
+        const conv = currency.toFiscal(inv.total, inv.currency, 'VES');
+        const convUSD = currency.toFiscal(inv.total, inv.currency, 'USD');
+        usdValue = inv.currency === 'USD' ? inv.total : convUSD.value;
+        vesValue = inv.currency === 'VES' ? inv.total : conv.value;
+      }
+      const lockIcon = isFrozen ? '<span title="Tasa congelada al pagar" style="opacity:0.6;font-size:10px;">🔒</span>' : '';
+      const remaining = inv.totalToPay - (inv.paidAmount || 0);
+
       return `<tr style="cursor:pointer;" onclick="openInvoice('${inv.id}')">
         <td><span class="td-mono td-strong">${inv.code}</span></td>
         <td><span class="td-mono">${ui.escape(inv.supplierInvoiceNumber||'—')}</span></td>
         <td>${ui.escape(inv.supplierName)}</td>
         <td><span class="text-muted">${ui.formatDate(inv.issueDate)}</span></td>
-        <td style="text-align:right;"><span class="td-mono">${currency.format(inv.total, inv.currency)}</span></td>
-        <td style="text-align:right;"><span class="td-mono td-strong">${currency.format(inv.totalToPay, inv.currency)}</span></td>
-        <td><span class="badge ${inv.currency==='USD'?'badge-accent':'badge-plain'}">${inv.currency}</span></td>
+        <td style="text-align:right;">
+          <span class="td-mono td-strong">${currency.format(isGerencial ? usdValue : vesValue, isGerencial ? 'USD' : 'VES')}</span>
+          ${lockIcon}
+        </td>
+        ${isGerencial ? `<td style="text-align:right;">
+          <span class="td-mono text-muted" style="font-size:12px;">${currency.format(vesValue, 'VES')}</span>
+        </td>` : ''}
+        <td style="text-align:right;">
+          <span class="td-mono ${remaining > 0.01 ? 'td-strong' : 'text-muted'}" style="${remaining > 0.01 ? 'color:var(--danger);' : ''}">${currency.format(remaining, inv.currency)}</span>
+        </td>
         <td><span class="badge ${s.color}">${s.label}</span></td>
         <td class="td-actions" onclick="event.stopPropagation()">
           <button class="btn-icon" onclick="openInvoice('${inv.id}')">${ui.icon('edit')}</button>
