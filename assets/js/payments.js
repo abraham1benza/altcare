@@ -13,13 +13,14 @@ const payments = {
 
   // ====== CUENTAS BANCARIAS ======
 
-  createBankAccount({ name, bank, accountNumber, currency: ccy, openingBalance, type }) {
+  createBankAccount({ name, bank, accountNumber, currency: ccy, openingBalance, type, countsForFiscal }) {
     const account = {
       name, bank, accountNumber: accountNumber || '',
       currency: ccy || 'VES',
       type: type || 'Corriente',
       openingBalance: parseFloat(openingBalance) || 0,
       balance: 0,    // ← arranca en 0; el movimiento OPENING se encarga de subirlo
+      countsForFiscal: countsForFiscal !== false,  // por defecto empresa, solo false si se pidió explícitamente
       active: true
     };
     const saved = db.save(db.COLLECTIONS.bankAccounts, account);
