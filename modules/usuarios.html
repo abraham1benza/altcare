@@ -111,16 +111,16 @@ function openForm(item) {
   ui.openModal({
     title: isNew ? 'Nuevo usuario' : 'Editar usuario',
     body: `
-      <form id="usr-form" onsubmit="saveItem(event, '${item.id || ''}')">
+      <form id="usr-form" autocomplete="off" onsubmit="saveItem(event, '${item.id || ''}')">
         <div class="form-grid form-grid-2">
           <div class="field" style="grid-column:1/-1;">
             <label class="field-label">Email * (para iniciar sesión)</label>
-            <input class="input" type="email" name="email" required value="${ui.escape(item.email||'')}" ${!isNew?'readonly':''} placeholder="usuario@empresa.com">
+            <input class="input" type="email" name="email" required value="${ui.escape(item.email||'')}" ${!isNew?'readonly':''} placeholder="usuario@empresa.com" autocomplete="new-email" autocapitalize="off" spellcheck="false">
             ${!isNew ? '<div class="field-hint">El email no se puede cambiar desde acá. Usá Firebase Console si necesitás modificarlo.</div>' : '<div class="field-hint">Este email se usará para iniciar sesión</div>'}
           </div>
           <div class="field">
             <label class="field-label">Usuario (alias) *</label>
-            <input class="input" name="username" required value="${ui.escape(item.username||'')}" ${!isNew?'readonly':''} placeholder="ej: maria.lopez">
+            <input class="input" name="username" required value="${ui.escape(item.username||'')}" ${!isNew?'readonly':''} placeholder="ej: maria.lopez" autocomplete="off" autocapitalize="off" spellcheck="false">
             ${!isNew ? '<div class="field-hint">El alias no se puede cambiar</div>' : '<div class="field-hint">Solo para mostrar internamente</div>'}
           </div>
           <div class="field">
@@ -129,12 +129,12 @@ function openForm(item) {
           </div>
           ${isNew ? `<div class="field" style="grid-column:1/-1;">
             <label class="field-label">Contraseña *</label>
-            <input class="input" type="password" name="password" required minlength="6" placeholder="Mínimo 6 caracteres">
+            <input class="input" type="password" name="password" required minlength="6" placeholder="Mínimo 6 caracteres" autocomplete="new-password">
             <div class="field-hint">⚠️ Después de crear el usuario, vas a tener que volver a iniciar sesión con tu cuenta de admin.</div>
           </div>` : ''}
           <div class="field">
             <label class="field-label">Rol *</label>
-            <select class="select" name="role" required ${isMe?'disabled':''}>
+            <select class="select" name="role" required ${isMe?'disabled':''} onchange="onRoleChangeInUserForm(this.value)">
               ${Object.entries(auth.ROLES).map(([k, r]) => `<option value="${k}" ${k===item.role?'selected':''}>${r.label}</option>`).join('')}
             </select>
             ${isMe ? '<div class="field-hint">No puedes cambiar tu propio rol</div>' : ''}
@@ -168,6 +168,58 @@ function openForm(item) {
             </div>
             <div class="field-hint">Si tiene ambos, podrá alternar desde el sidebar. Admin siempre tiene los dos.</div>
           </div>
+
+          <div class="field" style="grid-column:1/-1;">
+            <label class="field-label">Módulos permitidos *</label>
+            <div class="text-muted" style="font-size:11.5px;margin-bottom:8px;">
+              Al cambiar el rol se pre-marcan los módulos predeterminados. Podés agregar o quitar módulos individualmente.
+            </div>
+            <div id="modules-list" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:6px;padding:12px;background:var(--surface-2);border-radius:8px;border:1px solid var(--border);">
+              ${(() => {
+                const ALL_MODULES = [
+                  { key: 'dashboard', label: 'Dashboard', group: 'general' },
+                  { key: 'tasas-cambio', label: 'Tasas de Cambio', group: 'general' },
+                  { key: 'configuracion', label: 'Configuración', group: 'general' },
+                  { key: 'usuarios', label: 'Usuarios', group: 'general' },
+                  { key: 'proveedores', label: 'Proveedores', group: 'comercial' },
+                  { key: 'clientes', label: 'Clientes', group: 'comercial' },
+                  { key: 'ventas', label: 'Ventas', group: 'comercial' },
+                  { key: 'compras', label: 'Compras', group: 'comercial' },
+                  { key: 'pagos', label: 'Pagos', group: 'comercial' },
+                  { key: 'cuentas-bancarias', label: 'Cuentas Bancarias', group: 'comercial' },
+                  { key: 'metodos-pago', label: 'Métodos de Pago', group: 'comercial' },
+                  { key: 'materias-primas', label: 'Materias Primas', group: 'inventario' },
+                  { key: 'producto-terminado', label: 'Producto Terminado', group: 'inventario' },
+                  { key: 'almacenes', label: 'Almacenes', group: 'inventario' },
+                  { key: 'almacen', label: 'Almacén General', group: 'inventario' },
+                  { key: 'trazabilidad', label: 'Trazabilidad', group: 'inventario' },
+                  { key: 'formulas', label: 'Fórmulas', group: 'produccion' },
+                  { key: 'produccion', label: 'Producción (OF)', group: 'produccion' },
+                  { key: 'envasado', label: 'Envasado', group: 'produccion' },
+                  { key: 'calidad', label: 'Control Calidad', group: 'produccion' },
+                  { key: 'reportes', label: 'Reportes', group: 'general' }
+                ];
+                // Calcular módulos asignados según rol + extras del perfil
+                const role = item.role || 'produccion';
+                const baseModules = auth.ROLES[role]?.modules || [];
+                const isAll = baseModules === '*';
+                const extra = item.extraModules || [];
+                const allowed = isAll ? ALL_MODULES.map(m => m.key) : Array.from(new Set([...baseModules, ...extra]));
+
+                return ALL_MODULES.map(m => {
+                  const checked = allowed.includes(m.key);
+                  const isFromRole = isAll || baseModules.includes(m.key);
+                  const adminLocked = item.role === 'admin'; // admin siempre tiene todo
+                  return `<label style="display:flex;align-items:center;gap:6px;padding:6px 8px;background:white;border-radius:5px;cursor:pointer;font-size:12px;border:1px solid ${checked?'var(--accent)':'var(--border)'};${checked?'background:#f3f6f0;':''}">
+                    <input type="checkbox" name="module_${m.key}" ${checked?'checked':''} ${adminLocked?'disabled':''} data-from-role="${isFromRole}">
+                    <span>${m.label}</span>
+                    ${isFromRole?'<span class="text-muted" style="font-size:10px;margin-left:auto;" title="Del rol predeterminado">📌</span>':''}
+                  </label>`;
+                }).join('');
+              })()}
+            </div>
+            <div class="field-hint" style="margin-top:6px;">📌 = módulo del rol predeterminado · Sin marcar = oculto del sidebar y bloqueado por URL</div>
+          </div>
         </div>
       </form>
     `,
@@ -175,6 +227,38 @@ function openForm(item) {
       <button class="btn btn-secondary" onclick="ui.closeModal()">Cancelar</button>
       <button class="btn btn-primary" onclick="document.getElementById('usr-form').requestSubmit()">${ui.icon('check')} Guardar</button>
     `
+  });
+}
+
+/** Cuando cambia el rol en el form, recalcular los checkboxes de módulos */
+function onRoleChangeInUserForm(newRole) {
+  const baseModules = auth.ROLES[newRole]?.modules || [];
+  const isAll = baseModules === '*';
+  // Recorrer todos los checkboxes de módulos
+  document.querySelectorAll('#modules-list input[type="checkbox"]').forEach(cb => {
+    const moduleKey = cb.name.replace('module_', '');
+    const isFromRole = isAll || (Array.isArray(baseModules) && baseModules.includes(moduleKey));
+    cb.checked = isFromRole;
+    cb.disabled = (newRole === 'admin'); // admin siempre tiene todo
+    cb.dataset.fromRole = isFromRole ? 'true' : 'false';
+    // Actualizar estilo del label
+    const label = cb.closest('label');
+    if (label) {
+      label.style.borderColor = isFromRole ? 'var(--accent)' : 'var(--border)';
+      label.style.background = isFromRole ? '#f3f6f0' : 'white';
+      // Actualizar el ícono 📌
+      const pin = label.querySelector('span[style*="margin-left:auto"]');
+      if (isFromRole && !pin) {
+        const newPin = document.createElement('span');
+        newPin.className = 'text-muted';
+        newPin.style.cssText = 'font-size:10px;margin-left:auto;';
+        newPin.title = 'Del rol predeterminado';
+        newPin.textContent = '📌';
+        label.appendChild(newPin);
+      } else if (!isFromRole && pin) {
+        pin.remove();
+      }
+    }
   });
 }
 
@@ -201,8 +285,44 @@ async function saveItem(e, id) {
   delete data.mode_gerencial;
   delete data.mode_contable;
 
+  // Procesar módulos permitidos
+  // Recorrer todos los checkboxes module_* y armar la lista de módulos permitidos
+  const allCheckboxes = e.target.querySelectorAll('input[name^="module_"]');
+  const checkedModules = [];
+  allCheckboxes.forEach(cb => {
+    if (cb.checked) {
+      checkedModules.push(cb.name.replace('module_', ''));
+    }
+    delete data[cb.name]; // limpiar del data del form
+  });
+
+  if (data.role !== 'admin') {
+    // Calcular extraModules: módulos marcados que NO son del rol predeterminado
+    const baseModules = auth.ROLES[data.role]?.modules || [];
+    const isAll = baseModules === '*';
+    if (!isAll) {
+      // extras = módulos marcados que no están en baseModules
+      data.extraModules = checkedModules.filter(m => !baseModules.includes(m));
+      // hiddenModules = módulos del rol que están desmarcados (los que el admin quitó)
+      data.hiddenModules = baseModules.filter(m => !checkedModules.includes(m));
+    } else {
+      data.extraModules = [];
+      data.hiddenModules = [];
+    }
+  } else {
+    // Admin tiene todo
+    data.extraModules = [];
+    data.hiddenModules = [];
+  }
+
   if (!id) {
     // CREACIÓN: validar y crear en Firebase Auth + Firestore
+    // Protección: no permitir crear con email o alias del admin actual (caso autocompletado)
+    const me = auth.currentUser();
+    if (me && (data.email === me.email || data.username === me.email || data.username === me.username)) {
+      ui.toast('No podés crear un usuario con tu propio email o alias. Borrá los campos y poné los datos del usuario nuevo.', 'error', 6000);
+      return;
+    }
     const existing = db.query(db.COLLECTIONS.users, u => u.username === data.username || u.email === data.email);
     if (existing.length) { ui.toast('Ya existe un usuario con ese email o alias', 'error'); return; }
     if (!data.password || data.password.length < 6) { ui.toast('La contraseña debe tener al menos 6 caracteres', 'error'); return; }
@@ -221,6 +341,8 @@ async function saveItem(e, id) {
       fullName: data.fullName,
       role: data.role,
       allowedModes: data.allowedModes,
+      extraModules: data.extraModules || [],
+      hiddenModules: data.hiddenModules || [],
       active: data.active
     });
 
