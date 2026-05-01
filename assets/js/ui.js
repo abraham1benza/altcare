@@ -16,7 +16,6 @@ const NAV_STRUCTURE = [
     items: [
       { id: 'materias-primas',   label: 'Materias Primas',   href: 'modules/materias-primas.html' },
       { id: 'producto-terminado',label: 'Producto Terminado',href: 'modules/producto-terminado.html' },
-      { id: 'envasado',          label: 'Envasado',          href: 'modules/envasado.html' },
       { id: 'almacen',           label: 'Almacén',           href: 'modules/almacen.html' }
     ]
   },
