@@ -166,11 +166,17 @@ async function resetPasswordPrompt(e) {
  * el dashboard para que se vean los nuevos valores.
  */
 async function triggerAutoRefresh() {
-  if (!currency.needsRefresh()) return;
+  if (!currency.needsRefresh()) {
+    // Aunque no necesite refresh, hacer snapshot del día si no está
+    try { currency.snapshotTodayRates(); } catch(e){}
+    return;
+  }
   try {
     const result = await currency.fetchLiveRates();
     if (result.ok) {
       console.log('[altcare] Tasas actualizadas automáticamente:', result.updated);
+      // Guardar snapshot del día con las tasas frescas
+      try { currency.snapshotTodayRates(); } catch(e){}
       if (typeof renderDashboard === 'function' && auth.isLoggedIn()) renderDashboard();
     }
   } catch (e) {
