@@ -44,15 +44,27 @@ function renderOverview() {
   // Stats
   const allRMs = db.getAll(db.COLLECTIONS.rawMaterials);
   const allFGs = db.getAll(db.COLLECTIONS.finishedGoods).filter(l => l.balance > 0);
+  // Valor MP en USD (usa USD congelado si está disponible, sino convierte con tasa actual)
   const totalRMValue = db.getAll(db.COLLECTIONS.rmLots).filter(l => l.balance > 0).reduce((s, l) => {
-    let usd = (l.balance||0) * (l.unitCost||0);
-    if (l.costCurrency === 'VES') {
-      const r = currency.getActiveRate();
-      usd = r && r.value ? usd / r.value : 0;
+    // Preferir unitCostUSD_atPurchase (congelado al momento de compra)
+    let usd;
+    if (l.unitCostUSD_atPurchase != null && l.unitCostUSD_atPurchase > 0) {
+      usd = (l.balance || 0) * l.unitCostUSD_atPurchase;
+    } else {
+      usd = (l.balance||0) * (l.unitCost||0);
+      if (l.costCurrency === 'VES') {
+        const r = currency.getActiveRate();
+        usd = r && r.value ? usd / r.value : 0;
+      }
     }
     return s + usd;
   }, 0);
   const totalFGValue = allFGs.reduce((s,l) => s + ((l.balance||0) * (l.unitCost||0)), 0);
+
+  const isGerencial = (typeof auth !== 'undefined' && auth.getActiveMode() === 'gerencial');
+  const bcv = currency.getRate('BCV_USD');
+  const totalRMValueVES = bcv?.value ? totalRMValue * bcv.value : 0;
+  const totalFGValueVES = bcv?.value ? totalFGValue * bcv.value : 0;
 
   const warehouses = db.getAll(db.COLLECTIONS.warehouses);
   const whMap = Object.fromEntries(warehouses.map(w => [w.id, w.name]));
@@ -93,8 +105,16 @@ function renderOverview() {
       <div class="grid grid-4 mb-24">
         <div class="kpi"><div class="kpi-label">Materias primas</div><div class="kpi-value">${allRMs.length}</div><div class="kpi-value-sub">referencias</div></div>
         <div class="kpi"><div class="kpi-label">Lotes PT activos</div><div class="kpi-value">${allFGs.length}</div><div class="kpi-value-sub">con stock</div></div>
-        <div class="kpi"><div class="kpi-label">Valor MP</div><div class="kpi-value" style="color:var(--accent-ink);">$${totalRMValue.toFixed(2)}</div><div class="kpi-value-sub">en almacén</div></div>
-        <div class="kpi"><div class="kpi-label">Valor PT</div><div class="kpi-value" style="color:var(--accent-ink);">$${totalFGValue.toFixed(2)}</div><div class="kpi-value-sub">a costo</div></div>
+        <div class="kpi">
+          <div class="kpi-label">Valor MP</div>
+          <div class="kpi-value" style="color:var(--accent-ink);">${isGerencial ? '$' + totalRMValue.toFixed(2) : currency.format(totalRMValueVES, 'VES')}</div>
+          <div class="kpi-value-sub">${isGerencial && totalRMValueVES > 0 ? `≈ ${currency.format(totalRMValueVES, 'VES')}` : 'en almacén'}</div>
+        </div>
+        <div class="kpi">
+          <div class="kpi-label">Valor PT</div>
+          <div class="kpi-value" style="color:var(--accent-ink);">${isGerencial ? '$' + totalFGValue.toFixed(2) : currency.format(totalFGValueVES, 'VES')}</div>
+          <div class="kpi-value-sub">${isGerencial && totalFGValueVES > 0 ? `≈ ${currency.format(totalFGValueVES, 'VES')}` : 'a costo'}</div>
+        </div>
       </div>
 
       <div class="grid" style="grid-template-columns:2fr 1fr;gap:16px;align-items:flex-start;">

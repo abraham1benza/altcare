@@ -730,6 +730,30 @@ function renderInvoiceDetail() {
   const s = purchases.INV_STATUS[inv.status] || { label: inv.status, color: 'badge-plain' };
   const paymentsForInv = payments.getPaymentsForDoc('OUT', inv.id);
   const remaining = inv.totalToPay - (inv.paidAmount || 0);
+  const isGerencial = (typeof auth !== 'undefined' && auth.getActiveMode() === 'gerencial');
+
+  // Tasa congelada o actual
+  const isFrozen = !!inv.rateAtFullPayment;
+  const frozen = isFrozen ? { rate: inv.rateAtFullPayment, rateType: inv.rateTypeAtFullPayment } : null;
+
+  // Helper: muestra monto inline con la conversión
+  const fmtDual = (amount) => {
+    if (inv.currency === 'VES' || inv.currency === 'USD') {
+      return currency.formatBoth(amount, inv.currency, frozen);
+    }
+    return currency.format(amount, inv.currency);
+  };
+
+  // Banner de tasa
+  const rateBanner = isFrozen
+    ? `<div style="padding:10px 14px;background:#dbeafe;border:1px solid #93c5fd;border-radius:6px;font-size:12px;color:#1e40af;margin-bottom:16px;">
+        🔒 <strong>Tasa congelada:</strong> ${(inv.rateAtFullPayment).toLocaleString('es-VE',{maximumFractionDigits:4})} ${inv.rateTypeAtFullPayment} · al completar pago el ${ui.formatDate(inv.fullPaymentDate)}
+      </div>`
+    : (inv.currency !== 'VES' || isGerencial)
+      ? `<div style="padding:10px 14px;background:#fef3c7;border:1px solid #fcd34d;border-radius:6px;font-size:12px;color:#92400e;margin-bottom:16px;">
+          📊 <strong>Tasa actual:</strong> BCV ${(currency.getRate('BCV_USD')?.value||0).toLocaleString('es-VE',{maximumFractionDigits:4})} · Los Bs varían cada día hasta que se pague
+        </div>`
+      : '';
 
   ui.renderLayout({
     activeModule: 'compras', pageEyebrow: 'Factura de proveedor', pageTitle: inv.code,
@@ -740,6 +764,8 @@ function renderInvoiceDetail() {
           <span style="margin-left:16px;"><span class="badge ${s.color}">${s.label}</span></span>
         </div>
       </div>
+
+      ${rateBanner}
 
       <div class="grid grid-4 mb-24">
         <div class="kpi"><div class="kpi-label">Proveedor</div><div class="kpi-value" style="font-size:18px;">${ui.escape(inv.supplierName)}</div><div class="kpi-value-sub">${ui.escape(inv.supplierRif||'')}</div></div>
@@ -752,26 +778,33 @@ function renderInvoiceDetail() {
         <div class="card">
           <div class="card-header"><div class="card-title">Detalle fiscal</div></div>
           <div style="font-size:13px;line-height:2;">
-            <div class="flex-between"><span class="text-muted">Subtotal</span><span class="td-mono">${currency.format(inv.subtotal, inv.currency)}</span></div>
-            <div class="flex-between"><span class="text-muted">${inv.exempt ? 'Exento de IVA' : `IVA ${inv.ivaRate}%`}</span><span class="td-mono">${currency.format(inv.ivaAmount, inv.currency)}</span></div>
-            <div class="flex-between" style="border-top:1px solid var(--border);padding-top:8px;margin-top:8px;"><span class="text-strong">Total</span><span class="td-mono td-strong">${currency.format(inv.total, inv.currency)}</span></div>
+            <div class="flex-between"><span class="text-muted">Subtotal</span><span class="td-mono">${fmtDual(inv.subtotal)}</span></div>
+            <div class="flex-between"><span class="text-muted">${inv.exempt ? 'Exento de IVA' : `IVA ${inv.ivaRate}%`}</span><span class="td-mono">${fmtDual(inv.ivaAmount)}</span></div>
+            <div class="flex-between" style="border-top:1px solid var(--border);padding-top:8px;margin-top:8px;"><span class="text-strong">Total</span><span class="td-mono td-strong">${fmtDual(inv.total)}</span></div>
             ${inv.ivaWithheld > 0 ? `<div class="flex-between" style="color:var(--danger);"><span>(-) Retención IVA ${inv.ivaWithholdingRate}%</span><span class="td-mono">−${currency.format(inv.ivaWithheld, inv.currency)}</span></div>` : ''}
             ${inv.islrWithheld > 0 ? `<div class="flex-between" style="color:var(--danger);"><span>(-) Retención ISLR ${inv.islrRate}%</span><span class="td-mono">−${currency.format(inv.islrWithheld, inv.currency)}</span></div>` : ''}
-            <div class="flex-between" style="border-top:1px solid var(--border);padding-top:8px;margin-top:8px;background:var(--accent-soft);padding:8px 12px;border-radius:6px;"><span class="text-strong" style="color:var(--accent-ink);">Total a pagar</span><span class="td-mono td-strong" style="color:var(--accent-ink);font-size:16px;">${currency.format(inv.totalToPay, inv.currency)}</span></div>
+            <div class="flex-between" style="border-top:1px solid var(--border);padding-top:8px;margin-top:8px;background:var(--accent-soft);padding:8px 12px;border-radius:6px;"><span class="text-strong" style="color:var(--accent-ink);">Total a pagar</span><span class="td-mono td-strong" style="color:var(--accent-ink);font-size:16px;">${fmtDual(inv.totalToPay)}</span></div>
           </div>
         </div>
 
         <div class="card">
           <div class="card-header"><div class="card-title">Pagos (${paymentsForInv.length})</div></div>
-          ${paymentsForInv.length ? paymentsForInv.map(p => `
+          ${paymentsForInv.length ? paymentsForInv.map(p => {
+            const payAcc = p.bankAccountId ? db.getById(db.COLLECTIONS.bankAccounts, p.bankAccountId) : null;
+            const isPersonal = payAcc?.countsForFiscal === false;
+            const hasCrossConv = p.currency !== inv.currency;
+            return `
             <div class="list-row" style="grid-template-columns:1fr auto;padding:10px 0;border-bottom:1px solid var(--border);">
               <div>
-                <div class="td-strong" style="font-size:13px;">${ui.escape(p.paymentMethodName)}</div>
-                <div class="text-muted" style="font-size:11px;">${ui.formatDate(p.date)} · ${ui.escape(p.reference||'')}</div>
+                <div class="td-strong" style="font-size:13px;">${ui.escape(p.paymentMethodName)}${isPersonal?' · 👤 personal':''}</div>
+                <div class="text-muted" style="font-size:11px;">${ui.formatDate(p.date)} · ${ui.escape(p.reference||'')}${p.rateAtPayment?` · BCV ${p.rateAtPayment.toLocaleString('es-VE',{maximumFractionDigits:2})} 🔒`:''}</div>
               </div>
-              <div class="td-mono td-strong">${currency.format(p.amountInDocCurrency, inv.currency)}</div>
+              <div style="text-align:right;">
+                <div class="td-mono td-strong">${currency.format(p.amountInDocCurrency, inv.currency)}</div>
+                ${hasCrossConv ? `<div class="text-muted" style="font-size:10px;">${currency.format(p.amount, p.currency)} → ${p.conversionRateLabel||''}</div>` : ''}
+              </div>
             </div>
-          `).join('') : '<div class="text-muted" style="font-size:13px;padding:16px 0;">Sin pagos registrados</div>'}
+          `}).join('') : '<div class="text-muted" style="font-size:13px;padding:16px 0;">Sin pagos registrados</div>'}
           ${inv.paidAmount > 0 ? `
             <div style="margin-top:12px;padding:10px;background:var(--surface-2);border-radius:6px;font-size:12px;">
               Pagado: <strong>${currency.format(inv.paidAmount, inv.currency)}</strong> de ${currency.format(inv.totalToPay, inv.currency)} (${inv.paidPercent.toFixed(1)}%)
