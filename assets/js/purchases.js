@@ -6,20 +6,20 @@
 const purchases = {
 
   PO_STATUS: {
-    DRAFT:     { label: 'Borrador',         color: 'badge-plain'   },
-    SENT:      { label: 'Enviada',          color: 'badge-accent'  },
-    PARTIAL:   { label: 'Recepción parcial',color: 'badge-warning' },
-    RECEIVED:  { label: 'Recibida',         color: 'badge-success' },
-    INVOICED:  { label: 'Facturada',        color: 'badge-success' },
-    CANCELLED: { label: 'Cancelada',        color: 'badge-danger'  }
+    DRAFT:     { label: 'Borrador',         color: 'badge-plain'     },
+    SENT:      { label: 'Enviada',          color: 'badge-order'     },
+    PARTIAL:   { label: 'Recepción parcial',color: 'badge-partial'   },
+    RECEIVED:  { label: 'Recibida',         color: 'badge-active'    },
+    INVOICED:  { label: 'Facturada',        color: 'badge-invoice'   },
+    CANCELLED: { label: 'Cancelada',        color: 'badge-cancelled' }
   },
 
   INV_STATUS: {
-    PENDING:  { label: 'Pendiente de pago', color: 'badge-warning' },
-    PARTIAL:  { label: 'Pago parcial',      color: 'badge-warning' },
-    PAID:     { label: 'Pagada',            color: 'badge-success' },
-    OVERDUE:  { label: 'Vencida',           color: 'badge-danger'  },
-    CANCELLED:{ label: 'Anulada',           color: 'badge-danger'  }
+    PENDING:  { label: 'Pendiente de pago', color: 'badge-partial'   },
+    PARTIAL:  { label: 'Pago parcial',      color: 'badge-partial'   },
+    PAID:     { label: 'Pagada',            color: 'badge-paid'      },
+    OVERDUE:  { label: 'Vencida',           color: 'badge-overdue'   },
+    CANCELLED:{ label: 'Anulada',           color: 'badge-cancelled' }
   },
 
   // Tipos de documento de proveedor (recepción)

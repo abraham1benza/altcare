@@ -7,14 +7,14 @@ const sales = {
 
   // Estados que puede tener un documento de venta. Empieza como PEDIDO y cambia.
   STATUS: {
-    PEDIDO:       { label: 'Pedido',          color: 'badge-plain'   },
-    COTIZACION:   { label: 'Cotización',      color: 'badge-accent'  },
-    NOTA_ENTREGA: { label: 'Nota de Entrega', color: 'badge-warning' },
-    FACTURA:      { label: 'Factura',         color: 'badge-success' },
-    PARTIAL:      { label: 'Pago parcial',    color: 'badge-warning' },
-    PAID:         { label: 'Pagada',          color: 'badge-success' },
-    OVERDUE:      { label: 'Vencida',         color: 'badge-danger'  },
-    CANCELLED:    { label: 'Anulada',         color: 'badge-danger'  }
+    PEDIDO:       { label: 'Pedido',          color: 'badge-order'     },
+    COTIZACION:   { label: 'Cotización',      color: 'badge-quote'     },
+    NOTA_ENTREGA: { label: 'Nota de Entrega', color: 'badge-note'      },
+    FACTURA:      { label: 'Factura',         color: 'badge-invoice'   },
+    PARTIAL:      { label: 'Pago parcial',    color: 'badge-partial'   },
+    PAID:         { label: 'Pagada',          color: 'badge-paid'      },
+    OVERDUE:      { label: 'Vencida',         color: 'badge-overdue'   },
+    CANCELLED:    { label: 'Anulada',         color: 'badge-cancelled' }
   },
 
   // Tipos de documento que descuentan inventario
