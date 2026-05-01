@@ -118,12 +118,13 @@ function renderPOTable(pos) {
 }
 
 function renderInvoiceTable(invoices) {
-  if (!invoices.length) return `<div class="empty-state"><div class="empty-state-title">Sin facturas registradas</div><div class="empty-state-text">Las facturas se crean desde una OC recibida o directamente.</div><button class="btn btn-primary" onclick="newInvoice()">${ui.icon('plus')} Nueva factura</button></div>`;
+  if (!invoices.length) return `<div class="empty-state"><div class="empty-state-title">Sin documentos registrados</div><div class="empty-state-text">Los documentos de proveedor se generan desde una OC recibida.</div></div>`;
   const isGerencial = (typeof auth !== 'undefined' && auth.getActiveMode() === 'gerencial');
 
   return `<div class="table-wrap"><table>
     <thead><tr>
       <th>Código</th>
+      <th>Tipo</th>
       <th>N° Factura prov.</th>
       <th>Proveedor</th>
       <th>Fecha</th>
@@ -135,8 +136,8 @@ function renderInvoiceTable(invoices) {
     </tr></thead>
     <tbody>${invoices.map(inv => {
       const s = purchases.INV_STATUS[inv.status] || { label: inv.status, color: 'badge-plain' };
-      const isPaid = inv.status === 'PAID';
       const isFrozen = !!inv.rateAtFullPayment;
+      const isNote = inv.inventoryType === 'NOTA_ENTREGA';
 
       // Calcular USD y VES según el modo
       let usdValue, vesValue;
@@ -144,7 +145,6 @@ function renderInvoiceTable(invoices) {
         usdValue = inv.totalUSD_atFullPayment || 0;
         vesValue = inv.totalVES_atFullPayment || 0;
       } else {
-        // No congelado, usar tasa actual
         const conv = currency.toFiscal(inv.total, inv.currency, 'VES');
         const convUSD = currency.toFiscal(inv.total, inv.currency, 'USD');
         usdValue = inv.currency === 'USD' ? inv.total : convUSD.value;
@@ -155,6 +155,7 @@ function renderInvoiceTable(invoices) {
 
       return `<tr style="cursor:pointer;" onclick="openInvoice('${inv.id}')">
         <td><span class="td-mono td-strong">${inv.code}</span></td>
+        <td><span class="badge ${isNote?'badge-warning':'badge-success'}" style="font-size:10px;">${isNote?'📋 Nota':'📄 Factura'}</span></td>
         <td><span class="td-mono">${ui.escape(inv.supplierInvoiceNumber||'—')}</span></td>
         <td>${ui.escape(inv.supplierName)}</td>
         <td><span class="text-muted">${ui.formatDate(inv.issueDate)}</span></td>
@@ -194,6 +195,32 @@ function newPO() {
   view = 'poCreate'; render();
 }
 
+/** Edita una OC existente (mientras no esté facturada con factura legal) */
+function editPO(poId) {
+  const po = db.getById(db.COLLECTIONS.purchaseOrders, poId);
+  if (!po) { ui.toast('OC no encontrada', 'error'); return; }
+  // Verificar si es editable
+  const hasFiscalInvoice = po.invoiceId && po.invoiceType === 'FACTURA';
+  if (hasFiscalInvoice) { ui.toast('Esta OC ya tiene factura legal asociada y no se puede editar', 'error'); return; }
+  if (po.status === 'CANCELLED') { ui.toast('No se puede editar una OC anulada', 'error'); return; }
+
+  // Cargar datos en editing (modo edición)
+  editing = {
+    id: po.id,
+    code: po.code,
+    isEditing: true,
+    supplierId: po.supplierId,
+    supplierName: po.supplierName,
+    currency: po.currency,
+    rateType: po.rateType,
+    issueDate: po.issueDate,
+    expectedDate: po.expectedDate || '',
+    items: (po.items || []).map(it => ({ ...it })),
+    notes: po.notes || ''
+  };
+  view = 'poCreate'; render();
+}
+
 function renderPOCreate() {
   const e = editing;
   const suppliers = db.getAll(db.COLLECTIONS.suppliers);
@@ -222,7 +249,9 @@ function renderPOCreate() {
   </div>`;
 
   ui.renderLayout({
-    activeModule: 'compras', pageEyebrow: 'Nueva OC', pageTitle: e.code,
+    activeModule: 'compras',
+    pageEyebrow: e.isEditing ? 'Editando OC' : 'Nueva OC',
+    pageTitle: e.code,
     contentHtml: `
       <div class="card mb-24">
         <div class="card-header"><div class="card-title">Información</div></div>
@@ -253,7 +282,7 @@ function renderPOCreate() {
       <!-- Botones abajo -->
       <div style="display:flex;justify-content:space-between;gap:8px;padding:24px 0;border-top:1px solid var(--border);margin-top:24px;">
         <button class="btn btn-secondary" onclick="cancelEdit()">← Cancelar</button>
-        <button class="btn btn-primary" onclick="savePO()">${ui.icon('check')} Crear OC</button>
+        <button class="btn btn-primary" onclick="savePO()">${ui.icon('check')} ${e.isEditing ? 'Guardar cambios' : 'Crear OC'}</button>
       </div>
       <div style="height:40px;"></div>
     `
@@ -321,13 +350,38 @@ function savePO() {
   for (const it of e.items) {
     if (!it.rawMaterialId || !it.quantity || it.quantity <= 0) { ui.toast('Hay items incompletos', 'error'); return; }
   }
-  const po = purchases.createPO({
-    supplierId: e.supplierId, currency: e.currency, rateType: e.rateType,
-    items: e.items, notes: e.notes, expectedDate: e.expectedDate
-  });
-  ui.toast('OC creada', 'success');
-  selectedId = po.id; view = 'poDetail'; editing = null;
-  render();
+
+  if (e.isEditing && e.id) {
+    // Actualizar OC existente
+    try {
+      const po = purchases.updatePO(e.id, {
+        supplierId: e.supplierId,
+        currency: e.currency,
+        rateType: e.rateType,
+        items: e.items,
+        notes: e.notes,
+        expectedDate: e.expectedDate
+      });
+      ui.toast('OC actualizada', 'success');
+      selectedId = po.id; view = 'poDetail'; editing = null;
+      render();
+    } catch (err) {
+      ui.toast(err.message, 'error');
+    }
+  } else {
+    // Crear OC nueva
+    try {
+      const po = purchases.createPO({
+        supplierId: e.supplierId, currency: e.currency, rateType: e.rateType,
+        items: e.items, notes: e.notes, expectedDate: e.expectedDate
+      });
+      ui.toast('OC creada', 'success');
+      selectedId = po.id; view = 'poDetail'; editing = null;
+      render();
+    } catch (err) {
+      ui.toast(err.message, 'error');
+    }
+  }
 }
 
 // ====== DETALLE OC ======
@@ -341,16 +395,22 @@ function renderPODetail() {
   const s = purchases.PO_STATUS[po.status] || { label: po.status, color: 'badge-plain' };
 
   let actions = '';
+  // Permitir editar mientras no haya factura legal asociada
+  const hasFiscalInvoice = po.invoiceId && po.invoiceType === 'FACTURA';
+  const canEdit = !hasFiscalInvoice && po.status !== 'CANCELLED';
+  if (canEdit) {
+    actions += `<button class="btn btn-secondary" onclick="editPO('${po.id}')">${ui.icon('edit')} Editar</button>`;
+  }
   if (po.status === 'DRAFT') {
-    actions = `<button class="btn btn-secondary" onclick="changePOStatus('${po.id}','SENT')">Marcar como enviada</button>`;
+    actions += `<button class="btn btn-secondary" onclick="changePOStatus('${po.id}','SENT')">Marcar como enviada</button>`;
   }
   if (po.status === 'SENT' || po.status === 'PARTIAL' || po.status === 'DRAFT') {
     actions += `<button class="btn btn-primary" onclick="newReceipt('${po.id}')">${ui.icon('download')} Recibir mercancía</button>`;
   }
-  if (po.status === 'RECEIVED' || po.status === 'PARTIAL') {
-    actions += `<button class="btn btn-primary" onclick="newInvoiceFromPO('${po.id}')">${ui.icon('plus')} Crear factura</button>`;
+  if ((po.status === 'RECEIVED' || po.status === 'PARTIAL') && !hasFiscalInvoice) {
+    actions += `<button class="btn btn-primary" onclick="askInvoiceType('${po.id}')">${ui.icon('plus')} Generar Factura / Nota</button>`;
   }
-  if (po.status !== 'CANCELLED' && po.status !== 'INVOICED') {
+  if (po.status !== 'CANCELLED' && !hasFiscalInvoice) {
     actions += `<button class="btn btn-danger" onclick="cancelPO('${po.id}')">${ui.icon('x')} Cancelar</button>`;
   }
 
@@ -545,13 +605,38 @@ function newInvoice() {
   ui.toast('Crea factura desde una OC recibida', 'error');
 }
 
-function newInvoiceFromPO(poId) {
+/** Pregunta si quiere generar factura o nota de entrega antes de pasar al form */
+function askInvoiceType(poId) {
+  ui.openModal({
+    title: 'Generar documento de proveedor',
+    body: `
+      <p class="text-muted" style="margin-bottom:16px;">¿Qué tipo de documento querés crear?</p>
+      <div style="display:flex;flex-direction:column;gap:10px;">
+        <button class="btn btn-primary" style="text-align:left;padding:14px 16px;" onclick="ui.closeModal();newInvoiceFromPO('${poId}','FACTURA')">
+          <div style="font-weight:600;font-size:14px;margin-bottom:4px;">📄 Factura legal del proveedor</div>
+          <div style="font-size:11px;opacity:0.85;font-weight:400;">Tiene número fiscal y de control · Aplica IVA y retenciones · Entra al Libro de Compras (SENIAT)</div>
+        </button>
+        <button class="btn btn-secondary" style="text-align:left;padding:14px 16px;" onclick="ui.closeModal();newInvoiceFromPO('${poId}','NOTA_ENTREGA')">
+          <div style="font-weight:600;font-size:14px;margin-bottom:4px;">📋 Nota de Entrega</div>
+          <div style="font-size:11px;opacity:0.7;font-weight:400;">Sin número fiscal · Sin IVA ni retenciones · NO entra al Libro de Compras · Útil cuando aún no llegó la factura legal</div>
+        </button>
+      </div>
+      <div class="text-muted" style="font-size:11px;margin-top:14px;padding:10px;background:var(--surface-2);border-radius:6px;">
+        💡 Si recibís como Nota podés convertirla a Factura más adelante cuando el proveedor te pase la factura legal.
+      </div>
+    `,
+    footer: `<button class="btn btn-secondary" onclick="ui.closeModal()">Cancelar</button>`
+  });
+}
+
+function newInvoiceFromPO(poId, inventoryType = 'FACTURA') {
   const po = db.getById(db.COLLECTIONS.purchaseOrders, poId);
   if (!po) return;
   const supplier = db.getById(db.COLLECTIONS.suppliers, po.supplierId);
   editing = {
     poId,
     poCode: po.code,
+    inventoryType: inventoryType,  // 'FACTURA' | 'NOTA_ENTREGA'
     supplierId: po.supplierId,
     supplierName: po.supplierName,
     supplierRif: po.supplierRif,
@@ -568,9 +653,10 @@ function newInvoiceFromPO(poId) {
       unit: it.unit,
       unitPrice: it.unitPrice
     })),
-    exempt: false,
-    applyIVAWithholding: supplier?.applyIVAWithholding !== false,
-    islrRate: supplier?.islrRate || 0,
+    // Si es NE: exenta + sin retenciones
+    exempt: inventoryType === 'NOTA_ENTREGA' ? true : false,
+    applyIVAWithholding: inventoryType === 'NOTA_ENTREGA' ? false : (supplier?.applyIVAWithholding !== false),
+    islrRate: inventoryType === 'NOTA_ENTREGA' ? 0 : (supplier?.islrRate || 0),
     notes: ''
   };
   view = 'invoiceCreate'; render();
@@ -602,15 +688,28 @@ function renderInvoiceCreate() {
   </div>`;
 
   ui.renderLayout({
-    activeModule: 'compras', pageEyebrow: 'Nueva factura', pageTitle: e.poCode ? 'Factura de OC ' + e.poCode : 'Nueva factura',
+    activeModule: 'compras',
+    pageEyebrow: e.inventoryType === 'NOTA_ENTREGA' ? 'Nueva Nota de Entrega' : 'Nueva factura',
+    pageTitle: e.poCode ? (e.inventoryType === 'NOTA_ENTREGA' ? 'Nota de Entrega de OC ' : 'Factura de OC ') + e.poCode : (e.inventoryType === 'NOTA_ENTREGA' ? 'Nueva Nota de Entrega' : 'Nueva factura'),
     contentHtml: `
+      ${e.inventoryType === 'NOTA_ENTREGA' ? `
+        <div class="card mb-24" style="padding:14px 18px;background:#fef3c7;border-color:#fcd34d;">
+          <div style="font-size:13px;color:#92400e;line-height:1.5;">
+            <strong>📋 Nota de Entrega:</strong> Sin número fiscal, sin IVA ni retenciones. NO entrará al Libro de Compras (SENIAT). Sí afectará el saldo al pagar.
+            Cuando recibas la factura legal del proveedor, podrás convertir esta NE a Factura.
+          </div>
+        </div>
+      ` : ''}
+
       <div class="card mb-24">
-        <div class="card-header"><div class="card-title">Datos de la factura del proveedor</div></div>
+        <div class="card-header"><div class="card-title">${e.inventoryType === 'NOTA_ENTREGA' ? 'Datos de la nota' : 'Datos de la factura del proveedor'}</div></div>
         <div class="form-grid form-grid-2">
           <div class="field"><label class="field-label">Proveedor</label><input class="input" value="${ui.escape(e.supplierName)}" disabled></div>
           <div class="field"><label class="field-label">RIF</label><input class="input" value="${ui.escape(e.supplierRif||'')}" disabled></div>
-          <div class="field"><label class="field-label">N° Factura del proveedor *</label><input class="input" value="${ui.escape(e.supplierInvoiceNumber||'')}" onchange="editing.supplierInvoiceNumber=this.value" placeholder="Ej: 00001234"></div>
-          <div class="field"><label class="field-label">N° de Control *</label><input class="input" value="${ui.escape(e.supplierInvoiceControl||'')}" onchange="editing.supplierInvoiceControl=this.value" placeholder="Ej: 00-12345678"></div>
+          ${e.inventoryType !== 'NOTA_ENTREGA' ? `
+            <div class="field"><label class="field-label">N° Factura del proveedor *</label><input class="input" value="${ui.escape(e.supplierInvoiceNumber||'')}" onchange="editing.supplierInvoiceNumber=this.value" placeholder="Ej: 00001234"></div>
+            <div class="field"><label class="field-label">N° de Control *</label><input class="input" value="${ui.escape(e.supplierInvoiceControl||'')}" onchange="editing.supplierInvoiceControl=this.value" placeholder="Ej: 00-12345678"></div>
+          ` : ''}
           <div class="field"><label class="field-label">Fecha emisión *</label><input class="input" type="date" value="${e.issueDate}" onchange="editing.issueDate=this.value"></div>
           <div class="field"><label class="field-label">Vencimiento</label><input class="input" type="date" value="${e.dueDate||''}" onchange="editing.dueDate=this.value"></div>
         </div>
@@ -618,20 +717,22 @@ function renderInvoiceCreate() {
 
       ${itemsHtml}
 
-      <div class="card mb-24">
-        <div class="card-header"><div class="card-title">Impuestos y retenciones</div></div>
-        <div class="form-grid form-grid-3">
-          <div class="field" style="grid-column:1/-1;">
-            <div class="checkbox-row"><input type="checkbox" id="exempt-cb" ${e.exempt?'checked':''} onchange="editing.exempt=this.checked;render()"><label for="exempt-cb" style="font-size:13px;">Operación exenta de IVA</label></div>
-          </div>
-          ${!e.exempt ? `
+      ${e.inventoryType !== 'NOTA_ENTREGA' ? `
+        <div class="card mb-24">
+          <div class="card-header"><div class="card-title">Impuestos y retenciones</div></div>
+          <div class="form-grid form-grid-3">
             <div class="field" style="grid-column:1/-1;">
-              <div class="checkbox-row"><input type="checkbox" id="ret-iva-cb" ${e.applyIVAWithholding?'checked':''} onchange="editing.applyIVAWithholding=this.checked;render()"><label for="ret-iva-cb" style="font-size:13px;">Aplicar retención de IVA (${cfg.ivaWithholdingRate||75}% como agente)</label></div>
+              <div class="checkbox-row"><input type="checkbox" id="exempt-cb" ${e.exempt?'checked':''} onchange="editing.exempt=this.checked;render()"><label for="exempt-cb" style="font-size:13px;">Operación exenta de IVA</label></div>
             </div>
-          ` : ''}
-          <div class="field"><label class="field-label">% Retención ISLR</label><input class="input" type="number" step="0.01" value="${e.islrRate||0}" onchange="editing.islrRate=this.value;render()"><div class="field-hint">0 si no aplica</div></div>
+            ${!e.exempt ? `
+              <div class="field" style="grid-column:1/-1;">
+                <div class="checkbox-row"><input type="checkbox" id="ret-iva-cb" ${e.applyIVAWithholding?'checked':''} onchange="editing.applyIVAWithholding=this.checked;render()"><label for="ret-iva-cb" style="font-size:13px;">Aplicar retención de IVA (${cfg.ivaWithholdingRate||75}% como agente)</label></div>
+              </div>
+            ` : ''}
+            <div class="field"><label class="field-label">% Retención ISLR</label><input class="input" type="number" step="0.01" value="${e.islrRate||0}" onchange="editing.islrRate=this.value;render()"><div class="field-hint">0 si no aplica</div></div>
+          </div>
         </div>
-      </div>
+      ` : ''}
 
       <!-- Resumen fiscal -->
       <div class="card mb-24" style="padding:0;" id="inv-summary-card">
@@ -649,7 +750,7 @@ function renderInvoiceCreate() {
       <!-- Botones abajo -->
       <div style="display:flex;justify-content:space-between;gap:8px;padding:24px 0;border-top:1px solid var(--border);margin-top:24px;">
         <button class="btn btn-secondary" onclick="cancelEdit()">← Cancelar</button>
-        <button class="btn btn-primary" onclick="saveInvoice()">${ui.icon('check')} Crear factura</button>
+        <button class="btn btn-primary" onclick="saveInvoice()">${ui.icon('check')} ${e.inventoryType === 'NOTA_ENTREGA' ? 'Crear Nota de Entrega' : 'Crear factura'}</button>
       </div>
       <div style="height:40px;"></div>
     `
@@ -698,10 +799,19 @@ function updateInvItemFast(idx, field, val) {
 
 function saveInvoice() {
   const e = editing;
-  if (!e.supplierInvoiceNumber || !e.supplierInvoiceControl) { ui.toast('Número de factura y control son obligatorios', 'error'); return; }
+  const isNote = e.inventoryType === 'NOTA_ENTREGA';
+  // Validaciones según tipo
+  if (!isNote) {
+    if (!e.supplierInvoiceNumber || !e.supplierInvoiceControl) {
+      ui.toast('Número de factura y control son obligatorios', 'error');
+      return;
+    }
+  }
+  if (!e.items || !e.items.length) { ui.toast('Debe tener al menos un ítem', 'error'); return; }
   try {
     const inv = purchases.createSupplierInvoice({
       poId: e.poId,
+      inventoryType: e.inventoryType || 'FACTURA',
       supplierInvoiceNumber: e.supplierInvoiceNumber,
       supplierInvoiceControl: e.supplierInvoiceControl,
       issueDate: e.issueDate,
@@ -712,8 +822,71 @@ function saveInvoice() {
       islrRate: e.islrRate,
       notes: e.notes
     });
-    ui.toast('Factura registrada' + (inv.voucherId ? ' · comprobante de retención generado' : ''), 'success');
+    const docName = isNote ? 'Nota de Entrega registrada' : 'Factura registrada';
+    ui.toast(docName + (inv.voucherId ? ' · comprobante de retención generado' : ''), 'success');
     selectedId = inv.id; view = 'invoiceDetail'; editing = null;
+    render();
+  } catch (err) {
+    ui.toast(err.message, 'error');
+  }
+}
+
+/** Convierte una Nota de Entrega a Factura */
+function convertNEToFactura(noteId) {
+  const note = db.getById(db.COLLECTIONS.supplierInvoices, noteId);
+  if (!note) return;
+  const supplier = db.getById(db.COLLECTIONS.suppliers, note.supplierId);
+  const cfg = db.getById(db.COLLECTIONS.config, 'main') || {};
+
+  // Pre-cargar datos del proveedor
+  const defaultIVAWith = supplier?.applyIVAWithholding !== false;
+  const defaultIslr = supplier?.islrRate || 0;
+
+  ui.openModal({
+    title: `Convertir ${note.code} a Factura`,
+    body: `
+      <div class="card mb-24" style="padding:14px 18px;background:#dbeafe;border-color:#93c5fd;">
+        <div style="font-size:13px;color:#1e40af;line-height:1.5;">
+          🔄 Vas a convertir esta Nota de Entrega en una Factura legal. Se le agregará IVA, retenciones (si corresponden) y entrará al Libro de Compras (SENIAT).
+        </div>
+      </div>
+      <div class="form-grid form-grid-2">
+        <div class="field"><label class="field-label">N° Factura del proveedor *</label><input id="conv-num" class="input" placeholder="Ej: 00001234"></div>
+        <div class="field"><label class="field-label">N° de Control *</label><input id="conv-ctrl" class="input" placeholder="Ej: 00-12345678"></div>
+        <div class="field" style="grid-column:1/-1;">
+          <div class="checkbox-row"><input type="checkbox" id="conv-exempt"><label for="conv-exempt" style="font-size:13px;">Operación exenta de IVA</label></div>
+        </div>
+        <div class="field" style="grid-column:1/-1;">
+          <div class="checkbox-row"><input type="checkbox" id="conv-ret-iva" ${defaultIVAWith?'checked':''}><label for="conv-ret-iva" style="font-size:13px;">Aplicar retención de IVA (${cfg.ivaWithholdingRate||75}% como agente)</label></div>
+        </div>
+        <div class="field"><label class="field-label">% Retención ISLR</label><input id="conv-islr" class="input" type="number" step="0.01" value="${defaultIslr}"></div>
+      </div>
+    `,
+    footer: `
+      <button class="btn btn-secondary" onclick="ui.closeModal()">Cancelar</button>
+      <button class="btn btn-primary" onclick="doConvertNE('${noteId}')">${ui.icon('check')} Convertir a Factura</button>
+    `
+  });
+}
+
+function doConvertNE(noteId) {
+  const num = document.getElementById('conv-num')?.value?.trim();
+  const ctrl = document.getElementById('conv-ctrl')?.value?.trim();
+  const exempt = document.getElementById('conv-exempt')?.checked;
+  const applyIVAWith = document.getElementById('conv-ret-iva')?.checked;
+  const islr = parseFloat(document.getElementById('conv-islr')?.value) || 0;
+  if (!num || !ctrl) { ui.toast('Número de factura y control son obligatorios', 'error'); return; }
+  try {
+    const result = purchases.convertNoteToInvoice(noteId, {
+      supplierInvoiceNumber: num,
+      supplierInvoiceControl: ctrl,
+      exempt,
+      applyIVAWithholding: applyIVAWith,
+      islrRate: islr
+    });
+    ui.closeModal();
+    ui.toast(`Convertida a Factura ${result.code}`, 'success');
+    selectedId = result.id;
     render();
   } catch (err) {
     ui.toast(err.message, 'error');
@@ -756,14 +929,30 @@ function renderInvoiceDetail() {
       : '';
 
   ui.renderLayout({
-    activeModule: 'compras', pageEyebrow: 'Factura de proveedor', pageTitle: inv.code,
+    activeModule: 'compras',
+    pageEyebrow: inv.inventoryType === 'NOTA_ENTREGA' ? 'Nota de Entrega' : 'Factura de proveedor',
+    pageTitle: inv.code,
     contentHtml: `
       <div class="action-bar">
         <div class="action-bar-left">
           <button class="btn btn-ghost btn-sm" onclick="backToList()">← Volver</button>
-          <span style="margin-left:16px;"><span class="badge ${s.color}">${s.label}</span></span>
+          <span style="margin-left:16px;">
+            <span class="badge ${inv.inventoryType==='NOTA_ENTREGA'?'badge-warning':'badge-success'}" style="margin-right:6px;">${inv.inventoryType==='NOTA_ENTREGA'?'📋 Nota de Entrega':'📄 Factura'}</span>
+            <span class="badge ${s.color}">${s.label}</span>
+          </span>
+        </div>
+        <div class="action-bar-right">
+          ${inv.inventoryType === 'NOTA_ENTREGA' && inv.status !== 'CANCELLED' ? `<button class="btn btn-primary btn-sm" onclick="convertNEToFactura('${inv.id}')">${ui.icon('check')} Convertir a Factura</button>` : ''}
         </div>
       </div>
+
+      ${inv.inventoryType === 'NOTA_ENTREGA' ? `
+        <div class="card mb-24" style="padding:14px 18px;background:#fef3c7;border-color:#fcd34d;">
+          <div style="font-size:13px;color:#92400e;line-height:1.5;">
+            📋 <strong>Nota de Entrega:</strong> Este documento NO entra al Libro de Compras (SENIAT). Sí descuenta del saldo al registrar el pago. Convertí a Factura cuando el proveedor entregue la factura legal.
+          </div>
+        </div>
+      ` : ''}
 
       ${rateBanner}
 
@@ -991,6 +1180,10 @@ Object.assign(window, {
   saveReceipt: typeof saveReceipt !== 'undefined' ? saveReceipt : undefined,
   newInvoice: typeof newInvoice !== 'undefined' ? newInvoice : undefined,
   newInvoiceFromPO: typeof newInvoiceFromPO !== 'undefined' ? newInvoiceFromPO : undefined,
+  askInvoiceType: typeof askInvoiceType !== 'undefined' ? askInvoiceType : undefined,
+  convertNEToFactura: typeof convertNEToFactura !== 'undefined' ? convertNEToFactura : undefined,
+  doConvertNE: typeof doConvertNE !== 'undefined' ? doConvertNE : undefined,
+  editPO: typeof editPO !== 'undefined' ? editPO : undefined,
   renderInvoiceCreate: typeof renderInvoiceCreate !== 'undefined' ? renderInvoiceCreate : undefined,
   renderInvSummary: typeof renderInvSummary !== 'undefined' ? renderInvSummary : undefined,
   updateInvItem: typeof updateInvItem !== 'undefined' ? updateInvItem : undefined,
