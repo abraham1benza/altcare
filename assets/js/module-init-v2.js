@@ -71,8 +71,8 @@ window.moduleInit = async function(moduleName) {
 
     // 4. Verificar acceso al módulo
     if (!auth.canAccess(moduleName)) {
-      alert('No tenés permiso para acceder a este módulo.');
-      goToLogin();
+      alert('No tienes permiso para acceder a este módulo.');
+      window.location.href = '/altcare/';
       return false;
     }
 

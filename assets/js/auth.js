@@ -238,23 +238,55 @@ const auth = {
     }
     if (!this._profile) {
       // Perfil aún no cargado (el guard se llamó antes que se inicialice)
-      // No bloqueamos, dejamos que el bootstrap de la página se encargue
       return true;
     }
-    const role = this._profile.role || 'admin';
-    const allowed = ROLES[role]?.modules || [];
-    if (allowed === '*') return true;
-    if (allowed.includes(moduleName)) return true;
-    if (window.ui && window.ui.toast) window.ui.toast('Sin permiso para este módulo', 'error');
-    setTimeout(() => { window.location.href = '/altcare/'; }, 800);
+    if (this.canAccess(moduleName)) return true;
+    if (window.ui && window.ui.toast) window.ui.toast('Sin permiso para acceder a este módulo', 'error');
+    setTimeout(() => { window.location.href = '/altcare/'; }, 1200);
     return false;
   },
 
-  /** Verifica si el rol actual puede acceder a un módulo (sin redireccionar) */
+  /**
+   * Verifica si el usuario actual (o un rol dado) puede acceder a un módulo.
+   * Considera tanto los módulos del rol como los `extraModules` configurados
+   * por el admin en el perfil del usuario.
+   * @param {string} moduleName
+   * @param {string} [role] - opcional: si se pasa, ignora el perfil y solo evalúa el rol
+   */
   canAccess(moduleName, role = null) {
-    const r = role || this._profile?.role || 'admin';
-    const allowed = ROLES[r]?.modules || [];
-    return allowed === '*' || allowed.includes(moduleName);
+    if (role) {
+      // Solo evaluar por rol (sin extra modules)
+      const allowed = ROLES[role]?.modules || [];
+      return allowed === '*' || allowed.includes(moduleName);
+    }
+    // Evaluar perfil completo
+    if (!this._profile) return true; // mientras no haya perfil cargado, no bloquear
+    const r = this._profile.role || 'admin';
+    const baseAllowed = ROLES[r]?.modules || [];
+    const extra = this._profile.extraModules || [];
+    const hidden = this._profile.hiddenModules || [];
+
+    if (baseAllowed === '*') return true; // admin siempre todo
+
+    // Si está en hiddenModules, está explícitamente bloqueado
+    if (hidden.includes(moduleName)) return false;
+    // Si está en el rol, OK
+    if (baseAllowed.includes(moduleName)) return true;
+    // Si está en extras agregados por admin, OK
+    if (extra.includes(moduleName)) return true;
+    return false;
+  },
+
+  /** Devuelve la lista efectiva de módulos del usuario actual (rol + extras − hidden) */
+  getAllowedModules() {
+    if (!this._profile) return [];
+    const r = this._profile.role || 'admin';
+    const base = ROLES[r]?.modules || [];
+    if (base === '*') return ['*']; // admin tiene todo
+    const extra = this._profile.extraModules || [];
+    const hidden = this._profile.hiddenModules || [];
+    const all = Array.from(new Set([...base, ...extra]));
+    return all.filter(m => !hidden.includes(m));
   },
 
   /** Alias de canAccess (compatibilidad) */
@@ -296,6 +328,8 @@ const auth = {
         fullName: data.fullName,
         role: data.role,
         allowedModes: data.allowedModes,
+        extraModules: data.extraModules || [],
+        hiddenModules: data.hiddenModules || [],
         active: data.active !== false,
         createdAt: new Date().toISOString(),
         createdBy: currentAdminEmail || 'sistema'
