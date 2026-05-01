@@ -100,20 +100,45 @@ const reports = {
       .sort((a,b) => (a.issueDate||'').localeCompare(b.issueDate||''));
 
     const rows = invoices.map((i, idx) => {
-      // Convertir a Bs si la factura está en otra moneda
+      // Conversión a VES: prioridad
+      // 1. Si la factura ya está pagada y tiene tasa congelada → usa esa
+      // 2. Si no, usar tasa BCV actual
       let baseVES = i.subtotal;
       let ivaVES = i.ivaAmount;
       let totalVES = i.total;
       let retIVAVES = i.ivaWithheld || 0;
       let retISLRVES = i.islrWithheld || 0;
+      let rateUsed = 0;
+      let rateLabel = '';
+      let isFrozen = false;
+
       if (i.currency !== 'VES') {
-        const rate = parseFloat(i.rateValue) || 0;
-        baseVES *= rate;
-        ivaVES *= rate;
-        totalVES *= rate;
-        retIVAVES *= rate;
-        retISLRVES *= rate;
+        if (i.rateAtFullPayment && i.rateAtFullPayment > 0) {
+          // Tasa congelada al completar pago
+          rateUsed = i.rateAtFullPayment;
+          rateLabel = `${i.rateTypeAtFullPayment || 'BCV'} 🔒`;
+          isFrozen = true;
+        } else if (i.rateValue) {
+          // Tasa al emitir (legacy)
+          rateUsed = parseFloat(i.rateValue) || 0;
+          rateLabel = 'al emitir';
+        } else {
+          // Tasa BCV de hoy
+          const r = currency.getRate('BCV_USD');
+          rateUsed = r?.value || 0;
+          rateLabel = 'BCV hoy (estimada)';
+        }
+        if (rateUsed > 0) {
+          baseVES *= rateUsed;
+          ivaVES *= rateUsed;
+          totalVES *= rateUsed;
+          retIVAVES *= rateUsed;
+          retISLRVES *= rateUsed;
+        }
+      } else {
+        rateLabel = '—';
       }
+
       return {
         n: idx + 1,
         fecha: i.issueDate,
@@ -129,7 +154,11 @@ const reports = {
         retencionIVA: retIVAVES,
         retencionISLR: retISLRVES,
         currency: i.currency,
-        invoiceId: i.id
+        invoiceId: i.id,
+        rateUsed,
+        rateLabel,
+        isFrozen,
+        status: i.status
       };
     });
 
@@ -153,19 +182,36 @@ const reports = {
       .sort((a,b) => (a.issueDate||'').localeCompare(b.issueDate||''));
 
     const rows = docs.map((d, idx) => {
-      // Para libro de ventas, los anulados siguen apareciendo pero con monto 0 (o marcados)
       const isCancelled = d.cancelled;
       let baseVES = d.taxableBase;
       let ivaVES = d.ivaAmount;
       let totalVES = d.total;
       let exemptVES = d.exemptBase;
+      let rateUsed = 0;
+      let rateLabel = '—';
+      let isFrozen = false;
+
       if (d.currency !== 'VES') {
-        const rate = parseFloat(d.rateValue) || 0;
-        baseVES *= rate;
-        ivaVES *= rate;
-        totalVES *= rate;
-        exemptVES *= rate;
+        if (d.rateAtFullPayment && d.rateAtFullPayment > 0) {
+          rateUsed = d.rateAtFullPayment;
+          rateLabel = `${d.rateTypeAtFullPayment || 'BCV'} 🔒`;
+          isFrozen = true;
+        } else if (d.rateValue) {
+          rateUsed = parseFloat(d.rateValue) || 0;
+          rateLabel = 'al emitir';
+        } else {
+          const r = currency.getRate('BCV_USD');
+          rateUsed = r?.value || 0;
+          rateLabel = 'BCV hoy (estimada)';
+        }
+        if (rateUsed > 0) {
+          baseVES *= rateUsed;
+          ivaVES *= rateUsed;
+          totalVES *= rateUsed;
+          exemptVES *= rateUsed;
+        }
       }
+
       return {
         n: idx + 1,
         fecha: d.issueDate,
@@ -180,7 +226,11 @@ const reports = {
         total: isCancelled ? 0 : totalVES,
         cancelled: isCancelled,
         currency: d.currency,
-        docId: d.id
+        docId: d.id,
+        rateUsed,
+        rateLabel,
+        isFrozen,
+        status: d.status
       };
     });
 
