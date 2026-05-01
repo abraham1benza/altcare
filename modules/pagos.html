@@ -216,7 +216,7 @@ function renderHistoryTable(payments) {
     <thead><tr><th>Código</th><th>Tipo</th><th>Fecha</th><th>Contraparte</th><th>Documento</th><th>Método</th><th>Cuenta</th><th style="text-align:right;">Monto</th><th>Referencia</th></tr></thead>
     <tbody>${payments.map(p => `<tr>
       <td><span class="td-mono td-strong">${p.code}</span></td>
-      <td><span class="badge ${p.direction==='IN'?'badge-success':'badge-plain'}">${p.direction==='IN'?'Cobro':'Pago'}</span></td>
+      <td><span class="badge ${p.direction==='IN'?'badge-paid':'badge-overdue'}">${p.direction==='IN'?'Cobro':'Pago'}</span></td>
       <td><span class="text-muted">${ui.formatDate(p.date)}</span></td>
       <td>${ui.escape(p.counterpartyName||'—')}</td>
       <td><span class="td-mono">${ui.escape(p.relatedDocCode||'—')}</span></td>

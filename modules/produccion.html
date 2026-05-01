@@ -21,10 +21,10 @@ moduleInit('produccion').then(async (ok) => {
 if (!ok) return;
 
 const STATES = {
-  PLANNED:   { label: 'Planificada', color: 'badge-plain'   },
-  IN_PROCESS:{ label: 'En proceso',  color: 'badge-warning' },
-  COMPLETED: { label: 'Terminada',   color: 'badge-success' },
-  CANCELLED: { label: 'Cancelada',   color: 'badge-danger'  }
+  PLANNED:   { label: 'Planificada', color: 'badge-order'     },
+  IN_PROCESS:{ label: 'En proceso',  color: 'badge-partial'   },
+  COMPLETED: { label: 'Terminada',   color: 'badge-paid'      },
+  CANCELLED: { label: 'Cancelada',   color: 'badge-cancelled' }
 };
 
 let view = 'list';

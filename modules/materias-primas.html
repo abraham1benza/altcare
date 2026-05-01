@@ -21,12 +21,12 @@ moduleInit('materias-primas').then(async (ok) => {
 if (!ok) return;
 
 const KINDS = {
-  INGREDIENT: { label: 'Ingrediente', color: 'badge-plain',   prefix: 'MP' },
-  PACKAGING:  { label: 'Envase',      color: 'badge-accent',  prefix: 'EN' },
-  CAP:        { label: 'Tapa',        color: 'badge-accent',  prefix: 'TA' },
-  LABEL:      { label: 'Etiqueta',    color: 'badge-accent',  prefix: 'ET' },
-  BOX:        { label: 'Caja',        color: 'badge-warning', prefix: 'CJ' },
-  OTHER:      { label: 'Otro',        color: 'badge-plain',   prefix: 'OT' }
+  INGREDIENT: { label: 'Ingrediente', color: 'badge-mp',       prefix: 'MP' },
+  PACKAGING:  { label: 'Envase',      color: 'badge-envase',   prefix: 'EN' },
+  CAP:        { label: 'Tapa',        color: 'badge-tapa',     prefix: 'TA' },
+  LABEL:      { label: 'Etiqueta',    color: 'badge-etiqueta', prefix: 'ET' },
+  BOX:        { label: 'Caja',        color: 'badge-caja',     prefix: 'CJ' },
+  OTHER:      { label: 'Otro',        color: 'badge-otro',     prefix: 'OT' }
 };
 
 const CATEGORIES_BY_KIND = {
