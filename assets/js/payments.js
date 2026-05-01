@@ -43,16 +43,75 @@ const payments = {
     return db.save(db.COLLECTIONS.bankAccounts, a);
   },
 
-  /** Movimiento bancario (kardex de cuenta) */
-  registerBankMove({ accountId, type, amount, currency: moveCurrency, date, reference, paymentId, counterpartyName }) {
+  /** 
+   * Movimiento bancario (kardex de cuenta).
+   * Si la moneda del movimiento difiere de la moneda de la cuenta, convierte
+   * usando la tasa proporcionada (rate / rateType) o BCV por defecto.
+   *
+   * @param {object} args
+   * @param {string} args.accountId
+   * @param {string} args.type - DEPOSIT|OPENING|TRANSFER_IN|PAYMENT_IN|WITHDRAWAL|TRANSFER_OUT|PAYMENT_OUT|FEE|ADJUSTMENT
+   * @param {number} args.amount - monto en la moneda especificada por `currency`
+   * @param {string} args.currency - moneda del monto (USD, VES, EUR)
+   * @param {number} args.rate - tasa de conversión (Bs por unidad de USD/EUR) cuando difiere de la cuenta
+   * @param {string} args.rateType - 'BCV_USD'|'BINANCE'|'BCV_EUR'|'P2P_EUR'|'CUSTOM'
+   * @param {string} args.date
+   * @param {string} args.reference
+   * @param {string} args.paymentId
+   * @param {string} args.counterpartyName
+   */
+  registerBankMove({ accountId, type, amount, currency: moveCurrency, rate, rateType, date, reference, paymentId, counterpartyName }) {
     const account = db.getById(db.COLLECTIONS.bankAccounts, accountId);
     if (!account) throw new Error('Cuenta bancaria no encontrada');
     const isCredit = ['DEPOSIT','OPENING','TRANSFER_IN','PAYMENT_IN'].includes(type);
     const isDebit = ['WITHDRAWAL','TRANSFER_OUT','PAYMENT_OUT','FEE'].includes(type);
     const sign = isCredit ? 1 : (isDebit ? -1 : 1);
 
-    // Actualizar saldo de la cuenta (en su moneda)
-    account.balance = (parseFloat(account.balance) || 0) + (parseFloat(amount) * sign);
+    const ccy = moveCurrency || account.currency;
+    const amt = parseFloat(amount) || 0;
+
+    // === CONVERSIÓN A MONEDA DE LA CUENTA ===
+    // Si el movimiento es en una moneda distinta a la cuenta, hay que convertir
+    // antes de actualizar el saldo.
+    let amountInAccountCcy = amt;
+    let conversionApplied = false;
+    let usedRate = parseFloat(rate) || 0;
+    let usedRateType = rateType || null;
+
+    if (ccy !== account.currency) {
+      conversionApplied = true;
+
+      // Si no nos pasaron tasa, usar BCV por defecto
+      if (!usedRate || usedRate <= 0) {
+        if ((ccy === 'USD' && account.currency === 'VES') || (ccy === 'VES' && account.currency === 'USD')) {
+          const r = currency.getRate('BCV_USD');
+          usedRate = r?.value || 0;
+          usedRateType = 'BCV_USD';
+        } else if ((ccy === 'EUR' && account.currency === 'VES') || (ccy === 'VES' && account.currency === 'EUR')) {
+          const r = currency.getRate('BCV_EUR');
+          usedRate = r?.value || 0;
+          usedRateType = 'BCV_EUR';
+        }
+      }
+
+      if (!usedRate || usedRate <= 0) {
+        throw new Error(`No hay tasa de conversión disponible entre ${ccy} y ${account.currency}`);
+      }
+
+      // Convertir a moneda de la cuenta usando VES como pivote
+      let amtInVES = 0;
+      if (ccy === 'VES') amtInVES = amt;
+      else if (ccy === 'USD' || ccy === 'EUR') amtInVES = amt * usedRate;
+
+      if (account.currency === 'VES') amountInAccountCcy = amtInVES;
+      else if (account.currency === 'USD' || account.currency === 'EUR') {
+        amountInAccountCcy = usedRate > 0 ? amtInVES / usedRate : 0;
+      }
+      amountInAccountCcy = Math.round(amountInAccountCcy * 100) / 100;
+    }
+
+    // Actualizar saldo de la cuenta (en SU moneda)
+    account.balance = (parseFloat(account.balance) || 0) + (amountInAccountCcy * sign);
     db.save(db.COLLECTIONS.bankAccounts, account);
 
     const move = {
@@ -60,9 +119,18 @@ const payments = {
       accountName: account.name,
       type,
       direction: isCredit ? 'IN' : 'OUT',
-      amount: parseFloat(amount) || 0,
-      signedAmount: parseFloat(amount) * sign,
-      currency: moveCurrency || account.currency,
+      // Monto y moneda original del movimiento (lo que el usuario cobró/pagó)
+      amount: amt,
+      currency: ccy,
+      // Equivalente en moneda de la cuenta (para el saldo)
+      amountInAccountCurrency: amountInAccountCcy,
+      accountCurrency: account.currency,
+      // Datos de conversión si se aplicó
+      conversionApplied,
+      conversionRate: conversionApplied ? usedRate : null,
+      conversionRateType: conversionApplied ? usedRateType : null,
+      // Saldo después
+      signedAmount: amountInAccountCcy * sign,
       runningBalance: account.balance,
       date: date || new Date().toISOString().slice(0,10),
       timestamp: new Date().toISOString(),
@@ -266,11 +334,34 @@ const payments = {
 
     // Movimiento bancario (si tiene cuenta)
     if (saved.bankAccountId) {
+      // Determinar la tasa adecuada según las monedas involucradas
+      // Prioridad: conversionRate (si vino del modal de conversión cruzada)
+      //            > rateAtPayment (la tasa congelada del pago)
+      //            > BCV (default en registerBankMove)
+      const account = db.getById(db.COLLECTIONS.bankAccounts, saved.bankAccountId);
+      let moveRate = null;
+      let moveRateType = null;
+
+      if (account && account.currency !== saved.currency) {
+        // Hay conversión necesaria al saldo de la cuenta
+        if (saved.conversionRate && saved.conversionRateType) {
+          // Si el usuario eligió una tasa específica para la conversión cruzada
+          // y esa conversión coincide con el par moneda-pago/moneda-cuenta, usarla
+          moveRate = saved.conversionRate;
+          moveRateType = saved.conversionRateType;
+        } else if (saved.rateAtPayment) {
+          moveRate = saved.rateAtPayment;
+          moveRateType = saved.rateTypeAtPayment || 'BCV_USD';
+        }
+      }
+
       this.registerBankMove({
         accountId: saved.bankAccountId,
         type: data.direction === 'OUT' ? 'PAYMENT_OUT' : 'PAYMENT_IN',
         amount: saved.amount,
         currency: saved.currency,
+        rate: moveRate,
+        rateType: moveRateType,
         date: saved.date,
         reference: `${saved.direction === 'OUT' ? 'Pago a' : 'Cobro de'} ${saved.counterpartyName} · ${saved.relatedDocCode || ''}`,
         paymentId: saved.id,
@@ -325,7 +416,13 @@ const payments = {
         const isCredit = ['DEPOSIT','OPENING','TRANSFER_IN','PAYMENT_IN'].includes(m.type);
         const isDebit = ['WITHDRAWAL','TRANSFER_OUT','PAYMENT_OUT','FEE'].includes(m.type);
         const sign = isCredit ? 1 : (isDebit ? -1 : 1);
-        realBalance += (parseFloat(m.amount) || 0) * sign;
+        // IMPORTANTE: usar el equivalente en moneda de la cuenta para el saldo
+        // En movimientos viejos (antes del fix) puede no existir amountInAccountCurrency,
+        // en ese caso asumir que estaban en la moneda de la cuenta
+        const amountForBalance = m.amountInAccountCurrency != null
+          ? parseFloat(m.amountInAccountCurrency)
+          : parseFloat(m.amount) || 0;
+        realBalance += amountForBalance * sign;
         m.runningBalance = realBalance;
         db.save(db.COLLECTIONS.bankMoves, m);
       });
