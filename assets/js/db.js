@@ -46,6 +46,8 @@ const COLLECTIONS = {
   bankAccounts: 'bankAccounts',
   payments: 'payments',
   bankMoves: 'bankMoves',
+  notificationTemplates: 'notificationTemplates',
+  notificationLog: 'notificationLog',
   auditLog: 'auditLog'
 };
 

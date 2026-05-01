@@ -36,7 +36,8 @@ const NAV_STRUCTURE = [
       { id: 'clientes',          label: 'Clientes',          href: 'modules/clientes.html' },
       { id: 'compras',           label: 'Compras',           href: 'modules/compras.html' },
       { id: 'ventas',            label: 'Ventas',            href: 'modules/ventas.html' },
-      { id: 'pagos',             label: 'Pagos',             href: 'modules/pagos.html' }
+      { id: 'pagos',             label: 'Pagos',             href: 'modules/pagos.html' },
+      { id: 'notificaciones',    label: 'Notificaciones',    href: 'modules/notificaciones.html' }
     ]
   },
   {
