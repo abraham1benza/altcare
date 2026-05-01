@@ -314,7 +314,7 @@ const sales = {
   },
 
   /** Aplica un pago a un documento de venta (factura) */
-  applyPayment(docId, paymentId, amountInDocCurrency) {
+  applyPayment(docId, paymentId, amountInDocCurrency, paymentRate = null, paymentRateType = 'BCV_USD') {
     const doc = db.getById(db.COLLECTIONS.salesOrders, docId);
     if (!doc) throw new Error('Documento no encontrado');
     const amount = parseFloat(amountInDocCurrency) || 0;
@@ -327,6 +327,19 @@ const sales = {
     const remaining = Math.round((doc.total - doc.paidAmount) * 100) / 100;
     if (remaining <= 0.01) {
       doc.status = 'PAID';
+      // CONGELAR TASA AL COMPLETAR PAGO
+      if (paymentRate && paymentRate > 0 && !doc.rateAtFullPayment) {
+        doc.rateAtFullPayment = paymentRate;
+        doc.rateTypeAtFullPayment = paymentRateType;
+        if (doc.currency === 'USD') {
+          doc.totalVES_atFullPayment = Math.round(doc.total * paymentRate * 100) / 100;
+          doc.totalUSD_atFullPayment = doc.total;
+        } else if (doc.currency === 'VES') {
+          doc.totalVES_atFullPayment = doc.total;
+          doc.totalUSD_atFullPayment = Math.round((doc.total / paymentRate) * 100) / 100;
+        }
+        doc.fullPaymentDate = new Date().toISOString();
+      }
     } else if (doc.paidAmount > 0) {
       doc.status = 'PARTIAL';
     }

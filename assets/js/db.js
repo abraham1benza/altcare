@@ -20,6 +20,7 @@ const COLLECTIONS = {
   users: 'users',
   config: 'config',
   rates: 'rates',
+  historicalRates: 'historicalRates',
   rawMaterials: 'rawMaterials',
   rmLots: 'rmLots',
   warehouses: 'warehouses',

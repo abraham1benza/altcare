@@ -100,6 +100,30 @@ const payments = {
    */
   createPayment(data) {
     const code = db.nextCode(db.COLLECTIONS.payments, data.direction === 'OUT' ? 'PG' : 'CB');
+    const today = data.date || new Date().toISOString().slice(0, 10);
+
+    // Tasa congelada del pago (BCV del día del pago)
+    const rateAtPayment = parseFloat(data.rateAtPayment) || (() => {
+      const r = currency.getRate('BCV_USD');
+      return r?.value || 0;
+    })();
+
+    // Calcular el equivalente en USD y VES del monto del pago (en la moneda en que entró)
+    const amountAsNum = parseFloat(data.amount) || 0;
+    let amountUSD = 0, amountVES = 0;
+    if (data.currency === 'USD') {
+      amountUSD = amountAsNum;
+      amountVES = rateAtPayment > 0 ? amountAsNum * rateAtPayment : 0;
+    } else if (data.currency === 'VES') {
+      amountVES = amountAsNum;
+      amountUSD = rateAtPayment > 0 ? amountAsNum / rateAtPayment : 0;
+    } else if (data.currency === 'EUR') {
+      // EUR → USD vía BCV_EUR
+      const eurRate = currency.getRate('BCV_EUR');
+      amountVES = eurRate?.value ? amountAsNum * eurRate.value : 0;
+      amountUSD = rateAtPayment > 0 && amountVES ? amountVES / rateAtPayment : 0;
+    }
+
     const payment = {
       code,
       direction: data.direction,
@@ -107,16 +131,26 @@ const payments = {
       counterpartyName: data.counterpartyName,
       relatedDocId: data.relatedDocId,
       relatedDocCode: data.relatedDocCode,
-      amount: parseFloat(data.amount) || 0,
+      amount: amountAsNum,
       currency: data.currency,
       docCurrency: data.docCurrency,
       amountInDocCurrency: parseFloat(data.amountInDocCurrency) || parseFloat(data.amount) || 0,
       rateUsed: parseFloat(data.rateUsed) || null,
+      // === Tasa congelada del pago ===
+      rateAtPayment: rateAtPayment,
+      rateTypeAtPayment: data.rateTypeAtPayment || 'BCV_USD',
+      amountUSD: Math.round(amountUSD * 100) / 100,
+      amountVES: Math.round(amountVES * 100) / 100,
+      // === Conversión cruzada (cuando moneda pago ≠ moneda doc) ===
+      conversionRate: parseFloat(data.conversionRate) || null,
+      conversionRateType: data.conversionRateType || null,
+      conversionRateLabel: data.conversionRateLabel || null,
+      // ===
       paymentMethodId: data.paymentMethodId,
       paymentMethodName: data.paymentMethodName,
       bankAccountId: data.bankAccountId || null,
       reference: data.reference || '',
-      date: data.date || new Date().toISOString().slice(0,10),
+      date: today,
       notes: data.notes || ''
     };
     const saved = db.save(db.COLLECTIONS.payments, payment);
@@ -135,14 +169,12 @@ const payments = {
       });
     }
 
-    // Aplicar a la factura/documento relacionado
+    // Aplicar a la factura/documento relacionado, pasando tasa congelada
     if (saved.relatedDocId) {
       if (saved.direction === 'OUT') {
-        // Pago a proveedor → factura proveedor
-        purchases.applyPaymentToInvoice(saved.relatedDocId, saved.id, saved.amountInDocCurrency);
+        purchases.applyPaymentToInvoice(saved.relatedDocId, saved.id, saved.amountInDocCurrency, saved.rateAtPayment, saved.rateTypeAtPayment);
       } else {
-        // Cobro de cliente → doc venta
-        sales.applyPayment(saved.relatedDocId, saved.id, saved.amountInDocCurrency);
+        sales.applyPayment(saved.relatedDocId, saved.id, saved.amountInDocCurrency, saved.rateAtPayment, saved.rateTypeAtPayment);
       }
     }
 

@@ -305,5 +305,147 @@ const currency = {
   formatInMode(amount, fromCurrency = 'VES') {
     const converted = this.toDisplay(amount, fromCurrency);
     return this.format(converted, this.getModeCurrency());
+  },
+
+  // ============================================
+  // ===   SISTEMA DE TASAS CONGELADAS       ===
+  // ============================================
+
+  /**
+   * Devuelve la tasa BCV_USD del día indicado (o la más cercana hacia atrás).
+   * Busca en historicalRates primero, sino en la tasa actual.
+   * @param {string} date - YYYY-MM-DD
+   * @param {string} type - 'BCV_USD' por default
+   * @returns {{value: number, date: string, found: boolean, type: string}}
+   */
+  getRateOnDate(date, type = 'BCV_USD') {
+    if (!date) {
+      const r = this.getRate(type);
+      return { value: r?.value || 0, date: r?.updatedDate || '', found: false, type };
+    }
+    // Buscar en historicalRates si existe la colección
+    try {
+      if (db.COLLECTIONS.historicalRates) {
+        const all = db.getAll(db.COLLECTIONS.historicalRates)
+          .filter(h => h.type === type && h.date <= date)
+          .sort((a, b) => b.date.localeCompare(a.date));
+        if (all.length) {
+          return { value: all[0].value, date: all[0].date, found: all[0].date === date, type };
+        }
+      }
+    } catch (e) { /* ignorar */ }
+    // Fallback: tasa actual
+    const r = this.getRate(type);
+    return { value: r?.value || 0, date: r?.updatedDate || '', found: false, type };
+  },
+
+  /**
+   * Guarda una tasa histórica para una fecha específica.
+   * Útil para snapshot diario o ajustes manuales.
+   */
+  saveHistoricalRate(date, type, value) {
+    if (!db.COLLECTIONS.historicalRates) return false;
+    const id = `${type}_${date}`;
+    const existing = db.getById(db.COLLECTIONS.historicalRates, id);
+    const rec = {
+      id,
+      date,
+      type,
+      value: parseFloat(value) || 0,
+      savedAt: existing?.savedAt || new Date().toISOString()
+    };
+    db.save(db.COLLECTIONS.historicalRates, rec);
+    return true;
+  },
+
+  /**
+   * Snapshot de la tasa de hoy en historicalRates.
+   * Se llama automáticamente cuando cambia el día.
+   */
+  snapshotTodayRates() {
+    const today = new Date().toISOString().slice(0, 10);
+    ['BCV_USD', 'BCV_EUR', 'BINANCE', 'P2P_EUR'].forEach(type => {
+      const r = this.getRate(type);
+      if (r && r.value > 0) {
+        this.saveHistoricalRate(today, type, r.value);
+      }
+    });
+  },
+
+  /**
+   * Convierte un monto entre dos monedas usando una tasa específica (no la actual).
+   * Útil para mostrar montos congelados con su tasa histórica.
+   * @param {number} amount - cantidad original
+   * @param {string} fromCcy - moneda origen
+   * @param {string} toCcy - moneda destino
+   * @param {number} rate - tasa específica (ej: 35.5 para BCV_USD)
+   * @param {string} rateType - tipo de tasa que se está usando
+   */
+  convertWithRate(amount, fromCcy, toCcy, rate, rateType = 'BCV_USD') {
+    const n = parseFloat(amount) || 0;
+    if (fromCcy === toCcy) return n;
+    if (!rate || rate <= 0) return 0;
+
+    if (fromCcy === 'VES' && toCcy === 'USD') return n / rate;
+    if (fromCcy === 'USD' && toCcy === 'VES') return n * rate;
+
+    // EUR usa BCV_EUR, separado
+    if (fromCcy === 'VES' && toCcy === 'EUR') {
+      // si rate es BCV_EUR
+      if (rateType === 'BCV_EUR' || rateType === 'P2P_EUR') return n / rate;
+      // si rate es de USD, no podemos convertir directo a EUR
+      return 0;
+    }
+    if (fromCcy === 'EUR' && toCcy === 'VES') {
+      if (rateType === 'BCV_EUR' || rateType === 'P2P_EUR') return n * rate;
+      return 0;
+    }
+    return n;
+  },
+
+  /**
+   * Calcula el equivalente fiscal de un monto en la moneda objetivo.
+   * Si se proporciona tasa congelada (rate), usa esa. Si no, usa la actual del modo.
+   *
+   * @param {number} amount - monto en moneda original
+   * @param {string} fromCcy - moneda original ('USD', 'VES', 'EUR')
+   * @param {string} toCcy - moneda destino
+   * @param {object} [frozen] - {rate, rateType} si la conversión está congelada
+   * @returns {{value: number, rate: number, rateType: string, isFrozen: boolean}}
+   */
+  toFiscal(amount, fromCcy, toCcy = 'VES', frozen = null) {
+    const n = parseFloat(amount) || 0;
+    if (fromCcy === toCcy) return { value: n, rate: 1, rateType: '', isFrozen: !!frozen };
+
+    if (frozen && frozen.rate && frozen.rate > 0) {
+      const value = this.convertWithRate(n, fromCcy, toCcy, frozen.rate, frozen.rateType || 'BCV_USD');
+      return { value, rate: frozen.rate, rateType: frozen.rateType || 'BCV_USD', isFrozen: true };
+    }
+    // No congelado → tasa actual BCV
+    const rateType = (toCcy === 'EUR' || fromCcy === 'EUR') ? 'BCV_EUR' : 'BCV_USD';
+    const rate = this.getRate(rateType);
+    if (!rate || !rate.value) return { value: 0, rate: 0, rateType, isFrozen: false };
+    const value = this.convertWithRate(n, fromCcy, toCcy, rate.value, rateType);
+    return { value, rate: rate.value, rateType, isFrozen: false };
+  },
+
+  /**
+   * Genera un texto formateado "$100,00 · (BCV 35,50: Bs 3.550,00)" o similar.
+   * Útil para mostrar inline ambos valores.
+   */
+  formatBoth(amount, fromCcy, frozen = null) {
+    const original = this.format(amount, fromCcy);
+    const isVES = fromCcy === 'VES';
+    const targetCcy = isVES ? 'USD' : 'VES';
+    const conv = this.toFiscal(amount, fromCcy, targetCcy, frozen);
+    if (!conv.value) return original;
+
+    const rateLabel = conv.rateType === 'BCV_USD' ? 'BCV' :
+                      conv.rateType === 'BINANCE' ? 'P2P' :
+                      conv.rateType === 'BCV_EUR' ? 'BCV €' :
+                      conv.rateType.replace('_', ' ');
+    const rateStr = (conv.rate || 0).toLocaleString('es-VE', { maximumFractionDigits: 2 });
+    const lockIcon = conv.isFrozen ? ' 🔒' : '';
+    return `${original} · (${rateLabel} ${rateStr}: ${this.format(conv.value, targetCcy)}${lockIcon})`;
   }
 };

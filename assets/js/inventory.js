@@ -60,6 +60,24 @@ const inventory = {
     const rm = db.getById(db.COLLECTIONS.rawMaterials, rawMaterialId);
     if (!rm) throw new Error('Materia prima no encontrada');
     const code = db.nextCode(db.COLLECTIONS.rmLots, 'LMP');
+
+    // Congelar tasa BCV del día de compra y costo USD equivalente
+    const today = receiptDate || new Date().toISOString().slice(0, 10);
+    const bcvRate = currency.getRateOnDate(today, 'BCV_USD');
+    const rateAtPurchase = bcvRate.value || 0;
+    const unitCostNum = parseFloat(unitCost) || 0;
+    const ccy = costCurrency || 'USD';
+    let unitCostUSD_atPurchase = 0;
+    if (ccy === 'USD') {
+      unitCostUSD_atPurchase = unitCostNum;
+    } else if (ccy === 'VES' && rateAtPurchase > 0) {
+      unitCostUSD_atPurchase = unitCostNum / rateAtPurchase;
+    } else if (ccy === 'EUR') {
+      const eurRate = currency.getRate('BCV_EUR');
+      const inVES = eurRate?.value ? unitCostNum * eurRate.value : 0;
+      unitCostUSD_atPurchase = rateAtPurchase > 0 ? inVES / rateAtPurchase : 0;
+    }
+
     const lot = {
       code,
       rawMaterialId,
@@ -71,9 +89,14 @@ const inventory = {
       balance: parseFloat(quantity) || 0,     // cantidad restante
       reserved: 0,
       unit: rm.unit,
-      unitCost: parseFloat(unitCost) || 0,
-      costCurrency: costCurrency || 'USD',
-      receiptDate: receiptDate || new Date().toISOString().slice(0,10),
+      unitCost: unitCostNum,
+      costCurrency: ccy,
+      // === Tasa congelada al comprar ===
+      rateAtPurchase: rateAtPurchase,
+      rateTypeAtPurchase: 'BCV_USD',
+      unitCostUSD_atPurchase: Math.round(unitCostUSD_atPurchase * 10000) / 10000,
+      // ===
+      receiptDate: today,
       expiryDate: expiryDate || null,
       warehouseId: warehouseId || this.defaultWarehouse()?.id,
       locationId: locationId || null,

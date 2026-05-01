@@ -263,7 +263,7 @@ const purchases = {
   },
 
   /** Aplica un pago a una factura de proveedor */
-  applyPaymentToInvoice(invoiceId, paymentId, amountInInvoiceCurrency) {
+  applyPaymentToInvoice(invoiceId, paymentId, amountInInvoiceCurrency, paymentRate = null, paymentRateType = 'BCV_USD') {
     const inv = db.getById(db.COLLECTIONS.supplierInvoices, invoiceId);
     if (!inv) throw new Error('Factura no encontrada');
     const amount = parseFloat(amountInInvoiceCurrency) || 0;
@@ -275,6 +275,20 @@ const purchases = {
     const remaining = Math.round((inv.totalToPay - inv.paidAmount) * 100) / 100;
     if (remaining <= 0.01) {
       inv.status = 'PAID';
+      // CONGELAR TASA AL COMPLETAR PAGO
+      if (paymentRate && paymentRate > 0 && !inv.rateAtFullPayment) {
+        inv.rateAtFullPayment = paymentRate;
+        inv.rateTypeAtFullPayment = paymentRateType;
+        // Calcular total congelado
+        if (inv.currency === 'USD') {
+          inv.totalVES_atFullPayment = Math.round(inv.totalToPay * paymentRate * 100) / 100;
+          inv.totalUSD_atFullPayment = inv.totalToPay;
+        } else if (inv.currency === 'VES') {
+          inv.totalVES_atFullPayment = inv.totalToPay;
+          inv.totalUSD_atFullPayment = Math.round((inv.totalToPay / paymentRate) * 100) / 100;
+        }
+        inv.fullPaymentDate = new Date().toISOString();
+      }
     } else if (inv.paidAmount > 0) {
       inv.status = 'PARTIAL';
     }
