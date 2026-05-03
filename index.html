@@ -398,19 +398,60 @@ function renderDashboard() {
     <!-- KPIs Comerciales -->
     <div class="divider-section"><span class="section-title" style="margin:0;">Situación financiera</span></div>
     <div class="grid grid-4 mb-24">
-      <div class="kpi"><div class="kpi-label">Por cobrar</div>${renderMultiKPI(cxcByCcy, 'var(--accent-ink)')}<div class="kpi-value-sub">${cxcPending.length} factura${cxcPending.length!==1?'s':''}${cxcOverdue.length?` · <span style="color:var(--danger);">${cxcOverdue.length} vencida${cxcOverdue.length!==1?'s':''}</span>`:''}</div></div>
-      <div class="kpi"><div class="kpi-label">Por pagar</div>${renderMultiKPI(cxpByCcy, 'var(--danger)')}<div class="kpi-value-sub">${cxpPending.length} factura${cxpPending.length!==1?'s':''}${cxpOverdue.length?` · <span style="color:var(--danger);">${cxpOverdue.length} vencida${cxpOverdue.length!==1?'s':''}</span>`:''}</div></div>
-      <div class="kpi"><div class="kpi-label">Disponible en bancos</div>${renderMultiKPI(bankByCcy, 'var(--success)')}<div class="kpi-value-sub">${isGerencial && personalAccountsCount > 0 ? `🏢 ${companyAccountsCount} empresa · 👤 ${personalAccountsCount} personal` : `${companyAccountsCount} cuenta${companyAccountsCount!==1?'s':''}${personalAccountsCount > 0 ? ` <span class="text-muted">(${personalAccountsCount} personal oculta${personalAccountsCount!==1?'s':''})</span>` : ''}`}</div></div>
-      <div class="kpi"><div class="kpi-label">Pedidos abiertos</div><div class="kpi-value">${openOrders.length}</div><div class="kpi-value-sub">en gestión</div></div>
+      <a href="modules/pagos.html?tab=cxc" class="kpi kpi-clickable" style="text-decoration:none;color:inherit;cursor:pointer;display:block;">
+        <div class="kpi-label">Por cobrar</div>${renderMultiKPI(cxcByCcy, 'var(--accent-ink)')}
+        <div class="kpi-value-sub">${cxcPending.length} factura${cxcPending.length!==1?'s':''}${cxcOverdue.length?` · <span style="color:var(--danger);">${cxcOverdue.length} vencida${cxcOverdue.length!==1?'s':''}</span>`:''}</div>
+        <div class="kpi-action">Ir a cobrar →</div>
+      </a>
+      <a href="modules/pagos.html?tab=cxp" class="kpi kpi-clickable" style="text-decoration:none;color:inherit;cursor:pointer;display:block;">
+        <div class="kpi-label">Por pagar</div>${renderMultiKPI(cxpByCcy, 'var(--danger)')}
+        <div class="kpi-value-sub">${cxpPending.length} factura${cxpPending.length!==1?'s':''}${cxpOverdue.length?` · <span style="color:var(--danger);">${cxpOverdue.length} vencida${cxpOverdue.length!==1?'s':''}</span>`:''}</div>
+        <div class="kpi-action">Ir a pagar →</div>
+      </a>
+      <a href="modules/cuentas-bancarias.html" class="kpi kpi-clickable" style="text-decoration:none;color:inherit;cursor:pointer;display:block;">
+        <div class="kpi-label">Disponible en bancos</div>${renderMultiKPI(bankByCcy, 'var(--success)')}
+        <div class="kpi-value-sub">${isGerencial && personalAccountsCount > 0 ? `🏢 ${companyAccountsCount} empresa · 👤 ${personalAccountsCount} personal` : `${companyAccountsCount} cuenta${companyAccountsCount!==1?'s':''}${personalAccountsCount > 0 ? ` <span class="text-muted">(${personalAccountsCount} personal oculta${personalAccountsCount!==1?'s':''})</span>` : ''}`}</div>
+        <div class="kpi-action">Ver cuentas →</div>
+      </a>
+      <a href="modules/ventas.html?filter=PEDIDO" class="kpi kpi-clickable" style="text-decoration:none;color:inherit;cursor:pointer;display:block;">
+        <div class="kpi-label">Pedidos abiertos</div>
+        <div class="kpi-value">${openOrders.length}</div>
+        <div class="kpi-value-sub">en gestión</div>
+        <div class="kpi-action">Ver pedidos →</div>
+      </a>
     </div>
 
     <!-- KPIs Operativos -->
     <div class="divider-section"><span class="section-title" style="margin:0;">Operaciones</span></div>
     <div class="grid grid-4 mb-24">
-      <div class="kpi"><div class="kpi-mark">${ui.icon('flask')}</div><div class="kpi-label">OFs activas</div><div class="kpi-value">${ofsPlanned + ofsInProcess}</div><div class="kpi-value-sub">${ofsInProcess} en proceso · ${ofsPlanned} planificadas</div></div>
-      <div class="kpi"><div class="kpi-mark">${ui.icon('box')}</div><div class="kpi-label">Lotes PT activos</div><div class="kpi-value">${fgLots.length}</div><div class="kpi-value-sub">${fgQuarantine} en cuarentena</div></div>
-      <div class="kpi"><div class="kpi-mark">${ui.icon('currency')}</div><div class="kpi-label">Valor MP</div><div class="kpi-value" style="font-size:24px;color:var(--accent-ink);">$${totalRMValueUSD.toLocaleString('en-US',{minimumFractionDigits:0,maximumFractionDigits:0})}</div><div class="kpi-value-sub">en almacén</div></div>
-      <div class="kpi"><div class="kpi-mark">${ui.icon('currency')}</div><div class="kpi-label">Valor PT</div><div class="kpi-value" style="font-size:24px;color:var(--accent-ink);">$${totalFGValueUSD.toLocaleString('en-US',{minimumFractionDigits:0,maximumFractionDigits:0})}</div><div class="kpi-value-sub">a costo de fabricación</div></div>
+      <a href="modules/produccion.html" class="kpi kpi-clickable" style="text-decoration:none;color:inherit;cursor:pointer;display:block;">
+        <div class="kpi-mark">${ui.icon('flask')}</div>
+        <div class="kpi-label">OFs activas</div>
+        <div class="kpi-value">${ofsPlanned + ofsInProcess}</div>
+        <div class="kpi-value-sub">${ofsInProcess} en proceso · ${ofsPlanned} planificadas</div>
+        <div class="kpi-action">Ver producción →</div>
+      </a>
+      <a href="modules/producto-terminado.html" class="kpi kpi-clickable" style="text-decoration:none;color:inherit;cursor:pointer;display:block;">
+        <div class="kpi-mark">${ui.icon('box')}</div>
+        <div class="kpi-label">Lotes PT activos</div>
+        <div class="kpi-value">${fgLots.length}</div>
+        <div class="kpi-value-sub">${fgQuarantine} en cuarentena</div>
+        <div class="kpi-action">Ver lotes →</div>
+      </a>
+      <a href="modules/materias-primas.html" class="kpi kpi-clickable" style="text-decoration:none;color:inherit;cursor:pointer;display:block;">
+        <div class="kpi-mark">${ui.icon('currency')}</div>
+        <div class="kpi-label">Valor MP</div>
+        <div class="kpi-value" style="font-size:24px;color:var(--accent-ink);">$${totalRMValueUSD.toLocaleString('en-US',{minimumFractionDigits:0,maximumFractionDigits:0})}</div>
+        <div class="kpi-value-sub">en almacén</div>
+        <div class="kpi-action">Ver materias primas →</div>
+      </a>
+      <a href="modules/producto-terminado.html" class="kpi kpi-clickable" style="text-decoration:none;color:inherit;cursor:pointer;display:block;">
+        <div class="kpi-mark">${ui.icon('currency')}</div>
+        <div class="kpi-label">Valor PT</div>
+        <div class="kpi-value" style="font-size:24px;color:var(--accent-ink);">$${totalFGValueUSD.toLocaleString('en-US',{minimumFractionDigits:0,maximumFractionDigits:0})}</div>
+        <div class="kpi-value-sub">a costo de fabricación</div>
+        <div class="kpi-action">Ver lotes PT →</div>
+      </a>
     </div>
 
     <!-- Listas comerciales -->
