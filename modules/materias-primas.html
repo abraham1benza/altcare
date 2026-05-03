@@ -153,7 +153,8 @@ function renderCatalog() {
   });
 }
 
-function onSearch(v) { searchTerm = v; render(); }
+const _doSearchRender = ui.debounce(() => render(), 250);
+function onSearch(v) { searchTerm = v; _doSearchRender(); }
 function onCategoryFilter(v) { categoryFilter = v; render(); }
 function onKindFilter(v) { kindFilter = v; categoryFilter = ''; render(); }
 

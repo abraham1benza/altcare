@@ -84,7 +84,8 @@ function renderList() {
       </div>`
   });
 }
-function onSearch(v) { searchTerm = v; render(); }
+const _doSearchRender = ui.debounce(() => render(), 250);
+function onSearch(v) { searchTerm = v; _doSearchRender(); }
 
 function openDetail(id) { selectedFormulaId = id; view = 'detail'; render(); }
 function backToList() { view = 'list'; selectedFormulaId = null; editingVersion = null; render(); }

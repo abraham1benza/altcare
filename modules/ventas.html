@@ -261,7 +261,8 @@ function renderCuentasPorCobrar(allDocs) {
   </div>`;
 }
 
-function onSearch(v) { searchTerm = v; render(); }
+const _doSearchRender = ui.debounce(() => render(), 250);
+function onSearch(v) { searchTerm = v; _doSearchRender(); }
 function onTypeFilter(v) { typeFilter = v; render(); }
 
 // ====== CREAR ======
@@ -947,7 +948,7 @@ function renderCreditNoteForm() {
     ${f.mode === 'BY_ITEMS' ? renderNCItemsTable(f, inv) : renderNCFreeAmount(f, inv)}
 
     <!-- Resumen -->
-    <div style="padding:14px;background:var(--surface-2);border-radius:8px;margin:16px 0;">
+    <div style="padding:14px;background:var(--surface-2);border-radius:8px;margin:16px 0;" id="nc-summary-section">
       <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:4px;"><span class="text-muted">Subtotal</span><span class="td-mono">${currency.format(subtotal, inv.currency)}</span></div>
       ${exemptBase > 0 ? `<div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:4px;"><span class="text-muted">Exento</span><span class="td-mono">${currency.format(exemptBase, inv.currency)}</span></div>` : ''}
       ${taxableBase > 0 ? `<div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:4px;"><span class="text-muted">IVA ${ivaRate}%</span><span class="td-mono">${currency.format(ivaAmt, inv.currency)}</span></div>` : ''}
@@ -1077,11 +1078,11 @@ function renderNCFreeAmount(f, inv) {
       <div class="form-grid form-grid-2">
         <div class="field">
           <label class="field-label">Subtotal (${inv.currency}) *</label>
-          <input type="number" class="input" step="0.01" value="${f.freeAmount}" oninput="_ncForm.freeAmount=parseFloat(this.value)||0;renderCreditNoteForm()">
+          <input type="number" class="input" step="0.01" value="${f.freeAmount}" oninput="_ncForm.freeAmount=parseFloat(this.value)||0;refreshNCSummary()">
         </div>
         <div class="field" style="display:flex;align-items:flex-end;">
           <label class="checkbox-row">
-            <input type="checkbox" ${f.freeAmountExempt?'checked':''} onchange="_ncForm.freeAmountExempt=this.checked;renderCreditNoteForm()">
+            <input type="checkbox" ${f.freeAmountExempt?'checked':''} onchange="_ncForm.freeAmountExempt=this.checked;refreshNCSummary()">
             <span style="margin-left:6px;font-size:13px;">Exento de IVA</span>
           </label>
         </div>
@@ -1102,12 +1103,60 @@ function toggleNCItem(idx) {
   renderCreditNoteForm();
 }
 function updateNCItemQty(idx, val) {
+  // SIN render: actualiza en memoria. Solo actualiza el resumen total.
   const it = _ncForm.items[idx];
-  it.quantity = Math.min(parseFloat(val) || 0, it.maxQty);
-  renderCreditNoteForm();
+  const num = Math.min(parseFloat(val) || 0, it.maxQty);
+  it.quantity = num;
+  // Actualizar el subtotal de esta fila si tiene id
+  refreshNCSummary();
 }
 function updateNCItemStockAction(idx, action) {
   _ncForm.items[idx].stockAction = action;
+}
+
+/** Recalcula el subtotal/total de la NC y actualiza solo esos elementos del DOM */
+function refreshNCSummary() {
+  if (!_ncForm) return;
+  const f = _ncForm;
+  const inv = db.getById(db.COLLECTIONS.salesOrders, f.invoiceId);
+  if (!inv) return;
+  const cfg = db.getById(db.COLLECTIONS.config, 'main') || {};
+  const ivaRate = inv.ivaRate || cfg.ivaRate || 16;
+
+  let subtotal = 0, taxableBase = 0, exemptBase = 0;
+  if (f.mode === 'BY_ITEMS') {
+    f.items.forEach(it => {
+      if (!it.include || it.quantity <= 0) return;
+      const sub = (parseFloat(it.quantity) || 0) * (parseFloat(it.unitPrice) || 0);
+      subtotal += sub;
+      if (it.exempt) exemptBase += sub;
+      else taxableBase += sub;
+    });
+  } else {
+    const amt = parseFloat(f.freeAmount) || 0;
+    subtotal = amt;
+    if (f.freeAmountExempt) exemptBase = amt;
+    else taxableBase = amt;
+  }
+  const ivaAmt = Math.round(taxableBase * ivaRate / 100 * 100) / 100;
+  const total = Math.round((subtotal + ivaAmt) * 100) / 100;
+
+  // Actualizar elementos puntuales del DOM (no re-render)
+  const summary = document.getElementById('nc-summary-section');
+  if (!summary) return;
+
+  const alreadyCredited = sales.getCreditedAmount(f.invoiceId);
+  const maxCreditable = inv.total - alreadyCredited;
+  const exceeds = total > maxCreditable + 0.01;
+
+  summary.innerHTML = `
+    <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:4px;"><span class="text-muted">Subtotal</span><span class="td-mono">${currency.format(subtotal, inv.currency)}</span></div>
+    ${exemptBase > 0 ? `<div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:4px;"><span class="text-muted">Exento</span><span class="td-mono">${currency.format(exemptBase, inv.currency)}</span></div>` : ''}
+    ${taxableBase > 0 ? `<div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:4px;"><span class="text-muted">IVA ${ivaRate}%</span><span class="td-mono">${currency.format(ivaAmt, inv.currency)}</span></div>` : ''}
+    <div style="display:flex;justify-content:space-between;padding-top:8px;border-top:1px solid var(--border);margin-top:6px;"><span class="td-strong">Total NC</span><span class="td-mono td-strong" style="font-size:15px;color:${exceeds?'var(--danger)':'var(--accent-ink)'};">${currency.format(total, inv.currency)}</span></div>
+    <div style="font-size:11px;color:var(--ink-3);margin-top:6px;">Máximo acreditable: ${currency.format(maxCreditable, inv.currency)} ${alreadyCredited>0?`(ya hay ${currency.format(alreadyCredited, inv.currency)} acreditado)`:''}</div>
+    ${exceeds ? `<div style="margin-top:8px;padding:8px;background:#fee2e2;border-radius:4px;color:#991b1b;font-size:12px;">⚠️ El total excede lo acreditable</div>` : ''}
+  `;
 }
 
 function confirmCreditNote() {
@@ -1771,6 +1820,7 @@ Object.assign(window, {
   setNCMoney: typeof setNCMoney !== 'undefined' ? setNCMoney : undefined,
   toggleNCItem: typeof toggleNCItem !== 'undefined' ? toggleNCItem : undefined,
   updateNCItemQty: typeof updateNCItemQty !== 'undefined' ? updateNCItemQty : undefined,
+  refreshNCSummary: typeof refreshNCSummary !== 'undefined' ? refreshNCSummary : undefined,
   updateNCItemStockAction: typeof updateNCItemStockAction !== 'undefined' ? updateNCItemStockAction : undefined,
   confirmCreditNote: typeof confirmCreditNote !== 'undefined' ? confirmCreditNote : undefined,
   viewCreditNote: typeof viewCreditNote !== 'undefined' ? viewCreditNote : undefined,

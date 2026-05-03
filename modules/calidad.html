@@ -255,7 +255,24 @@ function renderCreate() {
 
 function updateResult(idx, field, val) {
   creating.results[idx][field] = val;
-  render();
+  // Sin render() para no perder foco en el input.
+  // Recalcular el indicador de status del lado:
+  if (field === 'value') {
+    const r = creating.results[idx];
+    const param = creating.parameters[idx];
+    if (param && (param.min != null || param.max != null)) {
+      const num = parseFloat(val);
+      if (!isNaN(num)) {
+        if ((param.min != null && num < param.min) || (param.max != null && num > param.max)) {
+          r._status = 'fail';
+        } else {
+          r._status = 'ok';
+        }
+      } else {
+        r._status = '';
+      }
+    }
+  }
 }
 function onAnalystChange(uid) {
   creating.analystId = uid;

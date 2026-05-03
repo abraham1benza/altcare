@@ -147,7 +147,8 @@ function renderOverview() {
   });
 }
 
-function onSearch(v) { searchTerm = v; render(); }
+const _doSearchRender = ui.debounce(() => render(), 250);
+function onSearch(v) { searchTerm = v; _doSearchRender(); }
 function onTypeFilter(v) { typeFilter = v; render(); }
 
 // ====== KARDEX ======

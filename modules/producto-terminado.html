@@ -109,7 +109,8 @@ function render() {
   });
 }
 
-function onSearch(v) { searchTerm = v; render(); }
+const _doSearchRender = ui.debounce(() => render(), 250);
+function onSearch(v) { searchTerm = v; _doSearchRender(); }
 function onStatusFilter(v) { statusFilter = v; render(); }
 
 function editLot(id) {

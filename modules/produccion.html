@@ -98,7 +98,8 @@ function renderList() {
     `
   });
 }
-function onSearch(v) { searchTerm = v; render(); }
+const _doSearchRender = ui.debounce(() => render(), 250);
+function onSearch(v) { searchTerm = v; _doSearchRender(); }
 function onStateFilter(v) { stateFilter = v; render(); }
 
 // ====== CREAR OF ======

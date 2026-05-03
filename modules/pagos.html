@@ -512,8 +512,30 @@ function renderCreate() {
 }
 
 function updateAmount(val) {
+  // SIN render(): perdería el foco del input mientras escribe
   creating.amount = parseFloat(val) || 0;
-  render();
+  refreshAmountPreview();
+}
+
+/** Refresca elementos del preview sin perder foco del input */
+function refreshAmountPreview() {
+  const c = creating;
+  if (!c) return;
+  // Actualizar el preview de conversión (si hay)
+  const previewIn = document.getElementById('payment-applied-doc');
+  const previewExceeds = document.getElementById('payment-exceeds');
+  if (previewIn) {
+    let amountInDoc = c.amount;
+    if (c.currency !== c.docCurrency && c.conversionRate > 0) {
+      // Convertir vía VES
+      let amtInVES = 0;
+      if (c.currency === 'VES') amtInVES = c.amount;
+      else amtInVES = c.amount * c.conversionRate;
+      if (c.docCurrency === 'VES') amountInDoc = amtInVES;
+      else amountInDoc = c.conversionRate > 0 ? amtInVES / c.conversionRate : 0;
+    }
+    previewIn.textContent = currency.format(amountInDoc, c.docCurrency);
+  }
 }
 
 function updateCurrency(ccy) {
@@ -639,7 +661,8 @@ function updateCustomRate(val) {
     creating.rateAtPayment = creating.conversionRate;
     creating.rateTypeAtPayment = 'CUSTOM';
   }
-  render();
+  // Sin render(): solo refrescar el preview
+  refreshAmountPreview();
 }
 
 function cancelCreate() { creating = null; render(); }
@@ -751,6 +774,7 @@ Object.assign(window, {
   newPaymentForDoc: typeof newPaymentForDoc !== 'undefined' ? newPaymentForDoc : undefined,
   renderCreate: typeof renderCreate !== 'undefined' ? renderCreate : undefined,
   updateAmount: typeof updateAmount !== 'undefined' ? updateAmount : undefined,
+  refreshAmountPreview: typeof refreshAmountPreview !== 'undefined' ? refreshAmountPreview : undefined,
   updateCurrency: typeof updateCurrency !== 'undefined' ? updateCurrency : undefined,
   updateMethod: typeof updateMethod !== 'undefined' ? updateMethod : undefined,
   isRateApplicable: typeof isRateApplicable !== 'undefined' ? isRateApplicable : undefined,

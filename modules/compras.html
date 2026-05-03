@@ -822,7 +822,7 @@ function renderInvoiceCreate() {
                 <div class="checkbox-row"><input type="checkbox" id="ret-iva-cb" ${e.applyIVAWithholding?'checked':''} onchange="editing.applyIVAWithholding=this.checked;render()"><label for="ret-iva-cb" style="font-size:13px;">Aplicar retención de IVA (${cfg.ivaWithholdingRate||75}% como agente)</label></div>
               </div>
             ` : ''}
-            <div class="field"><label class="field-label">% Retención ISLR</label><input class="input" type="number" step="0.01" value="${e.islrRate||0}" onchange="editing.islrRate=this.value;render()"><div class="field-hint">0 si no aplica</div></div>
+            <div class="field"><label class="field-label">% Retención ISLR</label><input class="input" type="number" step="0.01" value="${e.islrRate||0}" oninput="editing.islrRate=this.value;refreshInvSummary()"><div class="field-hint">0 si no aplica</div></div>
           </div>
         </div>
       ` : ''}
@@ -879,7 +879,12 @@ function updateInvItemFast(idx, field, val) {
   const item = editing.items[idx];
   const lineEl = document.getElementById(`inv-line-${idx}`);
   if (lineEl) lineEl.textContent = currency.format((item.quantity||0) * (item.unitPrice||0), editing.currency);
-  // Recalcular totales y actualizar el resumen
+  refreshInvSummary();
+}
+
+/** Recalcula y actualiza solo el resumen fiscal sin re-renderizar el form */
+function refreshInvSummary() {
+  if (!editing) return;
   const subtotal = editing.items.reduce((s, it) => s + (parseFloat(it.quantity) * parseFloat(it.unitPrice)), 0);
   const calc = tax.computeInvoiceWithWithholdings({
     subtotal, exempt: editing.exempt,
@@ -1282,6 +1287,7 @@ Object.assign(window, {
   renderInvSummary: typeof renderInvSummary !== 'undefined' ? renderInvSummary : undefined,
   updateInvItem: typeof updateInvItem !== 'undefined' ? updateInvItem : undefined,
   updateInvItemFast: typeof updateInvItemFast !== 'undefined' ? updateInvItemFast : undefined,
+  refreshInvSummary: typeof refreshInvSummary !== 'undefined' ? refreshInvSummary : undefined,
   saveInvoice: typeof saveInvoice !== 'undefined' ? saveInvoice : undefined,
   openInvoice: typeof openInvoice !== 'undefined' ? openInvoice : undefined,
   renderInvoiceDetail: typeof renderInvoiceDetail !== 'undefined' ? renderInvoiceDetail : undefined,
