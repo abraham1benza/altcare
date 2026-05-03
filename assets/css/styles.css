@@ -340,6 +340,30 @@ h3 { font-size: 18px; font-weight: 500; font-style: normal; letter-spacing: -0.0
   position: relative;
   overflow: hidden;
 }
+.kpi-clickable {
+  transition: all 0.18s ease;
+}
+.kpi-clickable:hover {
+  border-color: var(--accent);
+  box-shadow: 0 4px 12px rgba(91, 122, 90, 0.12);
+  transform: translateY(-1px);
+}
+.kpi-clickable:hover .kpi-action {
+  color: var(--accent-ink);
+  opacity: 1;
+}
+.kpi-action {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--accent);
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  opacity: 0.7;
+  transition: opacity 0.18s ease;
+}
 .kpi-label {
   font-size: 11px;
   letter-spacing: 0.14em;
