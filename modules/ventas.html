@@ -30,6 +30,16 @@ let assigning = null;
 let typeFilter = '';
 let searchTerm = '';
 
+// Aplicar filtro inicial desde URL (?filter=PEDIDO viene del dashboard)
+(function applyUrlFilter() {
+  const params = new URLSearchParams(window.location.search);
+  const filterParam = params.get('filter');
+  if (filterParam && ['PEDIDO','COTIZACION','NOTA_ENTREGA','FACTURA','PAID','PARTIAL','CANCELLED'].includes(filterParam)) {
+    typeFilter = filterParam;
+    window.history.replaceState({}, '', window.location.pathname);
+  }
+})();
+
 function render() {
   if (view === 'detail' && selectedId) return renderDetail();
   if (view === 'create') return renderCreate();

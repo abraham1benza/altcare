@@ -33,6 +33,7 @@ function render() {
   const params = new URLSearchParams(window.location.search);
   const invoiceParam = params.get('invoice');
   const docParam = params.get('doc');
+  const tabParam = params.get('tab');
   if (invoiceParam) {
     window.history.replaceState({}, '', window.location.pathname);
     setTimeout(() => newPaymentForInvoice(invoiceParam), 50);
@@ -42,6 +43,11 @@ function render() {
     window.history.replaceState({}, '', window.location.pathname);
     setTimeout(() => newPaymentForDoc(docParam), 50);
     return;
+  }
+  // Pestaña inicial desde URL (?tab=cxc o ?tab=cxp o ?tab=history)
+  if (tabParam && ['cxp', 'cxc', 'history'].includes(tabParam)) {
+    tab = tabParam;
+    window.history.replaceState({}, '', window.location.pathname);
   }
 
   return renderList();
