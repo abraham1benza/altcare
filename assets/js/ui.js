@@ -325,6 +325,22 @@ const ui = {
     return data;
   },
 
+  /**
+   * Crea una versión "debounced" de una función. Espera `delay` ms desde la
+   * última invocación antes de ejecutarla. Útil para inputs de búsqueda donde
+   * no querés re-renderizar todo después de cada tecla (rompe el foco).
+   *
+   * @param {Function} fn - función original
+   * @param {number} delay - ms de espera (default 300)
+   */
+  debounce(fn, delay = 300) {
+    let timeoutId = null;
+    return function(...args) {
+      clearTimeout(timeoutId);
+      timeoutId = setTimeout(() => fn.apply(this, args), delay);
+    };
+  },
+
   /** Llena un form con datos */
   fillForm(formEl, data) {
     Object.entries(data || {}).forEach(([k, v]) => {
