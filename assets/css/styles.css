@@ -761,6 +761,11 @@ thead th {
   background: var(--surface-2);
   border-bottom: 1px solid var(--border-strong);
   white-space: nowrap;
+  transition: background var(--t-fast), color var(--t-fast);
+}
+thead th[onclick]:hover {
+  background: var(--gold-soft);
+  color: var(--gold-deep);
 }
 tbody td {
   padding: 14px 20px;
