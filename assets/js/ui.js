@@ -468,6 +468,49 @@ const ui = {
     };
   },
 
+  /**
+   * Wrapper que preserva el foco y la posición del cursor a través de un render.
+   * Usar así:
+   *
+   *   ui.preserveFocus(() => render());
+   *
+   * Captura el input/textarea con foco, su valor, y la posición del caret antes
+   * del render. Después del render, busca un elemento equivalente (por id, name,
+   * o estructura) y restaura el foco + caret. Esto soluciona el problema clásico
+   * de "perder el foco al escribir" cuando el render redibuja todo el HTML.
+   */
+  preserveFocus(renderFn) {
+    const active = document.activeElement;
+    let snapshot = null;
+    if (active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA' || active.tagName === 'SELECT')) {
+      snapshot = {
+        id: active.id || null,
+        name: active.name || null,
+        tagName: active.tagName,
+        type: active.type || null,
+        value: active.value,
+        selectionStart: active.selectionStart,
+        selectionEnd: active.selectionEnd
+      };
+    }
+    renderFn();
+    if (!snapshot) return;
+    // Después del render, intentar reubicar el mismo input
+    let target = null;
+    if (snapshot.id) target = document.getElementById(snapshot.id);
+    if (!target && snapshot.name) {
+      target = document.querySelector(`${snapshot.tagName.toLowerCase()}[name="${snapshot.name}"]`);
+    }
+    if (target) {
+      target.focus();
+      try {
+        if (snapshot.selectionStart != null && target.setSelectionRange) {
+          target.setSelectionRange(snapshot.selectionStart, snapshot.selectionEnd);
+        }
+      } catch(e) { /* algunos types no soportan setSelectionRange */ }
+    }
+  },
+
   /** Llena un form con datos */
   fillForm(formEl, data) {
     Object.entries(data || {}).forEach(([k, v]) => {
