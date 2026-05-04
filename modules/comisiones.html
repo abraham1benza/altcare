@@ -37,7 +37,13 @@ function render() {
 // =============================================================================
 
 function renderList() {
-  const summaries = commissions.getAllSummaries();
+  let summaries = commissions.getAllSummaries();
+
+  // Filtrar por visibilidad: vendedor solo ve su propio resumen, gerente ve su equipo
+  if (!auth.canSeeAll()) {
+    const visibleUsers = auth.visibleUserIds() || [];
+    summaries = summaries.filter(s => visibleUsers.includes(s.userId));
+  }
   const filtered = searchTerm
     ? summaries.filter(s => (s.user.fullName || s.user.username || '').toLowerCase().includes(searchTerm.toLowerCase()))
     : summaries;
@@ -181,9 +187,11 @@ function renderUserCard(s) {
       </div>
 
       <!-- Botones -->
-      <div style="padding:14px 16px;display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;">
-        <button class="btn btn-primary btn-sm" onclick="openPayCommission('${u.id}')" style="font-size:11px;padding:6px 8px;">$ Pagar</button>
-        <button class="btn btn-secondary btn-sm" onclick="openGiveLoan('${u.id}')" style="font-size:11px;padding:6px 8px;">📋 Préstamo</button>
+      <div style="padding:14px 16px;display:grid;grid-template-columns:${auth.canSeeAll() || auth.isManager() ? '1fr 1fr 1fr' : '1fr'};gap:6px;">
+        ${auth.canSeeAll() || auth.isManager() ? `
+          <button class="btn btn-primary btn-sm" onclick="openPayCommission('${u.id}')" style="font-size:11px;padding:6px 8px;">$ Pagar</button>
+          <button class="btn btn-secondary btn-sm" onclick="openGiveLoan('${u.id}')" style="font-size:11px;padding:6px 8px;">📋 Préstamo</button>
+        ` : ''}
         <button class="btn btn-ghost btn-sm" onclick="openDetail('${u.id}')" style="font-size:11px;padding:6px 8px;">📊 Detalle</button>
       </div>
     </div>
@@ -227,8 +235,10 @@ function renderDetail() {
       </div>
 
       <div style="display:flex;gap:8px;margin-bottom:16px;">
-        <button class="btn btn-primary" onclick="openPayCommission('${s.userId}')">$ Pagar comisión</button>
-        <button class="btn btn-secondary" onclick="openGiveLoan('${s.userId}')">📋 Otorgar préstamo</button>
+        ${auth.canSeeAll() || auth.isManager() ? `
+          <button class="btn btn-primary" onclick="openPayCommission('${s.userId}')">$ Pagar comisión</button>
+          <button class="btn btn-secondary" onclick="openGiveLoan('${s.userId}')">📋 Otorgar préstamo</button>
+        ` : ''}
       </div>
 
       <!-- Eventos de comisión -->

@@ -253,6 +253,37 @@ function openForm(item) {
               </div>
             </div>
           </div>
+
+          <!-- ACCESO Y SUPERVISIÓN -->
+          <div class="field" style="grid-column:1/-1;margin-top:8px;padding:14px;background:#fef3c7;border:1px solid #fcd34d;border-radius:8px;">
+            <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;">
+              <strong style="font-size:13px;color:#78350f;">🔒 Acceso y supervisión</strong>
+            </div>
+            <div class="form-grid form-grid-2">
+              <div class="field">
+                <label class="field-label">Acceso a clientes</label>
+                <select class="select" name="clientAccess">
+                  <option value="own" ${(item.clientAccess||'own')==='own'?'selected':''}>Solo sus clientes (recomendado)</option>
+                  <option value="all" ${item.clientAccess==='all'?'selected':''}>Todos los clientes (acceso global)</option>
+                </select>
+                <div class="field-hint">Si elige "Solo sus clientes", al crear uno nuevo queda asignado automáticamente a este usuario</div>
+              </div>
+              <div class="field">
+                <label class="field-label">Gerente directo (opcional)</label>
+                <select class="select" name="managerId">
+                  <option value="">— Sin gerente directo —</option>
+                  ${(() => {
+                    // Listar usuarios admin/gerente activos como posibles gerentes
+                    const possibleManagers = db.getAll(db.COLLECTIONS.users)
+                      .filter(u => (u.role === 'admin' || u.role === 'gerente') && u.active !== false && u.id !== item.id);
+                    return possibleManagers.map(u => `<option value="${u.id}" ${item.managerId===u.id?'selected':''}>${ui.escape(u.fullName||u.username)} (${u.role})</option>`).join('');
+                  })()}
+                </select>
+                <div class="field-hint">El gerente verá todos los datos de este usuario (ventas, comisiones, etc.)</div>
+              </div>
+            </div>
+            ${item.role === 'admin' ? '<div class="field-hint" style="margin-top:8px;color:#78350f;">⚠️ Los administradores siempre ven todo, estas opciones no los afectan.</div>' : ''}
+          </div>
         </div>
       </form>
     `,
@@ -350,10 +381,13 @@ async function saveItem(e, id) {
 
   // Procesar campos de comisión
   data.commissionEnabled = !!fd.get('commissionEnabled');
-  // Si el campo viene vacío, dejarlo null para que use el default global
   data.commissionRateSale = data.commissionRateSale != null && data.commissionRateSale !== '' ? parseFloat(data.commissionRateSale) : null;
   data.commissionRateCollection = data.commissionRateCollection != null && data.commissionRateCollection !== '' ? parseFloat(data.commissionRateCollection) : null;
   data.commissionBase = data.commissionBase || null;
+
+  // Visibilidad y supervisión
+  data.clientAccess = data.clientAccess || 'own';
+  data.managerId = data.managerId || null;
 
   if (!id) {
     // CREACIÓN: validar y crear en Firebase Auth + Firestore
@@ -387,7 +421,9 @@ async function saveItem(e, id) {
       commissionEnabled: data.commissionEnabled,
       commissionRateSale: data.commissionRateSale,
       commissionRateCollection: data.commissionRateCollection,
-      commissionBase: data.commissionBase
+      commissionBase: data.commissionBase,
+      clientAccess: data.clientAccess,
+      managerId: data.managerId
     });
 
     if (!result.ok) {

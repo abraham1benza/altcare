@@ -52,6 +52,24 @@ function render() {
 
 function renderList() {
   let docs = db.getAll(db.COLLECTIONS.salesOrders).filter(d => !d.cancelled || typeFilter === 'CANCELLED');
+
+  // Filtrado por visibilidad: si no es admin, mostrar:
+  //   - Documentos donde el vendedor es el user actual (o de su equipo)
+  //   - Documentos cuyos clientes están asignados al user actual (o su equipo)
+  if (!auth.canSeeAll()) {
+    const visibleUsers = auth.visibleUserIds() || [];
+    // Pre-calcular clientes visibles
+    const myCustomerIds = new Set(
+      db.getAll(db.COLLECTIONS.customers)
+        .filter(c => c.salesRepUserId && visibleUsers.includes(c.salesRepUserId))
+        .map(c => c.id)
+    );
+    docs = docs.filter(d =>
+      (d.salespersonId && visibleUsers.includes(d.salespersonId)) ||
+      (d.customerId && myCustomerIds.has(d.customerId))
+    );
+  }
+
   const all = docs;
   if (typeFilter) docs = docs.filter(d => d.type === typeFilter || d.status === typeFilter);
   if (searchTerm) {

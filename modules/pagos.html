@@ -55,18 +55,52 @@ function render() {
 }
 
 function renderList() {
-  // Cuentas por pagar (facturas proveedor pendientes)
-  const supplierInvoices = db.getAll(db.COLLECTIONS.supplierInvoices)
-    .filter(i => i.status !== 'CANCELLED' && (i.totalToPay - (i.paidAmount||0)) > 0.01)
-    .sort((a,b) => (a.dueDate||a.issueDate||'').localeCompare(b.dueDate||b.issueDate||''));
+  const isAdmin = auth.canSeeAll();
+  const visibleUsers = auth.visibleUserIds() || [];
 
-  // Cuentas por cobrar (facturas venta pendientes)
-  const salesDocs = db.getAll(db.COLLECTIONS.salesOrders)
-    .filter(d => !d.cancelled && d.type === 'FACTURA' && (d.total - (d.paidAmount||0)) > 0.01)
-    .sort((a,b) => (a.dueDate||a.issueDate||'').localeCompare(b.dueDate||b.issueDate||''));
+  // Pre-calcular IDs de clientes visibles (para filtrar facturas)
+  let myCustomerIds = null; // null = todos
+  if (!isAdmin) {
+    myCustomerIds = new Set(
+      db.getAll(db.COLLECTIONS.customers)
+        .filter(c => c.salesRepUserId && visibleUsers.includes(c.salesRepUserId))
+        .map(c => c.id)
+    );
+  }
+
+  // Cuentas por pagar (facturas proveedor pendientes) - SOLO admin/gerente las ve (no vendedores)
+  const supplierInvoices = isAdmin
+    ? db.getAll(db.COLLECTIONS.supplierInvoices)
+        .filter(i => i.status !== 'CANCELLED' && (i.totalToPay - (i.paidAmount||0)) > 0.01)
+        .sort((a,b) => (a.dueDate||a.issueDate||'').localeCompare(b.dueDate||b.issueDate||''))
+    : []; // vendedores y demás: vacío
+
+  // Cuentas por cobrar (facturas venta pendientes) - filtradas por visibilidad
+  let salesDocs = db.getAll(db.COLLECTIONS.salesOrders)
+    .filter(d => !d.cancelled && d.type === 'FACTURA' && (d.total - (d.paidAmount||0)) > 0.01);
+  if (!isAdmin) {
+    salesDocs = salesDocs.filter(d =>
+      (d.salespersonId && visibleUsers.includes(d.salespersonId)) ||
+      (d.customerId && myCustomerIds.has(d.customerId))
+    );
+  }
+  salesDocs.sort((a,b) => (a.dueDate||a.issueDate||'').localeCompare(b.dueDate||b.issueDate||''));
 
   // Histórico de pagos
-  const allPayments = db.getAll(db.COLLECTIONS.payments).sort((a,b) => (b.date||'').localeCompare(a.date||''));
+  let allPayments = db.getAll(db.COLLECTIONS.payments).sort((a,b) => (b.date||'').localeCompare(a.date||''));
+  if (!isAdmin) {
+    // Solo cobros (IN) cuyas facturas son de clientes visibles
+    const visibleSalesIds = new Set(
+      db.getAll(db.COLLECTIONS.salesOrders)
+        .filter(d =>
+          (d.salespersonId && visibleUsers.includes(d.salespersonId)) ||
+          (d.customerId && myCustomerIds.has(d.customerId))
+        ).map(d => d.id)
+    );
+    allPayments = allPayments.filter(p =>
+      p.direction === 'IN' && p.relatedDocId && visibleSalesIds.has(p.relatedDocId)
+    );
+  }
 
   // Totales POR MONEDA (más útil que solo USD si no hay tasa)
   const cxpByCcy = { VES: 0, USD: 0, EUR: 0 };

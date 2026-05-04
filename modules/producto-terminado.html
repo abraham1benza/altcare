@@ -53,8 +53,11 @@ function render() {
   const totalAvailable = all.filter(l => l.status==='LIBERADO').reduce((s,l) => s + (l.balance||0), 0);
   const totalValueUSD = all.filter(l => l.balance>0).reduce((s,l) => s + (l.balance * (l.unitCost||0)), 0);
 
+  // Valor solo visible en modo Gerencial
+  const isGerencialMode = (typeof auth !== 'undefined' && auth.getActiveMode && auth.getActiveMode() === 'gerencial');
+
   const tableHtml = lots.length ? `<table>
-    <thead><tr><th>Lote</th><th>Fórmula</th><th>OF</th><th>Fabricado</th><th>Vence</th><th style="text-align:right;">Cantidad</th><th>Almacén</th><th>Estado</th><th style="text-align:right;">Valor</th><th style="text-align:right;width:120px;">Acciones</th></tr></thead>
+    <thead><tr><th>Lote</th><th>Fórmula</th><th>OF</th><th>Fabricado</th><th>Vence</th><th style="text-align:right;">Cantidad</th><th>Almacén</th><th>Estado</th>${isGerencialMode ? '<th style="text-align:right;">Valor</th>' : ''}<th style="text-align:right;width:120px;">Acciones</th></tr></thead>
     <tbody>${lots.map(l => {
       const s = PT_STATUS[l.status] || { label: l.status, color: 'badge-plain' };
       const days = l.expiryDate ? Math.round((new Date(l.expiryDate) - new Date(today)) / 86400000) : null;
@@ -73,7 +76,7 @@ function render() {
         <td style="text-align:right;"><span class="td-mono td-strong">${(l.balance||0).toLocaleString('es-VE',{minimumFractionDigits:2,maximumFractionDigits:3})}</span> <span class="text-muted">${l.unit}</span></td>
         <td><span class="text-muted" style="font-size:12px;">${ui.escape(whMap[l.warehouseId]||'—')}</span></td>
         <td><span class="badge ${s.color}">${s.label}</span></td>
-        <td style="text-align:right;"><span class="td-mono">$${((l.balance||0) * (l.unitCost||0)).toFixed(2)}</span></td>
+        ${isGerencialMode ? `<td style="text-align:right;"><span class="td-mono">$${((l.balance||0) * (l.unitCost||0)).toFixed(2)}</span></td>` : ''}
         <td class="td-actions">
           ${!l.formulaId ? `<button class="btn-icon" onclick="openLinkFormula('${l.id}')" title="Vincular fórmula" style="color:#92400e;">🔗</button>` : ''}
           ${l.qcTestId ? `<a class="btn-icon" href="calidad.html" onclick="event.stopPropagation()" title="Ver QC">${ui.icon('flask')}</a>` : ''}
@@ -94,11 +97,11 @@ function render() {
         </div>
       </div>
 
-      <div class="grid grid-4 mb-24">
+      <div class="grid ${isGerencialMode ? 'grid-4' : 'grid-3'} mb-24">
         <div class="kpi"><div class="kpi-label">Total liberado</div><div class="kpi-value">${totalAvailable.toLocaleString('es-VE',{minimumFractionDigits:2,maximumFractionDigits:3})}</div><div class="kpi-value-sub">disponible para venta</div></div>
         <div class="kpi"><div class="kpi-label">Cuarentena</div><div class="kpi-value">${counts.cuarentena}</div><div class="kpi-value-sub">esperando QC</div></div>
         <div class="kpi"><div class="kpi-label">Rechazados</div><div class="kpi-value" style="color:var(--danger);">${counts.rechazado}</div><div class="kpi-value-sub">no aptos</div></div>
-        <div class="kpi"><div class="kpi-label">Valor inventario</div><div class="kpi-value" style="color:var(--accent-ink);">$${totalValueUSD.toFixed(2)}</div><div class="kpi-value-sub">a costo de fabricación</div></div>
+        ${isGerencialMode ? `<div class="kpi"><div class="kpi-label">Valor inventario</div><div class="kpi-value" style="color:var(--accent-ink);">$${totalValueUSD.toFixed(2)}</div><div class="kpi-value-sub">a costo de fabricación</div></div>` : ''}
       </div>
 
       <div class="table-wrap">

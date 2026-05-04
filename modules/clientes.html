@@ -26,6 +26,15 @@ let searchTerm = '';
 
 function render() {
   let items = db.getAll(db.COLLECTIONS.customers);
+
+  // Filtrado por visibilidad: si el usuario es vendedor con clientAccess='own', solo ve los suyos
+  const access = auth.getClientAccess();
+  if (access === 'own') {
+    const visibleUsers = auth.visibleUserIds();
+    if (visibleUsers !== null) {
+      items = items.filter(c => c.salesRepUserId && visibleUsers.includes(c.salesRepUserId));
+    }
+  }
   const allItems = items;
 
   if (searchTerm) {
@@ -247,7 +256,21 @@ function saveItem(e, id) {
   e.preventDefault();
   const data = ui.formData(e.target);
   if (!data.name || !data.rif) { ui.toast('Razón social y RIF/Cédula son obligatorios', 'error'); return; }
-  if (id) data.id = id;
+
+  if (id) {
+    // Edición: respetar el salesRepUserId existente (no auto-asignar al editor actual)
+    data.id = id;
+    const existing = db.getById(db.COLLECTIONS.customers, id);
+    if (existing && existing.salesRepUserId) data.salesRepUserId = existing.salesRepUserId;
+  } else {
+    // Creación nueva: auto-asignar al usuario actual SI no es admin/gerente
+    const me = auth.currentUser();
+    if (me && !auth.isAdmin() && !auth.isManager()) {
+      data.salesRepUserId = me.id;
+      if (!data.salesRep) data.salesRep = me.fullName || me.username;
+    }
+  }
+
   db.save(db.COLLECTIONS.customers, data);
   ui.closeModal();
   ui.toast(id ? 'Cliente actualizado' : 'Cliente creado', 'success');
