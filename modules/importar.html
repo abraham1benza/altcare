@@ -1,0 +1,371 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Importar Inventario · altcare</title>
+<link rel="stylesheet" href="../assets/css/styles.css">
+</head>
+<body>
+<script type="module" src="../assets/js/firebase-init.js"></script>
+<script src="../assets/js/module-init-v2.js"></script>
+<script src="../assets/js/db.js"></script>
+<script src="../assets/js/auth.js"></script>
+<script src="../assets/js/currency.js"></script>
+<script src="../assets/js/tax.js"></script>
+<script src="../assets/js/inventory.js"></script>
+<script src="../assets/js/ui.js"></script>
+<script>
+moduleInit('importar').then(async (ok) => {
+if (!ok) return;
+
+let csvText = '';
+let parsedRows = [];
+let parseErrors = [];
+let importing = false;
+
+// Plantilla con los tintes vistos en las imágenes (sin costos/precios para que el usuario los complete)
+const TEMPLATE_CSV = `producto,cantidad,unidad,costo_usd,precio_distribuidor,precio_peluqueria
+TINTE 1.0 NEGRO,713,unidad,1.50,3.50,4.50
+TINTE 1.1 AZABACHE,78,unidad,1.50,3.50,4.50
+TINTE 1.6 EBANO,1647,unidad,1.50,3.50,4.50
+TINTE 1.08 PANTERA,205,unidad,1.50,3.50,4.50
+TINTE 3.0 CASTAÑO OSCURO,1398,unidad,1.50,3.50,4.50
+TINTE 4.0 CASTAÑO,334,unidad,1.50,3.50,4.50
+TINTE 5.0 CASTAÑO CLARO,62,unidad,1.50,3.50,4.50
+TINTE 6.0 RUBIO OSCURO,399,unidad,1.50,3.50,4.50
+TINTE 7.0 RUBIO,174,unidad,1.50,3.50,4.50
+TINTE 8.0 RUBIO CLARO,427,unidad,1.50,3.50,4.50
+TINTE 9.0 RUBIO MUY CLARO,745,unidad,1.50,3.50,4.50
+TINTE 10.0 RUBIO MUY MUY CLARO,337,unidad,1.50,3.50,4.50
+TINTE 6.1 RUBIO OSCURO CENIZA,1093,unidad,1.50,3.50,4.50
+TINTE 7.1 RUBIO CENIZA,1011,unidad,1.50,3.50,4.50
+TINTE 8.1 RUBIO CLARO CENIZA,1252,unidad,1.50,3.50,4.50
+TINTE 9.1 RUBIO MUY CLARO CENIZA,926,unidad,1.50,3.50,4.50
+TINTE 10.1 RUBIO MUY MUY CLARO CENIZA,1245,unidad,1.50,3.50,4.50
+TINTE 5.37 CARAMELO TOSTADO,649,unidad,1.50,3.50,4.50
+TINTE 8.37 CARAMELO SUAVE,762,unidad,1.50,3.50,4.50
+TINTE 9.03 CARAMELO CREMA,2773,unidad,1.50,3.50,4.50
+TINTE 4.7 CHOCOLATE OSCURO,356,unidad,1.50,3.50,4.50
+TINTE 6.7 CHOCOLATE,71,unidad,1.50,3.50,4.50
+TINTE 7.77 CHOCOLATE INTENSO,206,unidad,1.50,3.50,4.50
+TINTE 5.75 CAFÉ,673,unidad,1.50,3.50,4.50
+TINTE 7.75 SATINADO,49,unidad,1.50,3.50,4.50
+TINTE 8.7 GLACE,1532,unidad,1.50,3.50,4.50
+TINTE 4.65 ROJO ARDIENTE,829,unidad,1.50,3.50,4.50
+TINTE 5.66 BORGOÑA,112,unidad,1.50,3.50,4.50
+TINTE 6.45 RUBI,538,unidad,1.50,3.50,4.50
+TINTE 7.64 CEREZA,267,unidad,1.50,3.50,4.50
+TINTE 8.54 AMOR,1720,unidad,1.50,3.50,4.50
+TINTE 44.55 SALVAJE,6,unidad,1.50,3.50,4.50
+TINTE 66.46 AMAZONAS,476,unidad,1.50,3.50,4.50
+TINTE 77.44 FANTASIA,1446,unidad,1.50,3.50,4.50
+TINTE 8.8 PLATA,2037,unidad,1.50,3.50,4.50
+TINTE 9.2 PERLA,573,unidad,1.50,3.50,4.50
+TINTE 12.89 SUPER ACLARANTE PERLADO,320,unidad,1.50,3.50,4.50
+TINTE 000 SIDRA,1770,unidad,1.50,3.50,4.50
+TINTE 100.1 CHAMPAN,1692,unidad,1.50,3.50,4.50
+TINTE 100.12 CHAMPAN REAL,1844,unidad,1.50,3.50,4.50
+TINTE 0.4 ROJO,2005,unidad,1.50,3.50,4.50
+TINTE 0.9 MATIZADOR PLATA,1575,unidad,1.50,3.50,4.50`;
+
+function render() {
+  ui.renderLayout({
+    activeModule: 'importar',
+    pageEyebrow: 'Sistema',
+    pageTitle: 'Importar Inventario',
+    contentHtml: `
+      <h2 style="margin:0 0 8px;font-family:var(--font-display);font-size:24px;font-weight:500;letter-spacing:-0.02em;">Carga masiva de Producto Terminado</h2>
+      <p class="text-muted mb-24" style="font-size:13px;line-height:1.5;">
+        Pega tu inventario en formato CSV (separado por comas). Cada producto se creará como un <strong>lote inicial liberado</strong>, listo para vender.
+        Si el producto aún no tiene fórmula vinculada, podés conectarla después desde el detalle del lote.
+      </p>
+
+      <div class="card mb-24" style="padding:14px 18px;background:#f0f9ff;border-color:#bae6fd;">
+        <div style="font-weight:600;font-size:13px;color:#0369a1;margin-bottom:8px;">📋 Formato esperado</div>
+        <div style="font-family:var(--font-mono);font-size:11.5px;background:white;padding:10px;border-radius:6px;border:1px solid var(--border);overflow-x:auto;">
+producto,cantidad,unidad,costo_usd,precio_distribuidor,precio_peluqueria<br>
+TINTE 1.0 NEGRO,713,unidad,1.50,3.50,4.50<br>
+TINTE 1.1 AZABACHE,78,unidad,1.50,3.50,4.50
+        </div>
+        <div class="text-muted" style="font-size:11px;margin-top:8px;">
+          • <strong>producto</strong>: nombre del producto (obligatorio) ·
+          <strong>cantidad</strong>: stock inicial (obligatorio) ·
+          <strong>unidad</strong>: unidad de medida (default: "unidad") ·
+          <strong>costo_usd</strong>: costo unitario en USD (placeholder) ·
+          <strong>precio_distribuidor</strong> y <strong>precio_peluqueria</strong>: precios de venta
+        </div>
+        <button class="btn btn-secondary btn-sm" onclick="loadTemplate()" style="margin-top:10px;">📥 Cargar plantilla con tintes (de las imágenes)</button>
+      </div>
+
+      <div class="card mb-24">
+        <div class="card-header"><div class="card-title">Pegá el CSV aquí</div></div>
+        <textarea id="csv-input" class="textarea" rows="14" style="font-family:var(--font-mono);font-size:12px;" placeholder="Pegá tu CSV (con o sin encabezados)..." oninput="onCsvChange(this.value)">${ui.escape(csvText)}</textarea>
+        <div style="display:flex;gap:8px;margin-top:12px;">
+          <button class="btn btn-secondary" onclick="parseCsv()">${ui.icon('check')||'✓'} Validar y previsualizar</button>
+          <button class="btn btn-ghost" onclick="clearCsv()">Limpiar</button>
+        </div>
+      </div>
+
+      ${parsedRows.length > 0 ? renderPreview() : ''}
+      ${parseErrors.length > 0 ? renderErrors() : ''}
+    `
+  });
+}
+
+function renderPreview() {
+  const validRows = parsedRows.filter(r => !r._error);
+  const invalidRows = parsedRows.filter(r => r._error);
+  const totalQty = validRows.reduce((s, r) => s + r.cantidad, 0);
+  const totalValueUSD = validRows.reduce((s, r) => s + (r.cantidad * r.costo_usd), 0);
+  const totalSalesDistUSD = validRows.reduce((s, r) => s + (r.cantidad * r.precio_distribuidor), 0);
+
+  return `
+    <div class="card mb-24" style="padding:0;">
+      <div style="padding:14px 20px;border-bottom:1px solid var(--border);background:linear-gradient(180deg, var(--accent-soft) 0%, transparent 100%);display:flex;justify-content:space-between;align-items:center;">
+        <div>
+          <div class="card-title">📦 Vista previa de importación</div>
+          <div class="text-muted" style="font-size:12px;margin-top:2px;">
+            ${validRows.length} producto${validRows.length!==1?'s':''} válidos
+            ${invalidRows.length > 0 ? ` · <span style="color:var(--danger);">${invalidRows.length} con errores</span>` : ''}
+          </div>
+        </div>
+        <div style="text-align:right;font-size:11px;">
+          <div><strong>${totalQty.toLocaleString('es-VE')}</strong> unidades totales</div>
+          <div class="text-muted">Valor a costo: ${currency.format(totalValueUSD,'USD')}</div>
+          <div class="text-muted">Valor a precio dist.: ${currency.format(totalSalesDistUSD,'USD')}</div>
+        </div>
+      </div>
+
+      <div class="table-wrap" style="border-radius:0;max-height:500px;overflow-y:auto;">
+        <table style="font-size:12px;">
+          <thead style="position:sticky;top:0;background:var(--surface);z-index:1;">
+            <tr>
+              <th style="width:30px;">#</th>
+              <th>Producto</th>
+              <th style="text-align:right;">Cantidad</th>
+              <th>Unidad</th>
+              <th style="text-align:right;">Costo USD</th>
+              <th style="text-align:right;">P. Distribuidor</th>
+              <th style="text-align:right;">P. Peluquería</th>
+              <th>Estado</th>
+            </tr>
+          </thead>
+          <tbody>${parsedRows.map((r, idx) => {
+            if (r._error) {
+              return `<tr style="background:#fee2e2;">
+                <td><span class="text-muted">${idx+1}</span></td>
+                <td colspan="6"><span style="color:var(--danger);font-size:11.5px;">${ui.escape(r._error)}</span></td>
+                <td><span class="badge badge-danger" style="font-size:9.5px;">Error</span></td>
+              </tr>`;
+            }
+            return `<tr>
+              <td><span class="text-muted">${idx+1}</span></td>
+              <td><span class="td-strong">${ui.escape(r.producto)}</span></td>
+              <td style="text-align:right;"><span class="td-mono">${r.cantidad.toLocaleString('es-VE')}</span></td>
+              <td><span class="text-muted">${r.unidad}</span></td>
+              <td style="text-align:right;"><span class="td-mono">${currency.format(r.costo_usd,'USD')}</span></td>
+              <td style="text-align:right;"><span class="td-mono">${currency.format(r.precio_distribuidor,'USD')}</span></td>
+              <td style="text-align:right;"><span class="td-mono">${currency.format(r.precio_peluqueria,'USD')}</span></td>
+              <td><span class="badge badge-paid" style="font-size:9.5px;">✓ Listo</span></td>
+            </tr>`;
+          }).join('')}</tbody>
+        </table>
+      </div>
+
+      <div style="padding:14px 20px;border-top:1px solid var(--border);background:var(--surface-2);">
+        ${validRows.length > 0 ? `
+          <button class="btn btn-primary" onclick="confirmImport()" ${importing?'disabled':''}>
+            ${importing ? '⏳ Importando...' : `📥 Importar ${validRows.length} producto${validRows.length!==1?'s':''}`}
+          </button>
+          <span class="text-muted" style="font-size:11.5px;margin-left:12px;">
+            Se crearán ${validRows.length} lotes PT con estado <strong>LIBERADO</strong>.
+          </span>
+        ` : `<span class="text-muted">No hay filas válidas para importar.</span>`}
+      </div>
+    </div>
+  `;
+}
+
+function renderErrors() {
+  return `
+    <div class="card mb-24" style="background:#fee2e2;border-color:#fca5a5;">
+      <div style="font-weight:600;color:#991b1b;margin-bottom:8px;">⚠️ Errores de parseo</div>
+      <ul style="margin:0;padding-left:18px;font-size:12px;color:#7f1d1d;">
+        ${parseErrors.map(e => `<li>${ui.escape(e)}</li>`).join('')}
+      </ul>
+    </div>
+  `;
+}
+
+function loadTemplate() {
+  csvText = TEMPLATE_CSV;
+  const ta = document.getElementById('csv-input');
+  if (ta) ta.value = TEMPLATE_CSV;
+  parseCsv();
+}
+
+function onCsvChange(val) {
+  csvText = val;
+}
+
+function clearCsv() {
+  csvText = '';
+  parsedRows = [];
+  parseErrors = [];
+  render();
+}
+
+/** Parsea el CSV y valida cada fila */
+function parseCsv() {
+  parsedRows = [];
+  parseErrors = [];
+
+  if (!csvText.trim()) {
+    ui.toast('Pegá un CSV primero', 'error');
+    return;
+  }
+
+  const lines = csvText.split(/\r?\n/).map(l => l.trim()).filter(l => l);
+  if (lines.length === 0) {
+    parseErrors.push('CSV vacío');
+    render();
+    return;
+  }
+
+  // Detectar header
+  const firstLine = lines[0].toLowerCase();
+  const hasHeader = firstLine.includes('producto') || firstLine.includes('cantidad') || firstLine.includes('unidad');
+  const dataLines = hasHeader ? lines.slice(1) : lines;
+
+  if (dataLines.length === 0) {
+    parseErrors.push('No hay filas de datos (solo encabezado)');
+    render();
+    return;
+  }
+
+  dataLines.forEach((line, i) => {
+    const lineNum = (hasHeader ? i + 2 : i + 1);
+    // Split por coma respetando comillas
+    const cols = parseCsvLine(line);
+    if (cols.length < 2) {
+      parsedRows.push({ _error: `Línea ${lineNum}: pocas columnas (mínimo 2: producto, cantidad)` });
+      return;
+    }
+
+    const producto = (cols[0] || '').trim();
+    const cantidadStr = (cols[1] || '').trim().replace(/\./g, '').replace(',', '.');
+    const cantidad = parseFloat(cantidadStr);
+    const unidad = (cols[2] || 'unidad').trim() || 'unidad';
+    const costoStr = (cols[3] || '0').trim().replace(',', '.');
+    const costo_usd = parseFloat(costoStr) || 0;
+    const precioDistStr = (cols[4] || '0').trim().replace(',', '.');
+    const precio_distribuidor = parseFloat(precioDistStr) || 0;
+    const precioPeluStr = (cols[5] || '0').trim().replace(',', '.');
+    const precio_peluqueria = parseFloat(precioPeluStr) || 0;
+
+    if (!producto) {
+      parsedRows.push({ _error: `Línea ${lineNum}: producto vacío` });
+      return;
+    }
+    if (!cantidad || cantidad <= 0) {
+      parsedRows.push({ _error: `Línea ${lineNum}: cantidad inválida en "${producto}" (valor: ${cols[1]})` });
+      return;
+    }
+
+    parsedRows.push({ producto, cantidad, unidad, costo_usd, precio_distribuidor, precio_peluqueria });
+  });
+
+  const validCount = parsedRows.filter(r => !r._error).length;
+  if (validCount > 0) {
+    ui.toast(`${validCount} producto${validCount!==1?'s':''} listo${validCount!==1?'s':''} para importar`, 'success');
+  } else {
+    ui.toast('No se pudieron parsear filas válidas', 'error');
+  }
+  render();
+}
+
+function parseCsvLine(line) {
+  const cols = [];
+  let current = '';
+  let inQuotes = false;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (ch === '"') {
+      inQuotes = !inQuotes;
+    } else if (ch === ',' && !inQuotes) {
+      cols.push(current);
+      current = '';
+    } else {
+      current += ch;
+    }
+  }
+  cols.push(current);
+  return cols;
+}
+
+function confirmImport() {
+  const validRows = parsedRows.filter(r => !r._error);
+  if (validRows.length === 0) return;
+
+  ui.confirm(
+    `¿Importar ${validRows.length} productos al inventario? Se crearán lotes PT en estado LIBERADO.`,
+    () => doImport(validRows),
+    { confirmLabel: 'Importar' }
+  );
+}
+
+async function doImport(rows) {
+  importing = true;
+  render();
+  let success = 0;
+  let failed = 0;
+  const errors = [];
+
+  for (const row of rows) {
+    try {
+      inventory.createInitialFGLot({
+        productName: row.producto,
+        quantity: row.cantidad,
+        unit: row.unidad,
+        unitCost: row.costo_usd,
+        costCurrency: 'USD',
+        priceDistributor: row.precio_distribuidor,
+        pricePharmacy: row.precio_peluqueria,
+        status: 'LIBERADO'
+      });
+      success++;
+    } catch (err) {
+      failed++;
+      errors.push(`${row.producto}: ${err.message}`);
+    }
+  }
+
+  importing = false;
+
+  if (failed === 0) {
+    ui.toast(`✓ ${success} productos importados correctamente`, 'success', 5000);
+    csvText = '';
+    parsedRows = [];
+    parseErrors = [];
+    setTimeout(() => {
+      // Redirigir a producto-terminado
+      window.location.href = 'producto-terminado.html';
+    }, 1500);
+  } else {
+    ui.toast(`Importación parcial: ${success} OK, ${failed} fallaron. Ver errores arriba.`, 'error', 8000);
+    parseErrors = errors;
+    render();
+  }
+}
+
+render();
+
+Object.assign(window, {
+  loadTemplate, onCsvChange, clearCsv, parseCsv, confirmImport
+});
+
+}); // end moduleInit
+</script>
+</body>
+</html>

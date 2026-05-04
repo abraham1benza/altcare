@@ -36,7 +36,7 @@ function render() {
   if (statusFilter) lots = lots.filter(l => l.status === statusFilter);
   if (searchTerm) {
     const q = searchTerm.toLowerCase();
-    lots = lots.filter(l => (l.code||'').toLowerCase().includes(q) || (l.formulaName||'').toLowerCase().includes(q));
+    lots = lots.filter(l => (l.code||'').toLowerCase().includes(q) || (l.formulaName||l.productName||'').toLowerCase().includes(q));
   }
   lots.sort((a,b) => (b.manufactureDate||'').localeCompare(a.manufactureDate||''));
 
@@ -60,8 +60,13 @@ function render() {
       const days = l.expiryDate ? Math.round((new Date(l.expiryDate) - new Date(today)) / 86400000) : null;
       const expClass = days !== null && days < 30 ? 'badge-danger' : days !== null && days < 90 ? 'badge-warning' : 'badge-plain';
       return `<tr>
-        <td><span class="td-mono td-strong">${ui.escape(l.code)}</span></td>
-        <td>${ui.escape(l.formulaName||'—')}</td>
+        <td><span class="td-mono td-strong">${ui.escape(l.code)}</span>${l.isInitialLoad ? `<div class="text-muted" style="font-size:10px;">📥 Carga inicial</div>` : ''}</td>
+        <td>
+          ${l.formulaId
+            ? ui.escape(l.formulaName||'—')
+            : `<div>${ui.escape(l.productName || l.formulaName || '—')}</div><span class="badge badge-warning" style="font-size:9.5px;">⚠️ Sin fórmula</span>`
+          }
+        </td>
         <td><span class="td-mono">${ui.escape(l.productionOrderCode||'—')}</span></td>
         <td><span class="text-muted">${ui.formatDate(l.manufactureDate)}</span></td>
         <td>${l.expiryDate ? `<span class="badge ${expClass}">${ui.formatDate(l.expiryDate)}${days !== null ? ` · ${days}d` : ''}</span>` : '<span class="td-muted">—</span>'}</td>
@@ -70,6 +75,7 @@ function render() {
         <td><span class="badge ${s.color}">${s.label}</span></td>
         <td style="text-align:right;"><span class="td-mono">$${((l.balance||0) * (l.unitCost||0)).toFixed(2)}</span></td>
         <td class="td-actions">
+          ${!l.formulaId ? `<button class="btn-icon" onclick="openLinkFormula('${l.id}')" title="Vincular fórmula" style="color:#92400e;">🔗</button>` : ''}
           ${l.qcTestId ? `<a class="btn-icon" href="calidad.html" onclick="event.stopPropagation()" title="Ver QC">${ui.icon('flask')}</a>` : ''}
           <button class="btn-icon" onclick="editLot('${l.id}')" title="Editar">${ui.icon('edit')}</button>
         </td>
@@ -147,6 +153,60 @@ function saveLot(e, id) {
 render();
 
 
+// Vincular un lote sin fórmula a una fórmula existente
+function openLinkFormula(lotId) {
+  const lot = db.getById(db.COLLECTIONS.finishedGoods, lotId);
+  if (!lot) return;
+  const formulas = db.getAll(db.COLLECTIONS.formulas).filter(f => f.active !== false);
+  if (formulas.length === 0) {
+    ui.toast('Primero creá fórmulas en el módulo Fórmulas', 'error');
+    return;
+  }
+
+  // Sugerir la fórmula más probable según similitud de nombre
+  const lotName = (lot.productName || lot.formulaName || '').toLowerCase();
+  const sortedFormulas = [...formulas].sort((a, b) => {
+    const aMatch = (a.name || '').toLowerCase().includes(lotName) || lotName.includes((a.name || '').toLowerCase()) ? 1 : 0;
+    const bMatch = (b.name || '').toLowerCase().includes(lotName) || lotName.includes((b.name || '').toLowerCase()) ? 1 : 0;
+    return bMatch - aMatch;
+  });
+
+  ui.openModal({
+    title: `Vincular fórmula a ${lot.code}`,
+    body: `
+      <p style="font-size:13px;color:var(--ink-2);line-height:1.5;margin-bottom:14px;">
+        Lote: <strong>${ui.escape(lot.productName || lot.formulaName)}</strong> (${lot.balance} ${lot.unit})
+        <br>Al vincular, el costo del lote se actualizará si la fórmula tiene costo calculado.
+      </p>
+      <form id="link-form" onsubmit="confirmLinkFormula(event, '${lot.id}')">
+        <div class="field">
+          <label class="field-label">Fórmula *</label>
+          <select class="select" name="formulaId" required>
+            <option value="">— Seleccionar —</option>
+            ${sortedFormulas.map(f => `<option value="${f.id}">${ui.escape(f.code)} · ${ui.escape(f.name)}${f.costUSD?` · costo $${f.costUSD.toFixed(2)}`:''}</option>`).join('')}
+          </select>
+          <div class="field-hint">Ordenadas por similitud con el nombre del lote.</div>
+        </div>
+      </form>
+    `,
+    footer: `<button class="btn btn-secondary" onclick="ui.closeModal()">Cancelar</button><button class="btn btn-primary" onclick="document.getElementById('link-form').requestSubmit()">${ui.icon('check')||'✓'} Vincular</button>`
+  });
+}
+
+function confirmLinkFormula(e, lotId) {
+  e.preventDefault();
+  const data = ui.formData(e.target);
+  if (!data.formulaId) { ui.toast('Selecciona una fórmula', 'error'); return; }
+  try {
+    inventory.linkLotToFormula(lotId, data.formulaId);
+    ui.closeModal();
+    ui.toast('Fórmula vinculada correctamente', 'success');
+    render();
+  } catch (err) {
+    ui.toast(err.message, 'error');
+  }
+}
+
 // Exponer funciones a window (para que onclick="" del HTML pueda llamarlas)
 
 // Sincronizar variables de estado del módulo con window
@@ -158,6 +218,8 @@ Object.assign(window, {
   onStatusFilter: typeof onStatusFilter !== 'undefined' ? onStatusFilter : undefined,
   editLot: typeof editLot !== 'undefined' ? editLot : undefined,
   saveLot: typeof saveLot !== 'undefined' ? saveLot : undefined,
+  openLinkFormula: typeof openLinkFormula !== 'undefined' ? openLinkFormula : undefined,
+  confirmLinkFormula: typeof confirmLinkFormula !== 'undefined' ? confirmLinkFormula : undefined,
 });
 });
 </script>

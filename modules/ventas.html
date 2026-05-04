@@ -332,30 +332,48 @@ function renderCreate() {
     </div>
     ${c.items.length ? `<table>
       <thead><tr>
-        <th style="width:30%;">Producto</th>
+        <th style="width:25%;">Producto</th>
         <th style="text-align:right;">Cantidad</th>
         <th>Unidad</th>
+        <th style="width:160px;">Precio</th>
         <th style="text-align:right;">Precio unit.</th>
         <th style="text-align:right;">Desc %</th>
         <th style="text-align:center;">Exento</th>
         <th style="text-align:right;">Subtotal</th>
         <th style="width:40px;"></th>
       </tr></thead>
-      <tbody>${c.items.map((it, idx) => `<tr>
-        <td>
-          <select class="select" onchange="updateItemFormula(${idx}, this.value)">
-            <option value="">— Selecciona producto —</option>
-            ${formulas.map(f => `<option value="${f.id}" ${f.id===it.formulaId?'selected':''}>${ui.escape(f.code)} · ${ui.escape(f.name)}</option>`).join('')}
-          </select>
-        </td>
-        <td style="text-align:right;"><input class="input" type="number" step="0.001" value="${it.quantity||''}" style="text-align:right;font-family:var(--font-mono);" oninput="updateItemFast(${idx},'quantity',this.value)"></td>
-        <td><span class="text-muted" id="ven-unit-${idx}">${it.unit||'—'}</span></td>
-        <td style="text-align:right;"><input class="input" type="number" step="0.0001" value="${it.unitPrice||''}" style="text-align:right;font-family:var(--font-mono);" oninput="updateItemFast(${idx},'unitPrice',this.value)"></td>
-        <td style="text-align:right;"><input class="input" type="number" step="0.01" value="${it.discount||0}" style="text-align:right;font-family:var(--font-mono);width:80px;" oninput="updateItemFast(${idx},'discount',this.value)"></td>
-        <td style="text-align:center;"><input type="checkbox" ${it.exempt?'checked':''} onchange="updateItemExempt(${idx}, this.checked)"></td>
-        <td style="text-align:right;"><span class="td-mono td-strong" id="ven-line-${idx}">${currency.format((it.quantity||0)*(it.unitPrice||0)*(1-(it.discount||0)/100), c.currency)}</span></td>
-        <td><button class="btn-icon" onclick="removeItem(${idx})">${ui.icon('trash')}</button></td>
-      </tr>`).join('')}</tbody>
+      <tbody>${c.items.map((it, idx) => {
+        // Productos disponibles: fórmulas + lotes sin fórmula con stock
+        const lotsWithoutFormula = db.query(db.COLLECTIONS.finishedGoods, l => !l.formulaId && l.status === 'LIBERADO' && (l.balance||0) > 0);
+
+        return `<tr>
+          <td>
+            <select class="select" onchange="updateItemProduct(${idx}, this.value)">
+              <option value="">— Selecciona producto —</option>
+              <optgroup label="Fórmulas">
+                ${formulas.map(f => `<option value="formula:${f.id}" ${`formula:${f.id}`===(it._productKey||(it.formulaId?'formula:'+it.formulaId:''))?'selected':''}>${ui.escape(f.code)} · ${ui.escape(f.name)}</option>`).join('')}
+              </optgroup>
+              ${lotsWithoutFormula.length ? `<optgroup label="Lotes sin fórmula (carga inicial)">
+                ${lotsWithoutFormula.map(l => `<option value="lot:${l.id}" ${`lot:${l.id}`===(it._productKey||(it.fgLotId?'lot:'+it.fgLotId:''))?'selected':''}>${ui.escape(l.code)} · ${ui.escape(l.productName||l.formulaName)} (${l.balance} ${l.unit})</option>`).join('')}
+              </optgroup>` : ''}
+            </select>
+          </td>
+          <td style="text-align:right;"><input class="input" type="number" step="0.001" value="${it.quantity||''}" style="text-align:right;font-family:var(--font-mono);" oninput="updateItemFast(${idx},'quantity',this.value)"></td>
+          <td><span class="text-muted" id="ven-unit-${idx}">${it.unit||'—'}</span></td>
+          <td>
+            <select class="select" onchange="updateItemPriceType(${idx}, this.value)" style="font-size:11.5px;">
+              <option value="distributor" ${(it.priceType||'distributor')==='distributor'?'selected':''}>Distribuidor</option>
+              <option value="pharmacy" ${it.priceType==='pharmacy'?'selected':''}>Peluquería</option>
+              <option value="custom" ${it.priceType==='custom'?'selected':''}>Personalizado</option>
+            </select>
+          </td>
+          <td style="text-align:right;"><input class="input" type="number" step="0.0001" value="${it.unitPrice||''}" style="text-align:right;font-family:var(--font-mono);" oninput="updateItemFast(${idx},'unitPrice',this.value)" ${it.priceType && it.priceType !== 'custom' ? 'readonly' : ''}></td>
+          <td style="text-align:right;"><input class="input" type="number" step="0.01" value="${it.discount||0}" style="text-align:right;font-family:var(--font-mono);width:80px;" oninput="updateItemFast(${idx},'discount',this.value)"></td>
+          <td style="text-align:center;"><input type="checkbox" ${it.exempt?'checked':''} onchange="updateItemExempt(${idx}, this.checked)"></td>
+          <td style="text-align:right;"><span class="td-mono td-strong" id="ven-line-${idx}">${currency.format((it.quantity||0)*(it.unitPrice||0)*(1-(it.discount||0)/100), c.currency)}</span></td>
+          <td><button class="btn-icon" onclick="removeItem(${idx})">${ui.icon('trash')}</button></td>
+        </tr>`;
+      }).join('')}</tbody>
     </table>` : '<div style="padding:32px;text-align:center;color:var(--ink-3);">Sin productos. Agregá al menos uno.</div>'}
   </div>`;
 
@@ -478,22 +496,87 @@ function setSalesperson(userId) {
 }
 
 function addItem() {
-  creating.items.push({ formulaId: '', formulaName: '', description: '', quantity: 0, unit: 'kg', unitPrice: 0, discount: 0, exempt: false });
+  creating.items.push({ formulaId: '', formulaName: '', fgLotId: null, description: '', quantity: 0, unit: 'unidad', unitPrice: 0, discount: 0, exempt: false, priceType: 'distributor' });
   render();
 }
 
-function updateItemFormula(idx, fid) {
-  const f = db.getById(db.COLLECTIONS.formulas, fid);
-  if (f) {
-    creating.items[idx].formulaId = fid;
-    creating.items[idx].formulaName = f.name;
-    creating.items[idx].description = f.name;
-    creating.items[idx].unit = f.batchUnit;
-  } else {
-    creating.items[idx].formulaId = '';
-    creating.items[idx].formulaName = '';
+/**
+ * Selecciona un producto. Soporta dos formatos:
+ *   - "formula:<formulaId>"  → fórmula tradicional
+ *   - "lot:<lotId>"          → lote sin fórmula (carga inicial)
+ */
+function updateItemProduct(idx, key) {
+  const item = creating.items[idx];
+  if (!key) {
+    item.formulaId = '';
+    item.formulaName = '';
+    item.fgLotId = null;
+    item._productKey = '';
+    item.unitPrice = 0;
+    render();
+    return;
   }
+  const [kind, id] = key.split(':');
+  item._productKey = key;
+
+  if (kind === 'formula') {
+    const f = db.getById(db.COLLECTIONS.formulas, id);
+    if (f) {
+      item.formulaId = id;
+      item.formulaName = f.name;
+      item.description = f.name;
+      item.unit = f.batchUnit || 'unidad';
+      item.fgLotId = null;
+      // Tomar precio del primer lote PT vinculado a esta fórmula (si existe)
+      const lot = db.query(db.COLLECTIONS.finishedGoods, l => l.formulaId === id && l.status === 'LIBERADO' && (l.balance||0) > 0)[0];
+      if (lot) {
+        item._priceDistributor = lot.priceDistributor || 0;
+        item._pricePharmacy = lot.pricePharmacy || 0;
+      } else {
+        item._priceDistributor = 0;
+        item._pricePharmacy = 0;
+      }
+    }
+  } else if (kind === 'lot') {
+    const l = db.getById(db.COLLECTIONS.finishedGoods, id);
+    if (l) {
+      item.formulaId = l.formulaId || '';
+      item.formulaName = l.productName || l.formulaName;
+      item.description = item.formulaName;
+      item.unit = l.unit || 'unidad';
+      item.fgLotId = l.id;
+      item._priceDistributor = l.priceDistributor || 0;
+      item._pricePharmacy = l.pricePharmacy || 0;
+    }
+  }
+
+  // Aplicar el precio según el tipo seleccionado actualmente
+  applyPriceTypeToItem(idx);
   render();
+}
+
+/** Aplica el precio según el priceType del item (distributor/pharmacy/custom) */
+function applyPriceTypeToItem(idx) {
+  const item = creating.items[idx];
+  if (!item) return;
+  const type = item.priceType || 'distributor';
+  if (type === 'distributor') {
+    item.unitPrice = item._priceDistributor || 0;
+  } else if (type === 'pharmacy') {
+    item.unitPrice = item._pricePharmacy || 0;
+  }
+  // Si es custom, no toco el precio (el usuario lo edita)
+}
+
+function updateItemPriceType(idx, type) {
+  creating.items[idx].priceType = type;
+  applyPriceTypeToItem(idx);
+  render();
+}
+
+// Mantener backward compat: si algún lugar todavía llama a updateItemFormula, redirigir
+function updateItemFormula(idx, fid) {
+  updateItemProduct(idx, fid ? `formula:${fid}` : '');
 }
 
 function updateItemFast(idx, field, val) {
@@ -1844,6 +1927,9 @@ Object.assign(window, {
   setSalesperson: typeof setSalesperson !== 'undefined' ? setSalesperson : undefined,
   addItem: typeof addItem !== 'undefined' ? addItem : undefined,
   updateItemFormula: typeof updateItemFormula !== 'undefined' ? updateItemFormula : undefined,
+  updateItemProduct: typeof updateItemProduct !== 'undefined' ? updateItemProduct : undefined,
+  updateItemPriceType: typeof updateItemPriceType !== 'undefined' ? updateItemPriceType : undefined,
+  applyPriceTypeToItem: typeof applyPriceTypeToItem !== 'undefined' ? applyPriceTypeToItem : undefined,
   updateItemFast: typeof updateItemFast !== 'undefined' ? updateItemFast : undefined,
   updateItemExempt: typeof updateItemExempt !== 'undefined' ? updateItemExempt : undefined,
   recomputeAndRefreshSummary: typeof recomputeAndRefreshSummary !== 'undefined' ? recomputeAndRefreshSummary : undefined,
