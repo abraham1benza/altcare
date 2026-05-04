@@ -96,7 +96,7 @@ function render() {
       <div class="table-toolbar">
         <div class="search-box">
           ${ui.icon('search')}
-          <input class="input" type="search" placeholder="Buscar por nombre, RIF o contacto..." value="${ui.escape(searchTerm)}" oninput="onSearch(this.value)">
+          <input id="search-input" class="input" type="search" placeholder="Buscar por nombre, RIF o contacto..." value="${ui.escape(searchTerm)}" oninput="onSearch(this.value)">
         </div>
       </div>
       ${tableHtml}
@@ -111,7 +111,7 @@ function render() {
   });
 }
 
-const _doSearchRender = ui.debounce(() => render(), 250);
+const _doSearchRender = ui.debounce(() => ui.preserveFocus(() => render()), 250);
 function onSearch(v) { searchTerm = v; _doSearchRender(); }
 
 function newItem() {

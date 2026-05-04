@@ -106,7 +106,7 @@ function render() {
 
       <div class="table-wrap">
         <div class="table-toolbar">
-          <div class="search-box">${ui.icon('search')}<input class="input" type="search" placeholder="Buscar por lote o fórmula..." value="${ui.escape(searchTerm)}" oninput="onSearch(this.value)"></div>
+          <div class="search-box">${ui.icon('search')}<input id="search-input" class="input" type="search" placeholder="Buscar por lote o fórmula..." value="${ui.escape(searchTerm)}" oninput="onSearch(this.value)"></div>
           <select class="select" style="max-width:200px;" onchange="onStatusFilter(this.value)">
             <option value="">Todos los estados</option>
             ${Object.entries(PT_STATUS).map(([k,s])=>`<option value="${k}" ${k===statusFilter?'selected':''}>${s.label}</option>`).join('')}
@@ -118,7 +118,7 @@ function render() {
   });
 }
 
-const _doSearchRender = ui.debounce(() => render(), 250);
+const _doSearchRender = ui.debounce(() => ui.preserveFocus(() => render()), 250);
 function onSearch(v) { searchTerm = v; _doSearchRender(); }
 function onStatusFilter(v) { statusFilter = v; render(); }
 

@@ -120,7 +120,7 @@ function renderOverview() {
       <div class="grid" style="grid-template-columns:2fr 1fr;gap:16px;align-items:flex-start;">
         <div class="table-wrap">
           <div class="table-toolbar">
-            <div class="search-box">${ui.icon('search')}<input class="input" type="search" placeholder="Buscar movimientos..." value="${ui.escape(searchTerm)}" oninput="onSearch(this.value)"></div>
+            <div class="search-box">${ui.icon('search')}<input id="search-input" class="input" type="search" placeholder="Buscar movimientos..." value="${ui.escape(searchTerm)}" oninput="onSearch(this.value)"></div>
             <select class="select" style="max-width:200px;" onchange="onTypeFilter(this.value)">
               <option value="">Todos los tipos</option>
               ${Object.entries(inventory.MOVE_TYPES).map(([k,t])=>`<option value="${k}" ${k===typeFilter?'selected':''}>${t.label}</option>`).join('')}
@@ -147,7 +147,7 @@ function renderOverview() {
   });
 }
 
-const _doSearchRender = ui.debounce(() => render(), 250);
+const _doSearchRender = ui.debounce(() => ui.preserveFocus(() => render()), 250);
 function onSearch(v) { searchTerm = v; _doSearchRender(); }
 function onTypeFilter(v) { typeFilter = v; render(); }
 
