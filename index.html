@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Alternative Care · Manufacturing OS</title>
 <link rel="stylesheet" href="assets/css/styles.css">
-<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90' font-family='Georgia' font-style='italic' fill='%235b7a5a'>a</text></svg>">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><rect width='24' height='24' rx='5' fill='%23d4a017'/><path d='M12 5L4 19h16L12 5z' fill='%230a0a08'/><ellipse cx='10.5' cy='14' rx='1.4' ry='2' transform='rotate(-25 10.5 14)' fill='%230a0a08'/><ellipse cx='13.5' cy='14' rx='1.4' ry='2' transform='rotate(25 13.5 14)' fill='%230a0a08'/></svg>">
 </head>
 <body>
 
@@ -13,14 +13,22 @@
 <div id="login-view" class="login-page hidden">
   <div class="login-art">
     <div class="login-art-content">
-      <div class="login-art-mark"><span>alt</span>care</div>
+      <div class="login-art-logo">
+        <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <path d="M12 2L2 22h20L12 2z" fill="#0a0a08"/>
+          <ellipse cx="10.5" cy="14" rx="1.6" ry="2.4" transform="rotate(-25 10.5 14)" fill="#0a0a08"/>
+          <ellipse cx="13.5" cy="14" rx="1.6" ry="2.4" transform="rotate(25 13.5 14)" fill="#0a0a08"/>
+          <line x1="12" y1="14" x2="12" y2="19" stroke="#0a0a08" stroke-width="0.6" stroke-linecap="round"/>
+        </svg>
+      </div>
+      <div class="login-art-mark">ALT<span>care</span></div>
       <div class="login-art-tag">Manufacturing OS · Venezuela</div>
     </div>
     <div class="login-quote">
       Sistema integral de gestión para fabricación de cosméticos. Trazabilidad, control de calidad y operación multi-moneda en un solo lugar.
     </div>
-    <div style="position:relative;font-size:11px;letter-spacing:0.16em;text-transform:uppercase;color:rgba(255,255,255,0.4);">
-      v2.0 · Cloud
+    <div style="position:relative;font-size:10.5px;letter-spacing:0.22em;text-transform:uppercase;color:rgba(212,160,23,0.55);font-weight:600;">
+      v2.0 · Cloud Edition
     </div>
   </div>
   <div class="login-form-side">
@@ -35,10 +43,10 @@
         <label class="field-label">Contraseña</label>
         <input class="input" type="password" name="password" id="login-password" autocomplete="current-password" required>
       </div>
-      <button type="submit" class="btn btn-primary" id="login-btn" style="width:100%;justify-content:center;margin-top:20px;padding:11px;">
-        Entrar
+      <button type="submit" class="btn btn-gold" id="login-btn" style="width:100%;justify-content:center;margin-top:24px;padding:12px;font-size:14px;">
+        Entrar al sistema →
       </button>
-      <div style="margin-top:14px;text-align:center;">
+      <div style="margin-top:16px;text-align:center;">
         <a href="#" onclick="resetPasswordPrompt(event)" style="font-size:12px;color:var(--ink-3);text-decoration:none;">¿Olvidaste tu contraseña?</a>
       </div>
       <div class="login-roles" id="login-help" style="display:none;">
@@ -50,12 +58,21 @@
 </div>
 
 <!-- PANTALLA DE CARGA INICIAL -->
-<div id="loading-view" style="position:fixed;inset:0;background:#fafaf6;display:flex;flex-direction:column;align-items:center;justify-content:center;z-index:9999;">
-  <div style="font-family:'Fraunces',serif;font-style:italic;font-size:48px;letter-spacing:-0.03em;line-height:1;color:#1a1a18;">
-    <span style="color:#5b7a5a;">alt</span>care
+<div id="loading-view" style="position:fixed;inset:0;background:#0a0a08;display:flex;flex-direction:column;align-items:center;justify-content:center;z-index:9999;">
+  <div style="width:64px;height:64px;background:#d4a017;border-radius:14px;display:grid;place-items:center;box-shadow:0 4px 24px rgba(212,160,23,0.4);position:relative;overflow:hidden;">
+    <svg viewBox="0 0 24 24" width="36" height="36" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <path d="M12 2L2 22h20L12 2z" fill="#0a0a08"/>
+      <ellipse cx="10.5" cy="14" rx="1.6" ry="2.4" transform="rotate(-25 10.5 14)" fill="#0a0a08"/>
+      <ellipse cx="13.5" cy="14" rx="1.6" ry="2.4" transform="rotate(25 13.5 14)" fill="#0a0a08"/>
+      <line x1="12" y1="14" x2="12" y2="19" stroke="#0a0a08" stroke-width="0.6" stroke-linecap="round"/>
+    </svg>
   </div>
-  <div style="margin-top:24px;width:32px;height:32px;border:3px solid #e7e5df;border-top-color:#5b7a5a;border-radius:50%;animation:spin 0.8s linear infinite;"></div>
-  <div id="loading-text" style="margin-top:20px;font-size:13px;color:#8a8a82;letter-spacing:0.04em;">Conectando a la nube...</div>
+  <div style="margin-top:24px;font-family:'Fraunces',serif;font-size:28px;letter-spacing:0.01em;line-height:1;color:#faf3d9;text-transform:uppercase;font-weight:500;">
+    ALT<span style="color:#e4b520;font-style:italic;text-transform:lowercase;font-weight:400;">care</span>
+  </div>
+  <div style="margin-top:8px;font-size:9px;letter-spacing:0.22em;text-transform:uppercase;color:rgba(212,160,23,0.55);font-weight:600;">Manufacturing OS</div>
+  <div style="margin-top:28px;width:28px;height:28px;border:2px solid rgba(212,160,23,0.18);border-top-color:#e4b520;border-radius:50%;animation:spin 0.8s linear infinite;"></div>
+  <div id="loading-text" style="margin-top:18px;font-size:12px;color:rgba(255,250,230,0.5);letter-spacing:0.06em;">Conectando a la nube...</div>
   <style>@keyframes spin { to { transform: rotate(360deg); } }</style>
 </div>
 
