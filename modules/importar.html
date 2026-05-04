@@ -15,6 +15,7 @@
 <script src="../assets/js/tax.js"></script>
 <script src="../assets/js/inventory.js"></script>
 <script src="../assets/js/ui.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script>
 moduleInit('importar').then(async (ok) => {
 if (!ok) return;
@@ -89,14 +90,38 @@ function render() {
         <div class="text-muted" style="font-size:11px;margin-top:8px;">${config.columnsHelp}</div>
       </div>
 
-      <div class="card mb-24">
-        <div class="card-header"><div class="card-title">Pegá el CSV aquí</div></div>
-        <textarea id="csv-input" class="textarea" rows="14" style="font-family:var(--font-mono);font-size:12px;" placeholder="Pegá tu CSV (con o sin encabezados)..." oninput="onCsvChange(this.value)">${ui.escape(csvText)}</textarea>
-        <div style="display:flex;gap:8px;margin-top:12px;">
-          <button class="btn btn-secondary" onclick="parseCsv()">${ui.icon('check')||'✓'} Validar y previsualizar</button>
-          <button class="btn btn-ghost" onclick="clearCsv()">Limpiar</button>
+      <!-- Opción 1: Subir Excel (recomendado) -->
+      <div class="card mb-24" style="background:#ecfdf5;border:1px solid #6ee7b7;">
+        <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap;">
+          <div style="flex:1;min-width:240px;">
+            <div style="font-weight:600;font-size:14px;color:#065f46;margin-bottom:4px;">📁 Subir archivo Excel (recomendado)</div>
+            <div class="text-muted" style="font-size:12px;line-height:1.5;">
+              ${activeTab === 'clientes' ? 'Soporta archivos exportados desde Profit Plus o cualquier Excel con columnas estándar.' : ''}
+              ${activeTab === 'pt' ? 'Excel con columnas: producto, cantidad, costo, precios.' : ''}
+              ${activeTab === 'proveedores' ? 'Excel con columnas: nombre, RIF, contacto, dirección, teléfono, email.' : ''}
+              Detección automática de encabezados.
+            </div>
+          </div>
+          <label class="btn btn-primary" style="cursor:pointer;">
+            ${ui.icon('upload')||'📁'} Seleccionar archivo .xlsx
+            <input type="file" accept=".xlsx,.xls" style="display:none;" onchange="onExcelFileChange(event)">
+          </label>
         </div>
       </div>
+
+      <!-- Opción 2: Pegar CSV (alternativa) -->
+      <details class="card mb-24" style="padding:0;">
+        <summary style="padding:14px 18px;cursor:pointer;font-weight:600;font-size:13px;color:var(--ink-2);">
+          O pegar CSV manualmente (alternativa)
+        </summary>
+        <div style="padding:0 18px 18px 18px;">
+          <textarea id="csv-input" class="textarea" rows="10" style="font-family:var(--font-mono);font-size:12px;" placeholder="Pegá tu CSV (con o sin encabezados)..." oninput="onCsvChange(this.value)">${ui.escape(csvText)}</textarea>
+          <div style="display:flex;gap:8px;margin-top:12px;">
+            <button class="btn btn-secondary" onclick="parseCsv()">${ui.icon('check')||'✓'} Validar CSV</button>
+            <button class="btn btn-ghost" onclick="clearCsv()">Limpiar</button>
+          </div>
+        </div>
+      </details>
 
       ${parsedRows.length > 0 ? renderPreview() : ''}
       ${parseErrors.length > 0 ? renderErrors() : ''}
@@ -374,6 +399,236 @@ function parseProveedoresRows(dataLines, hasHeader) {
   });
 }
 
+// =============================================================================
+// PARSEO DE EXCEL (XLSX)
+// =============================================================================
+
+function onExcelFileChange(event) {
+  const file = event.target.files[0];
+  if (!file) return;
+  if (typeof XLSX === 'undefined') {
+    ui.toast('Esperá un momento, la librería XLSX se está cargando...', 'info');
+    setTimeout(() => onExcelFileChange(event), 1000);
+    return;
+  }
+
+  const reader = new FileReader();
+  reader.onload = (e) => {
+    try {
+      const data = new Uint8Array(e.target.result);
+      const wb = XLSX.read(data, { type: 'array' });
+      // Tomar primera hoja con datos
+      let sheet = null;
+      for (const sheetName of wb.SheetNames) {
+        const s = wb.Sheets[sheetName];
+        const range = XLSX.utils.decode_range(s['!ref'] || 'A1');
+        if (range.e.r > 0) { sheet = s; break; }
+      }
+      if (!sheet) {
+        ui.toast('El archivo no tiene hojas con datos', 'error');
+        return;
+      }
+      // Convertir a array de arrays (sin header — lo detectamos manualmente)
+      const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '', raw: false });
+      processExcelRows(rows);
+    } catch (err) {
+      ui.toast('Error leyendo Excel: ' + err.message, 'error');
+      console.error(err);
+    }
+  };
+  reader.onerror = () => ui.toast('Error al leer el archivo', 'error');
+  reader.readAsArrayBuffer(file);
+
+  // Reset input para permitir re-subir el mismo archivo
+  event.target.value = '';
+}
+
+/**
+ * Detecta el header en las primeras 15 filas del Excel y lo mapea a campos.
+ * Soporta:
+ *  - Profit Plus exports (header en fila ~10-11)
+ *  - Excel simple con header en fila 1
+ *  - Variaciones de nombres de columna
+ */
+function processExcelRows(rows) {
+  parsedRows = [];
+  parseErrors = [];
+
+  if (!rows || rows.length === 0) {
+    parseErrors.push('Archivo vacío');
+    render();
+    return;
+  }
+
+  // Detectar fila de header (la que tiene mayor # de keywords esperadas)
+  const expectedKeywords = activeTab === 'pt'
+    ? ['producto','descripcion','cantidad','unidad','costo','precio']
+    : activeTab === 'clientes'
+    ? ['nombre','descripcion','rif','tipo','direc','telefono','vendedor','email']
+    : ['nombre','descripcion','rif','direc','telefono','email'];
+
+  let headerRowIdx = -1;
+  let bestScore = 0;
+  for (let i = 0; i < Math.min(rows.length, 20); i++) {
+    const row = rows[i];
+    if (!row) continue;
+    const lower = row.map(c => String(c||'').toLowerCase().trim());
+    const score = expectedKeywords.reduce((s, kw) => s + (lower.some(c => c.includes(kw)) ? 1 : 0), 0);
+    if (score > bestScore) { bestScore = score; headerRowIdx = i; }
+  }
+
+  if (headerRowIdx < 0 || bestScore < 2) {
+    parseErrors.push('No se encontró un encabezado válido en las primeras 20 filas. Verifica que el archivo tenga columnas como: ' + expectedKeywords.join(', '));
+    render();
+    return;
+  }
+
+  const headers = (rows[headerRowIdx] || []).map(c => String(c||'').trim());
+  const dataRows = rows.slice(headerRowIdx + 1).filter(r => r && r.some(c => String(c||'').trim() !== ''));
+
+  if (dataRows.length === 0) {
+    parseErrors.push('Sin filas de datos después del encabezado');
+    render();
+    return;
+  }
+
+  // Mapeo de columnas según tab
+  const colMap = mapHeaders(headers, activeTab);
+
+  if (activeTab === 'pt') parseExcelPt(dataRows, colMap);
+  else if (activeTab === 'clientes') parseExcelClientes(dataRows, colMap);
+  else if (activeTab === 'proveedores') parseExcelProveedores(dataRows, colMap);
+
+  const validCount = parsedRows.filter(r => !r._error && !r._duplicate).length;
+  const dupCount = parsedRows.filter(r => r._duplicate).length;
+  const errCount = parsedRows.filter(r => r._error).length;
+
+  if (validCount > 0 || dupCount > 0) {
+    let msg = `Excel leído: ${validCount} nuevos`;
+    if (dupCount > 0) msg += `, ${dupCount} duplicados (se omitirán)`;
+    if (errCount > 0) msg += `, ${errCount} con errores`;
+    ui.toast(msg, validCount > 0 ? 'success' : 'info', 5000);
+  } else {
+    ui.toast('No se pudieron extraer registros válidos del Excel', 'error');
+  }
+  render();
+}
+
+/** Mapea los headers del Excel a las claves estándar del importador */
+function mapHeaders(headers, tab) {
+  const map = {};
+  headers.forEach((h, idx) => {
+    const lower = String(h||'').toLowerCase().trim();
+    if (!lower) return;
+
+    if (tab === 'pt') {
+      if (/^(producto|descripcion|description|item|nombre)/.test(lower)) map.producto = idx;
+      else if (/^(cantidad|qty|stock|unds|unidades)/.test(lower)) map.cantidad = idx;
+      else if (/^(unidad|unit|um)$/.test(lower)) map.unidad = idx;
+      else if (/costo|cost/.test(lower)) map.costo = idx;
+      else if (/precio.*(distribu|dist)/.test(lower)) map.precio_dist = idx;
+      else if (/precio.*(peluq|pelq|salon)/.test(lower)) map.precio_pelu = idx;
+      else if (/^precio$/.test(lower) && map.precio_dist === undefined) map.precio_dist = idx;
+    }
+    else if (tab === 'clientes' || tab === 'proveedores') {
+      if (/^(nombre|descripcion|description|razon|cliente|proveedor)/.test(lower)) map.nombre = idx;
+      else if (/^rif|cedula|rfc|nit/.test(lower)) map.rif = idx;
+      else if (/^(responsable|contacto|contact)/.test(lower)) map.contacto = idx;
+      else if (/^(des.?tipo|tipo|type|categoria|categor)/.test(lower)) map.tipo = idx;
+      else if (/^(dir.*fiscal|direc1|direccion fiscal)/.test(lower)) map.direccion = idx;
+      else if (map.direccion === undefined && /^(direc|address|dir|domicilio)/.test(lower)) map.direccion = idx;
+      else if (/^(telefono|tel|phone|tlf|telf)/.test(lower)) map.telefono = idx;
+      else if (/^(email|correo|mail)/.test(lower)) map.email = idx;
+      else if (/^(ven.?des|vendedor)/.test(lower) && !/codigo|cod/.test(lower)) map.vendedor = idx;
+    }
+  });
+  return map;
+}
+
+function getCell(row, idx) {
+  if (idx === undefined || idx < 0) return '';
+  const v = row[idx];
+  if (v == null) return '';
+  return String(v).trim();
+}
+
+function parseExcelPt(dataRows, colMap) {
+  dataRows.forEach((row, i) => {
+    const lineNum = i + 1;
+    const producto = getCell(row, colMap.producto);
+    if (!producto || producto.toLowerCase().startsWith('codigo')) return; // skip header repetido o vacíos
+
+    const cantidadStr = getCell(row, colMap.cantidad);
+    const cantidad = parseFloat(cantidadStr.replace(/\./g,'').replace(',','.')) || 0;
+
+    if (cantidad < 0) { parsedRows.push({ _error: `Fila ${lineNum}: cantidad negativa en "${producto}"` }); return; }
+
+    const unidad = getCell(row, colMap.unidad) || 'unidad';
+    const costo_usd = parseFloat(getCell(row, colMap.costo).replace(',','.')) || 0;
+    const precio_distribuidor = parseFloat(getCell(row, colMap.precio_dist).replace(',','.')) || 0;
+    const precio_peluqueria = parseFloat(getCell(row, colMap.precio_pelu).replace(',','.')) || 0;
+
+    parsedRows.push({ producto, cantidad, unidad, costo_usd, precio_distribuidor, precio_peluqueria });
+  });
+}
+
+function parseExcelClientes(dataRows, colMap) {
+  const existingRifs = new Set(db.getAll(db.COLLECTIONS.customers).map(c => normalizeRif(c.rif)));
+  const seenRifs = new Set();
+
+  dataRows.forEach((row, i) => {
+    const lineNum = i + 1;
+    const nombre = getCell(row, colMap.nombre);
+    if (!nombre || nombre.toLowerCase().startsWith('codigo') || nombre.toLowerCase() === 'descripcion') return;
+
+    const rif = getCell(row, colMap.rif);
+    const contacto = getCell(row, colMap.contacto);
+    const tipoOrig = getCell(row, colMap.tipo);
+    const tipo = mapClientType(tipoOrig);
+    const direccion = getCell(row, colMap.direccion);
+    const telefono = getCell(row, colMap.telefono);
+    const email = getCell(row, colMap.email);
+    let vendedor = getCell(row, colMap.vendedor);
+    // Limpiar vendedor: "MIRIAM MATA  (Distribuidor)" → "MIRIAM MATA"
+    if (vendedor && vendedor.includes('(')) vendedor = vendedor.split('(')[0].trim();
+
+    if (!nombre) { parsedRows.push({ _error: `Fila ${lineNum}: nombre vacío` }); return; }
+    if (!rif) { parsedRows.push({ _error: `Fila ${lineNum}: RIF vacío en "${nombre}"` }); return; }
+
+    const normRif = normalizeRif(rif);
+    const isDuplicate = existingRifs.has(normRif) || seenRifs.has(normRif);
+    seenRifs.add(normRif);
+
+    parsedRows.push({ nombre, rif, contacto, tipo, direccion, telefono, email, vendedor, _duplicate: isDuplicate });
+  });
+}
+
+function parseExcelProveedores(dataRows, colMap) {
+  const existingRifs = new Set(db.getAll(db.COLLECTIONS.suppliers).map(s => normalizeRif(s.rif)));
+  const seenRifs = new Set();
+
+  dataRows.forEach((row, i) => {
+    const lineNum = i + 1;
+    const nombre = getCell(row, colMap.nombre);
+    if (!nombre || nombre.toLowerCase().startsWith('codigo') || nombre.toLowerCase() === 'descripcion') return;
+
+    const rif = getCell(row, colMap.rif);
+    const contacto = getCell(row, colMap.contacto);
+    const direccion = getCell(row, colMap.direccion);
+    const telefono = getCell(row, colMap.telefono);
+    const email = getCell(row, colMap.email);
+
+    if (!nombre) { parsedRows.push({ _error: `Fila ${lineNum}: nombre vacío` }); return; }
+    if (!rif) { parsedRows.push({ _error: `Fila ${lineNum}: RIF vacío en "${nombre}"` }); return; }
+
+    const normRif = normalizeRif(rif);
+    const isDuplicate = existingRifs.has(normRif) || seenRifs.has(normRif);
+    seenRifs.add(normRif);
+
+    parsedRows.push({ nombre, rif, contacto, direccion, telefono, email, _duplicate: isDuplicate });
+  });
+}
+
 function parseCsvLine(line) {
   const cols = [];
   let current = '';
@@ -541,7 +796,7 @@ function importProveedor(row) {
 render();
 
 Object.assign(window, {
-  setTab, onCsvChange, clearCsv, parseCsv, confirmImport
+  setTab, onCsvChange, clearCsv, parseCsv, confirmImport, onExcelFileChange
 });
 
 }); // end moduleInit
