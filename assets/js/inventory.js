@@ -245,7 +245,89 @@ const inventory = {
     return saved;
   },
 
-  // ====== KARDEX (movimientos) ======
+  /**
+   * Crea un lote de PT inicial (carga de inventario, sin OF asociada).
+   * Permite que productName sea libre (sin fórmula vinculada todavía).
+   * El lote después puede vincularse a una fórmula con `linkLotToFormula`.
+   *
+   * @param {object} args
+   * @param {string} args.productName - Nombre del producto (libre si no hay fórmula)
+   * @param {string} [args.formulaId] - Opcional: ID de fórmula si ya existe
+   * @param {number} args.quantity
+   * @param {string} args.unit
+   * @param {number} args.unitCost - en USD
+   * @param {number} [args.priceDistributor] - precio venta distribuidor
+   * @param {number} [args.pricePharmacy]    - precio venta peluquerías
+   * @param {string} [args.expiryDate]
+   * @param {string} [args.warehouseId]
+   * @param {string} [args.notes]
+   */
+  createInitialFGLot(args) {
+    const lot = {
+      code: db.nextCode(db.COLLECTIONS.finishedGoods, 'PT'),
+      formulaId: args.formulaId || null,
+      formulaName: args.productName || '',         // se mantiene como referencia
+      productName: args.productName || '',         // nombre libre cuando no hay fórmula
+      productionOrderId: null,
+      productionOrderCode: null,
+      isInitialLoad: true,                         // marca que es carga inicial
+      quantity: parseFloat(args.quantity) || 0,
+      balance: parseFloat(args.quantity) || 0,
+      reserved: 0,
+      unit: args.unit || 'unidad',
+      manufactureDate: args.manufactureDate || new Date().toISOString().slice(0,10),
+      expiryDate: args.expiryDate || null,
+      warehouseId: args.warehouseId || this.defaultWarehouse()?.id,
+      locationId: null,
+      status: args.status || 'LIBERADO',           // por defecto vendible
+      qcTestId: null,
+      unitCost: parseFloat(args.unitCost) || 0,
+      costCurrency: args.costCurrency || 'USD',
+      // Precios de venta del producto
+      priceDistributor: parseFloat(args.priceDistributor) || 0,
+      pricePharmacy: parseFloat(args.pricePharmacy) || 0,
+      active: true,
+      notes: args.notes || 'Carga inicial de inventario'
+    };
+    const saved = db.save(db.COLLECTIONS.finishedGoods, lot);
+    // Movimiento de entrada inicial al kardex
+    this.registerMove({
+      type: 'INITIAL_LOAD',
+      itemKind: 'PT',
+      itemId: saved.formulaId || saved.id,
+      itemCode: saved.code,
+      itemName: saved.productName,
+      lotId: saved.id,
+      lotCode: saved.code,
+      quantity: saved.quantity,
+      unit: saved.unit,
+      unitCost: saved.unitCost,
+      costCurrency: saved.costCurrency,
+      warehouseId: saved.warehouseId,
+      reference: 'Carga inicial de inventario'
+    });
+    return saved;
+  },
+
+  /**
+   * Vincula un lote PT existente (sin fórmula) a una fórmula creada después.
+   * Si la fórmula tiene un costUSD distinto al del lote, se actualiza el costo del lote
+   * con el de la fórmula (más preciso).
+   */
+  linkLotToFormula(lotId, formulaId) {
+    const lot = db.getById(db.COLLECTIONS.finishedGoods, lotId);
+    if (!lot) throw new Error('Lote no encontrado');
+    const formula = db.getById(db.COLLECTIONS.formulas, formulaId);
+    if (!formula) throw new Error('Fórmula no encontrada');
+    lot.formulaId = formula.id;
+    lot.formulaName = formula.name;
+    // Si la fórmula tiene costo calculado, actualizar el costo del lote
+    if (formula.costUSD && formula.costUSD > 0) {
+      lot.unitCost = formula.costUSD;
+      lot.costCurrency = 'USD';
+    }
+    return db.save(db.COLLECTIONS.finishedGoods, lot);
+  },
 
   /** Registra un movimiento en el kardex */
   registerMove(move) {

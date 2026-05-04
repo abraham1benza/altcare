@@ -68,17 +68,25 @@ const sales = {
     if (!doc) throw new Error('Documento no encontrado');
 
     doc.items.forEach((item, idx) => {
-      if (!item.formulaId) return;
+      // Skip items sin producto
+      if (!item.formulaId && !item.fgLotId) return;
       // Si ya tiene allocations, no volver a asignar
       if (item.allocations && item.allocations.length > 0) return;
 
-      const lots = db.query(db.COLLECTIONS.finishedGoods, l =>
-        l.formulaId === item.formulaId &&
-        l.status === 'LIBERADO' &&
-        l.balance > 0
-      );
-      // Ordenar FEFO (los que vencen primero primero)
-      lots.sort((a, b) => (a.expiryDate || '9999-12-31').localeCompare(b.expiryDate || '9999-12-31'));
+      let lots;
+      if (item.fgLotId) {
+        // Lote específico (sin fórmula o lote forzado)
+        const lot = db.getById(db.COLLECTIONS.finishedGoods, item.fgLotId);
+        lots = (lot && lot.status === 'LIBERADO' && lot.balance > 0) ? [lot] : [];
+      } else {
+        // FEFO sobre todos los lotes de la fórmula
+        lots = db.query(db.COLLECTIONS.finishedGoods, l =>
+          l.formulaId === item.formulaId &&
+          l.status === 'LIBERADO' &&
+          l.balance > 0
+        );
+        lots.sort((a, b) => (a.expiryDate || '9999-12-31').localeCompare(b.expiryDate || '9999-12-31'));
+      }
 
       const allocations = [];
       let remaining = parseFloat(item.quantity) || 0;
