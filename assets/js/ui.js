@@ -54,7 +54,127 @@ const NAV_STRUCTURE = [
   }
 ];
 
+/**
+ * Paleta de 10 colores distintos para badges de vendedor.
+ * Se asigna determinísticamente por hash del userId — el mismo vendedor
+ * siempre obtiene el mismo color en cualquier sesión y módulo.
+ * Cada entrada tiene { bg, fg, dot } para fondo, texto y punto.
+ */
+const VENDOR_BADGE_PALETTE = [
+  { bg: '#dbeafe', fg: '#1e3a8a', dot: '#2563eb' }, // azul
+  { bg: '#dcfce7', fg: '#14532d', dot: '#16a34a' }, // verde
+  { bg: '#fce7f3', fg: '#831843', dot: '#db2777' }, // rosa
+  { bg: '#fef3c7', fg: '#78350f', dot: '#d4a017' }, // dorado
+  { bg: '#ede9fe', fg: '#4c1d95', dot: '#7c3aed' }, // violeta
+  { bg: '#cffafe', fg: '#164e63', dot: '#0891b2' }, // cyan
+  { bg: '#ffedd5', fg: '#7c2d12', dot: '#ea580c' }, // naranja
+  { bg: '#e0e7ff', fg: '#3730a3', dot: '#4f46e5' }, // indigo
+  { bg: '#f3e8ff', fg: '#581c87', dot: '#9333ea' }, // púrpura
+  { bg: '#fae8ff', fg: '#6b21a8', dot: '#a855f7' }, // magenta
+];
+
+/** Hash determinístico de string a entero (djb2 simplificado) */
+function _hashString(s) {
+  let h = 5381;
+  for (let i = 0; i < s.length; i++) {
+    h = ((h << 5) + h) + s.charCodeAt(i);
+    h = h & 0xFFFFFFFF;
+  }
+  return Math.abs(h);
+}
+
 const ui = {
+
+  /**
+   * Devuelve el color asignado a un vendedor por su userId.
+   * Determinístico: el mismo userId siempre obtiene el mismo color.
+   * @param {string} userId
+   * @returns {{bg, fg, dot}}
+   */
+  getVendorColor(userId) {
+    if (!userId) return { bg: 'var(--surface-2)', fg: 'var(--ink-3)', dot: 'var(--ink-3)' };
+    const idx = _hashString(String(userId)) % VENDOR_BADGE_PALETTE.length;
+    return VENDOR_BADGE_PALETTE[idx];
+  },
+
+  /**
+   * Renderiza un badge de vendedor con color consistente.
+   * @param {string} userId - ID del usuario vendedor
+   * @param {string} name - Nombre a mostrar
+   * @param {object} opts - { size: 'sm'|'md', noDot: bool }
+   */
+  vendorBadge(userId, name, opts = {}) {
+    const c = this.getVendorColor(userId);
+    const size = opts.size === 'sm' ? '10px' : '11px';
+    const padding = opts.size === 'sm' ? '2px 8px' : '3px 10px';
+    const dotHtml = opts.noDot
+      ? ''
+      : `<span style="width:6px;height:6px;border-radius:50%;background:${c.dot};display:inline-block;flex-shrink:0;"></span>`;
+    return `<span class="badge" style="background:${c.bg};color:${c.fg};border-color:${c.dot}33;font-size:${size};padding:${padding};display:inline-flex;align-items:center;gap:5px;">
+      ${dotHtml}<span>${this.escape(name||'—')}</span>
+    </span>`;
+  },
+
+  /**
+   * Renderiza un header de tabla clickeable que ordena por una columna.
+   * @param {string} label - Texto del header
+   * @param {string} key - Clave para identificar este header en el state
+   * @param {object} sortState - { key, dir } (estado actual)
+   * @param {function} onClick - función que recibe (key) y debe togglear y re-renderizar
+   * @param {object} opts - { align: 'left'|'right'|'center' }
+   */
+  sortableTh(label, key, sortState, onClick, opts = {}) {
+    const isActive = sortState && sortState.key === key;
+    const dir = isActive ? sortState.dir : null;
+    const align = opts.align || 'left';
+    const arrow = dir === 'asc' ? '↑' : dir === 'desc' ? '↓' : '↕';
+    const arrowColor = isActive ? 'var(--gold-deep)' : 'var(--ink-4)';
+    const arrowOpacity = isActive ? '1' : '0.4';
+    return `<th style="cursor:pointer;user-select:none;text-align:${align};white-space:nowrap;" onclick="${onClick}('${key}')" title="Ordenar por ${label}">
+      <span style="display:inline-flex;align-items:center;gap:6px;${isActive?'color:var(--gold-deep);':''}">
+        ${this.escape(label)}
+        <span style="font-size:10px;color:${arrowColor};opacity:${arrowOpacity};font-weight:700;">${arrow}</span>
+      </span>
+    </th>`;
+  },
+
+  /**
+   * Aplica ordenamiento a un array según el state {key, dir} y un getter.
+   * El getter recibe el item y devuelve el valor de comparación para esa key.
+   *
+   * @example
+   *   ui.applySort(items, sortState, (item, key) => {
+   *     if (key === 'name') return item.name;
+   *     if (key === 'date') return item.createdAt;
+   *   })
+   */
+  applySort(items, sortState, getter) {
+    if (!sortState || !sortState.key) return items;
+    const sorted = [...items];
+    const dir = sortState.dir === 'desc' ? -1 : 1;
+    sorted.sort((a, b) => {
+      const va = getter(a, sortState.key);
+      const vb = getter(b, sortState.key);
+      // Strings vs números
+      if (typeof va === 'number' && typeof vb === 'number') {
+        return (va - vb) * dir;
+      }
+      const sa = String(va == null ? '' : va).toLowerCase();
+      const sb = String(vb == null ? '' : vb).toLowerCase();
+      if (sa < sb) return -1 * dir;
+      if (sa > sb) return 1 * dir;
+      return 0;
+    });
+    return sorted;
+  },
+
+  /** Toggle helper para sortState: si es la misma key, alterna asc↔desc; si es nueva, empieza en asc */
+  toggleSort(currentSort, key) {
+    if (currentSort && currentSort.key === key) {
+      return { key, dir: currentSort.dir === 'asc' ? 'desc' : 'asc' };
+    }
+    return { key, dir: 'asc' };
+  },
 
   /**
    * Renderiza el layout completo (sidebar + topbar + contenedor).
