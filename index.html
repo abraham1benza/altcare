@@ -284,9 +284,33 @@ function renderDashboard() {
     .filter(i => i.status !== 'CANCELLED' && (i.totalToPay - (i.paidAmount||0)) > 0.01);
   const cxpOverdue = cxpPending.filter(i => i.dueDate && i.dueDate < today);
 
+  // === FILTRADO POR VISIBILIDAD ===
+  // Si no es admin, restringir a sus clientes/ventas
+  const isAdminUser = (typeof auth !== 'undefined' && auth.canSeeAll && auth.canSeeAll());
+  let myCustomerIds = null;
+  let visibleUsers = null;
+  if (!isAdminUser && typeof auth !== 'undefined' && auth.visibleUserIds) {
+    visibleUsers = auth.visibleUserIds() || [];
+    myCustomerIds = new Set(
+      db.getAll(db.COLLECTIONS.customers)
+        .filter(c => c.salesRepUserId && visibleUsers.includes(c.salesRepUserId))
+        .map(c => c.id)
+    );
+  }
+  const filterByVisibility = (docs) => {
+    if (isAdminUser) return docs;
+    if (!myCustomerIds || !visibleUsers) return docs;
+    return docs.filter(d =>
+      (d.salespersonId && visibleUsers.includes(d.salespersonId)) ||
+      (d.customerId && myCustomerIds.has(d.customerId))
+    );
+  };
+
   // Cuentas por cobrar (facturas venta pendientes)
-  const cxcPending = db.getAll(db.COLLECTIONS.salesOrders)
-    .filter(d => !d.cancelled && d.type === 'FACTURA' && (d.total - (d.paidAmount||0)) > 0.01);
+  const cxcPending = filterByVisibility(
+    db.getAll(db.COLLECTIONS.salesOrders)
+      .filter(d => !d.cancelled && d.type === 'FACTURA' && (d.total - (d.paidAmount||0)) > 0.01)
+  );
   const cxcOverdue = cxcPending.filter(d => d.dueDate && d.dueDate < today);
 
   // Totales por moneda
@@ -317,12 +341,16 @@ function renderDashboard() {
   const ocsToInvoice = db.getAll(db.COLLECTIONS.purchaseOrders)
     .filter(p => (p.status === 'RECEIVED' || p.status === 'PARTIAL') && !p.invoiceId);
 
-  // Facturas sin lotes asignados
-  const invoicesNoLots = db.getAll(db.COLLECTIONS.salesOrders)
-    .filter(d => d.type === 'FACTURA' && !d.cancelled && !d.lotsAssigned);
+  // Facturas sin lotes asignados (filtradas por visibilidad)
+  const invoicesNoLots = filterByVisibility(
+    db.getAll(db.COLLECTIONS.salesOrders)
+      .filter(d => d.type === 'FACTURA' && !d.cancelled && !d.lotsAssigned)
+  );
 
-  // Pedidos abiertos
-  const openOrders = db.getAll(db.COLLECTIONS.salesOrders).filter(d => d.type === 'PEDIDO' && !d.cancelled);
+  // Pedidos abiertos (filtrados por visibilidad)
+  const openOrders = filterByVisibility(
+    db.getAll(db.COLLECTIONS.salesOrders).filter(d => d.type === 'PEDIDO' && !d.cancelled)
+  );
 
   // Valor inventario en USD
   const totalRMValueUSD = db.getAll(db.COLLECTIONS.rmLots).filter(l => l.balance > 0).reduce((s, l) => {
@@ -404,6 +432,7 @@ function renderDashboard() {
         <div class="kpi-value-sub">${cxcPending.length} factura${cxcPending.length!==1?'s':''}${cxcOverdue.length?` · <span style="color:var(--danger);">${cxcOverdue.length} vencida${cxcOverdue.length!==1?'s':''}</span>`:''}</div>
         <div class="kpi-action">Ir a cobrar →</div>
       </a>
+      ${isAdminUser ? `
       <a href="modules/pagos.html?tab=cxp" class="kpi kpi-clickable" style="text-decoration:none;color:inherit;cursor:pointer;display:block;">
         <div class="kpi-label">Por pagar</div>${renderMultiKPI(cxpByCcy, 'var(--danger)')}
         <div class="kpi-value-sub">${cxpPending.length} factura${cxpPending.length!==1?'s':''}${cxpOverdue.length?` · <span style="color:var(--danger);">${cxpOverdue.length} vencida${cxpOverdue.length!==1?'s':''}</span>`:''}</div>
@@ -414,6 +443,7 @@ function renderDashboard() {
         <div class="kpi-value-sub">${isGerencial && personalAccountsCount > 0 ? `🏢 ${companyAccountsCount} empresa · 👤 ${personalAccountsCount} personal` : `${companyAccountsCount} cuenta${companyAccountsCount!==1?'s':''}${personalAccountsCount > 0 ? ` <span class="text-muted">(${personalAccountsCount} personal oculta${personalAccountsCount!==1?'s':''})</span>` : ''}`}</div>
         <div class="kpi-action">Ver cuentas →</div>
       </a>
+      ` : ''}
       <a href="modules/ventas.html?filter=PEDIDO" class="kpi kpi-clickable" style="text-decoration:none;color:inherit;cursor:pointer;display:block;">
         <div class="kpi-label">Pedidos abiertos</div>
         <div class="kpi-value">${openOrders.length}</div>
@@ -439,6 +469,7 @@ function renderDashboard() {
         <div class="kpi-value-sub">${fgQuarantine} en cuarentena</div>
         <div class="kpi-action">Ver lotes →</div>
       </a>
+      ${isGerencial ? `
       <a href="modules/materias-primas.html" class="kpi kpi-clickable" style="text-decoration:none;color:inherit;cursor:pointer;display:block;">
         <div class="kpi-mark">${ui.icon('currency')}</div>
         <div class="kpi-label">Valor MP</div>
@@ -453,6 +484,7 @@ function renderDashboard() {
         <div class="kpi-value-sub">a costo de fabricación</div>
         <div class="kpi-action">Ver lotes PT →</div>
       </a>
+      ` : ''}
     </div>
 
     <!-- Listas comerciales -->
