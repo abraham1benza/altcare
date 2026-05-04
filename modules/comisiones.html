@@ -304,16 +304,21 @@ function openPayCommission(userId) {
     ui.toast('Necesitás crear una cuenta bancaria primero', 'error');
     return;
   }
-  const activeLoans = db.query(db.COLLECTIONS.loans, l => l.userId === userId && l.status === 'OPEN');
+  const bcv = currency.getRate('BCV_USD');
 
   _paymentForm = {
     userId,
     userName: s.user.fullName || s.user.username,
     amount: '',
-    bankAccountId: accounts[0].id,
-    currency: accounts[0].currency,
+    paymentCurrency: 'USD',          // Moneda en la que pago al vendedor (yo elijo)
+    bankAccountId: accounts[0].id,   // Cuenta de la que sale la plata
     date: new Date().toISOString().slice(0,10),
     notes: '',
+    // Tasa para conversión a moneda de cuenta (si difieren)
+    conversionRate: bcv?.value || 0,
+    conversionRateType: 'BCV_USD',
+    useCustomRate: false,
+    // Préstamo
     loanIdToRepay: '',
     loanRepayAmount: 0
   };
@@ -332,8 +337,47 @@ function renderPayCommissionForm() {
   const s = commissions.getUserSummary(f.userId);
   const accounts = db.getAll(db.COLLECTIONS.bankAccounts).filter(a => a.active !== false);
   const activeLoans = db.query(db.COLLECTIONS.loans, l => l.userId === f.userId && l.status === 'OPEN');
-  const selectedAccount = db.getById(db.COLLECTIONS.bankAccounts, f.bankAccountId);
-  if (selectedAccount) f.currency = selectedAccount.currency;
+  const account = db.getById(db.COLLECTIONS.bankAccounts, f.bankAccountId);
+  const accountCcy = account ? account.currency : 'VES';
+
+  const isCrossCurrency = f.paymentCurrency !== accountCcy;
+  const amt = parseFloat(f.amount) || 0;
+
+  // Calcular monto que sale de la cuenta (en moneda de cuenta)
+  let amountFromAccount = amt;
+  if (isCrossCurrency && f.conversionRate > 0) {
+    let amtInVES = 0;
+    if (f.paymentCurrency === 'VES') amtInVES = amt;
+    else amtInVES = amt * f.conversionRate;  // USD/EUR → VES
+    if (accountCcy === 'VES') amountFromAccount = amtInVES;
+    else amountFromAccount = f.conversionRate > 0 ? amtInVES / f.conversionRate : 0;
+    amountFromAccount = Math.round(amountFromAccount * 100) / 100;
+  }
+
+  // Tasas disponibles según par de monedas
+  const allRates = currency.getRates().filter(r => r.value > 0);
+  const applicableRates = allRates.filter(r => {
+    if (!isCrossCurrency) return false;
+    if (r.type === 'BCV_USD' || r.type === 'BINANCE') {
+      return (f.paymentCurrency === 'USD' && accountCcy === 'VES') || (f.paymentCurrency === 'VES' && accountCcy === 'USD');
+    }
+    if (r.type === 'BCV_EUR' || r.type === 'P2P_EUR') {
+      return (f.paymentCurrency === 'EUR' && accountCcy === 'VES') || (f.paymentCurrency === 'VES' && accountCcy === 'EUR');
+    }
+    return false;
+  });
+
+  // Auto-elegir tasa si no hay una válida
+  if (isCrossCurrency && !f.useCustomRate && applicableRates.length > 0) {
+    const stillValid = applicableRates.some(r => r.type === f.conversionRateType);
+    if (!stillValid) {
+      const bcv = applicableRates.find(r => r.type === 'BCV_USD') || applicableRates.find(r => r.type === 'BCV_EUR') || applicableRates[0];
+      f.conversionRate = bcv.value;
+      f.conversionRateType = bcv.type;
+    }
+  }
+
+  const insufficientFunds = amountFromAccount > 0 && amountFromAccount > (account?.balance || 0);
 
   const html = `
     <div style="padding:12px 14px;background:${s.netBalance>=0?'#f0fdf4':'#fef2f2'};border-radius:8px;margin-bottom:14px;font-size:13px;">
@@ -343,14 +387,23 @@ function renderPayCommissionForm() {
 
     <div class="form-grid form-grid-2">
       <div class="field">
-        <label class="field-label">Cuenta de salida *</label>
-        <select class="select" onchange="_paymentForm.bankAccountId=this.value;renderPayCommissionForm();">
-          ${accounts.map(a => `<option value="${a.id}" ${f.bankAccountId===a.id?'selected':''}>${ui.escape(a.name)} (${a.currency})${a.countsForFiscal===false?' 👤':' 🏢'} · ${currency.format(a.balance||0, a.currency)}</option>`).join('')}
-        </select>
+        <label class="field-label">Monto a pagar *</label>
+        <input class="input" type="number" step="0.01" value="${f.amount}" oninput="setPayAmount(this.value)" placeholder="0.00">
       </div>
       <div class="field">
-        <label class="field-label">Monto a pagar (${f.currency}) *</label>
-        <input class="input" type="number" step="0.01" value="${f.amount}" oninput="_paymentForm.amount=this.value" placeholder="0.00">
+        <label class="field-label">Moneda del pago *</label>
+        <select class="select" onchange="setPayCurrency(this.value)">
+          <option value="USD" ${f.paymentCurrency==='USD'?'selected':''}>Dólares (USD)</option>
+          <option value="VES" ${f.paymentCurrency==='VES'?'selected':''}>Bolívares (VES)</option>
+          <option value="EUR" ${f.paymentCurrency==='EUR'?'selected':''}>Euros (EUR)</option>
+        </select>
+        <div class="field-hint">En qué moneda le entregás la plata al vendedor</div>
+      </div>
+      <div class="field" style="grid-column:1/-1;">
+        <label class="field-label">Cuenta de salida *</label>
+        <select class="select" onchange="_paymentForm.bankAccountId=this.value;renderPayCommissionForm();">
+          ${accounts.map(a => `<option value="${a.id}" ${f.bankAccountId===a.id?'selected':''}>${ui.escape(a.name)} (${a.currency})${a.countsForFiscal===false?' 👤':' 🏢'} · saldo ${currency.format(a.balance||0, a.currency)}</option>`).join('')}
+        </select>
       </div>
       <div class="field">
         <label class="field-label">Fecha</label>
@@ -362,21 +415,63 @@ function renderPayCommissionForm() {
       </div>
     </div>
 
+    ${isCrossCurrency ? `
+      <div style="margin-top:16px;padding:14px;background:#dbeafe;border:1px solid #93c5fd;border-radius:8px;">
+        <div style="font-weight:600;font-size:13px;color:#1e40af;margin-bottom:10px;">⇄ Conversión cruzada (${f.paymentCurrency} → ${accountCcy})</div>
+        <div class="text-muted" style="font-size:11.5px;margin-bottom:10px;">El pago al vendedor es en ${f.paymentCurrency} pero la cuenta está en ${accountCcy}. Elegí qué tasa usar:</div>
+        <div style="display:flex;flex-direction:column;gap:6px;margin-bottom:12px;">
+          ${applicableRates.map(r => `
+            <label style="display:flex;align-items:center;gap:10px;padding:8px 12px;background:white;border:1px solid var(--border);border-radius:6px;cursor:pointer;${f.conversionRateType===r.type && !f.useCustomRate?'border-color:var(--accent);background:#f3f6f0;':''}">
+              <input type="radio" name="payRate" ${f.conversionRateType===r.type && !f.useCustomRate?'checked':''} onchange="selectPayRate('${r.type}', ${r.value})">
+              <div style="flex:1;font-size:12px;">
+                <strong>${r.label}</strong> · ${r.value.toLocaleString('es-VE',{maximumFractionDigits:4})}
+                <span class="text-muted" style="font-size:11px;display:block;">${r.updatedDate||'—'}</span>
+              </div>
+            </label>
+          `).join('')}
+          <label style="display:flex;align-items:center;gap:10px;padding:8px 12px;background:white;border:1px solid var(--border);border-radius:6px;cursor:pointer;${f.useCustomRate?'border-color:var(--accent);background:#f3f6f0;':''}">
+            <input type="radio" name="payRate" ${f.useCustomRate?'checked':''} onchange="useCustomPayRate()">
+            <div style="flex:1;font-size:12px;">
+              <strong>Personalizada</strong>
+              ${f.useCustomRate ? `<input type="number" step="0.0001" class="input" style="margin-top:6px;" value="${f.conversionRate}" oninput="updateCustomPayRate(this.value)" placeholder="Ej: 487">` : `<span class="text-muted" style="font-size:11px;display:block;">Acuerdo especial, P2P privado, etc.</span>`}
+            </div>
+          </label>
+        </div>
+        <div style="padding:10px 12px;background:white;border-radius:6px;display:grid;grid-template-columns:1fr auto 1fr;gap:8px;align-items:center;font-size:12px;">
+          <div>
+            <div class="text-muted" style="font-size:10px;">Vendedor recibe</div>
+            <div class="td-mono td-strong" id="pay-recv">${currency.format(amt, f.paymentCurrency)}</div>
+          </div>
+          <div style="text-align:center;color:var(--ink-3);font-size:18px;">→</div>
+          <div style="text-align:right;">
+            <div class="text-muted" style="font-size:10px;">Sale de cuenta</div>
+            <div class="td-mono td-strong" id="pay-out" style="color:var(--danger);">${currency.format(amountFromAccount, accountCcy)}</div>
+          </div>
+        </div>
+        ${insufficientFunds ? '<div style="margin-top:8px;padding:8px 10px;background:#fee2e2;border-radius:6px;font-size:12px;color:#991b1b;">⚠️ Saldo insuficiente en la cuenta</div>' : ''}
+      </div>
+    ` : `
+      ${insufficientFunds ? '<div style="margin-top:14px;padding:10px 14px;background:#fee2e2;border-radius:6px;font-size:12px;color:#991b1b;">⚠️ Saldo insuficiente en la cuenta</div>' : ''}
+      <div style="margin-top:14px;padding:10px 14px;background:var(--surface-2);border-radius:6px;font-size:12px;color:var(--ink-2);">
+        ✓ Pago directo en ${f.paymentCurrency} desde cuenta del mismo tipo. Sin conversión.
+      </div>
+    `}
+
     ${activeLoans.length > 0 ? `
       <div style="margin-top:14px;padding:12px;background:#fef3c7;border:1px solid #fcd34d;border-radius:8px;">
         <div style="font-weight:600;font-size:13px;color:#78350f;margin-bottom:8px;">📋 Descontar de préstamo (opcional)</div>
+        <div class="text-muted" style="font-size:11px;margin-bottom:10px;">Si parte de este pago descuenta un préstamo activo, indicá el monto en la moneda del préstamo.</div>
         <div class="form-grid form-grid-2">
           <div class="field">
             <label class="field-label">Préstamo</label>
-            <select class="select" onchange="_paymentForm.loanIdToRepay=this.value">
+            <select class="select" onchange="_paymentForm.loanIdToRepay=this.value;_paymentForm.loanRepayAmount=0;renderPayCommissionForm()">
               <option value="">— No descontar —</option>
               ${activeLoans.map(l => `<option value="${l.id}" ${f.loanIdToRepay===l.id?'selected':''}>${ui.formatDate(l.date)} · saldo ${currency.format(l.balance, l.currency)}</option>`).join('')}
             </select>
           </div>
           <div class="field">
-            <label class="field-label">Monto a descontar</label>
+            <label class="field-label">Monto a descontar ${f.loanIdToRepay ? `(${(db.getById(db.COLLECTIONS.loans, f.loanIdToRepay)||{}).currency || ''})` : ''}</label>
             <input class="input" type="number" step="0.01" value="${f.loanRepayAmount}" oninput="_paymentForm.loanRepayAmount=parseFloat(this.value)||0" placeholder="0.00" ${!f.loanIdToRepay?'disabled':''}>
-            <div class="field-hint">El préstamo debe estar en la misma moneda que este pago</div>
           </div>
         </div>
       </div>
@@ -385,17 +480,95 @@ function renderPayCommissionForm() {
   document.getElementById('paycomm-body').innerHTML = html;
 }
 
+// Funciones de actualización del form sin re-render completo (evita perder foco)
+function setPayAmount(val) {
+  _paymentForm.amount = val;
+  refreshPayPreview();
+}
+
+function setPayCurrency(ccy) {
+  _paymentForm.paymentCurrency = ccy;
+  // Reset tasa: el par cambió
+  _paymentForm.useCustomRate = false;
+  const bcv = currency.getRate(ccy === 'EUR' ? 'BCV_EUR' : 'BCV_USD');
+  if (bcv) {
+    _paymentForm.conversionRate = bcv.value;
+    _paymentForm.conversionRateType = bcv.type;
+  }
+  renderPayCommissionForm();
+}
+
+function selectPayRate(rateType, value) {
+  _paymentForm.conversionRateType = rateType;
+  _paymentForm.conversionRate = parseFloat(value) || 0;
+  _paymentForm.useCustomRate = false;
+  renderPayCommissionForm();
+}
+
+function useCustomPayRate() {
+  _paymentForm.useCustomRate = true;
+  _paymentForm.conversionRateType = 'CUSTOM';
+  renderPayCommissionForm();
+}
+
+function updateCustomPayRate(val) {
+  _paymentForm.conversionRate = parseFloat(val) || 0;
+  refreshPayPreview();
+}
+
+/** Refresca solo los textos del preview (mantiene foco del input) */
+function refreshPayPreview() {
+  const f = _paymentForm;
+  if (!f) return;
+  const account = db.getById(db.COLLECTIONS.bankAccounts, f.bankAccountId);
+  if (!account) return;
+  const accountCcy = account.currency;
+  const isCross = f.paymentCurrency !== accountCcy;
+  const amt = parseFloat(f.amount) || 0;
+  let amountFromAccount = amt;
+  if (isCross && f.conversionRate > 0) {
+    let amtInVES = 0;
+    if (f.paymentCurrency === 'VES') amtInVES = amt;
+    else amtInVES = amt * f.conversionRate;
+    if (accountCcy === 'VES') amountFromAccount = amtInVES;
+    else amountFromAccount = f.conversionRate > 0 ? amtInVES / f.conversionRate : 0;
+    amountFromAccount = Math.round(amountFromAccount * 100) / 100;
+  }
+  const elRecv = document.getElementById('pay-recv');
+  const elOut = document.getElementById('pay-out');
+  if (elRecv) elRecv.textContent = currency.format(amt, f.paymentCurrency);
+  if (elOut) elOut.textContent = currency.format(amountFromAccount, accountCcy);
+}
+
 function confirmPayCommission() {
   const f = _paymentForm;
   if (!f) return;
   const amount = parseFloat(f.amount) || 0;
   if (amount <= 0) { ui.toast('Indicá un monto válido', 'error'); return; }
+  const account = db.getById(db.COLLECTIONS.bankAccounts, f.bankAccountId);
+  if (!account) { ui.toast('Selecciona una cuenta', 'error'); return; }
+
+  const isCross = f.paymentCurrency !== account.currency;
+  if (isCross) {
+    if (f.useCustomRate) {
+      const inp = document.querySelector('input[type="number"][step="0.0001"]');
+      if (inp) f.conversionRate = parseFloat(inp.value) || 0;
+    }
+    if (!f.conversionRate || f.conversionRate <= 0) {
+      ui.toast('Indicá una tasa válida', 'error');
+      return;
+    }
+  }
+
   try {
     commissions.payCommission({
       userId: f.userId,
       amount,
-      currency: f.currency,
+      currency: f.paymentCurrency,
       bankAccountId: f.bankAccountId,
+      // Pasamos la tasa elegida para que registerBankMove la respete
+      conversionRate: isCross ? f.conversionRate : null,
+      conversionRateType: isCross ? f.conversionRateType : null,
       date: f.date,
       notes: f.notes,
       loanIdToRepay: f.loanIdToRepay || null,
@@ -403,7 +576,7 @@ function confirmPayCommission() {
     });
     ui.closeModal();
     _paymentForm = null;
-    ui.toast(`Pago de ${currency.format(amount, f.currency)} a ${f.userName} registrado`, 'success');
+    ui.toast(`Pago de ${currency.format(amount, f.paymentCurrency)} a ${f.userName} registrado`, 'success');
     render();
   } catch (err) {
     ui.toast(err.message, 'error');
@@ -424,15 +597,19 @@ function openGiveLoan(userId) {
     ui.toast('Necesitás crear una cuenta bancaria primero', 'error');
     return;
   }
+  const bcv = currency.getRate('BCV_USD');
 
   _loanForm = {
     userId,
     userName: u.fullName || u.username,
     amount: '',
+    loanCurrency: 'USD',           // Moneda del préstamo (lo que recibe el vendedor)
     bankAccountId: accounts[0].id,
-    currency: accounts[0].currency,
     date: new Date().toISOString().slice(0,10),
-    notes: ''
+    notes: '',
+    conversionRate: bcv?.value || 0,
+    conversionRateType: 'BCV_USD',
+    useCustomRate: false
   };
 
   ui.openModal({
@@ -447,23 +624,69 @@ function renderLoanForm() {
   const f = _loanForm;
   if (!f) return;
   const accounts = db.getAll(db.COLLECTIONS.bankAccounts).filter(a => a.active !== false);
-  const selectedAccount = db.getById(db.COLLECTIONS.bankAccounts, f.bankAccountId);
-  if (selectedAccount) f.currency = selectedAccount.currency;
+  const account = db.getById(db.COLLECTIONS.bankAccounts, f.bankAccountId);
+  const accountCcy = account ? account.currency : 'VES';
+
+  const isCrossCurrency = f.loanCurrency !== accountCcy;
+  const amt = parseFloat(f.amount) || 0;
+
+  let amountFromAccount = amt;
+  if (isCrossCurrency && f.conversionRate > 0) {
+    let amtInVES = 0;
+    if (f.loanCurrency === 'VES') amtInVES = amt;
+    else amtInVES = amt * f.conversionRate;
+    if (accountCcy === 'VES') amountFromAccount = amtInVES;
+    else amountFromAccount = f.conversionRate > 0 ? amtInVES / f.conversionRate : 0;
+    amountFromAccount = Math.round(amountFromAccount * 100) / 100;
+  }
+
+  const allRates = currency.getRates().filter(r => r.value > 0);
+  const applicableRates = allRates.filter(r => {
+    if (!isCrossCurrency) return false;
+    if (r.type === 'BCV_USD' || r.type === 'BINANCE') {
+      return (f.loanCurrency === 'USD' && accountCcy === 'VES') || (f.loanCurrency === 'VES' && accountCcy === 'USD');
+    }
+    if (r.type === 'BCV_EUR' || r.type === 'P2P_EUR') {
+      return (f.loanCurrency === 'EUR' && accountCcy === 'VES') || (f.loanCurrency === 'VES' && accountCcy === 'EUR');
+    }
+    return false;
+  });
+
+  if (isCrossCurrency && !f.useCustomRate && applicableRates.length > 0) {
+    const stillValid = applicableRates.some(r => r.type === f.conversionRateType);
+    if (!stillValid) {
+      const bcv = applicableRates.find(r => r.type === 'BCV_USD') || applicableRates.find(r => r.type === 'BCV_EUR') || applicableRates[0];
+      f.conversionRate = bcv.value;
+      f.conversionRateType = bcv.type;
+    }
+  }
+
+  const insufficientFunds = amountFromAccount > 0 && amountFromAccount > (account?.balance || 0);
 
   const html = `
     <p class="text-muted" style="font-size:13px;margin-bottom:14px;line-height:1.5;">
       El préstamo sale de una cuenta bancaria como egreso. El saldo del préstamo quedará pendiente y podés descontarlo de pagos futuros de comisión.
     </p>
+
     <div class="form-grid form-grid-2">
       <div class="field">
-        <label class="field-label">Cuenta de salida *</label>
-        <select class="select" onchange="_loanForm.bankAccountId=this.value;renderLoanForm();">
-          ${accounts.map(a => `<option value="${a.id}" ${f.bankAccountId===a.id?'selected':''}>${ui.escape(a.name)} (${a.currency}) · ${currency.format(a.balance||0, a.currency)}</option>`).join('')}
-        </select>
+        <label class="field-label">Monto del préstamo *</label>
+        <input class="input" type="number" step="0.01" value="${f.amount}" oninput="setLoanAmount(this.value)" placeholder="0.00">
       </div>
       <div class="field">
-        <label class="field-label">Monto del préstamo (${f.currency}) *</label>
-        <input class="input" type="number" step="0.01" value="${f.amount}" oninput="_loanForm.amount=this.value" placeholder="0.00">
+        <label class="field-label">Moneda del préstamo *</label>
+        <select class="select" onchange="setLoanCurrency(this.value)">
+          <option value="USD" ${f.loanCurrency==='USD'?'selected':''}>Dólares (USD)</option>
+          <option value="VES" ${f.loanCurrency==='VES'?'selected':''}>Bolívares (VES)</option>
+          <option value="EUR" ${f.loanCurrency==='EUR'?'selected':''}>Euros (EUR)</option>
+        </select>
+        <div class="field-hint">En qué moneda recibe la plata el vendedor</div>
+      </div>
+      <div class="field" style="grid-column:1/-1;">
+        <label class="field-label">Cuenta de salida *</label>
+        <select class="select" onchange="_loanForm.bankAccountId=this.value;renderLoanForm();">
+          ${accounts.map(a => `<option value="${a.id}" ${f.bankAccountId===a.id?'selected':''}>${ui.escape(a.name)} (${a.currency})${a.countsForFiscal===false?' 👤':' 🏢'} · saldo ${currency.format(a.balance||0, a.currency)}</option>`).join('')}
+        </select>
       </div>
       <div class="field">
         <label class="field-label">Fecha</label>
@@ -474,8 +697,107 @@ function renderLoanForm() {
         <input class="input" value="${ui.escape(f.notes||'')}" oninput="_loanForm.notes=this.value" placeholder="Adelanto, emergencia, etc.">
       </div>
     </div>
+
+    ${isCrossCurrency ? `
+      <div style="margin-top:16px;padding:14px;background:#dbeafe;border:1px solid #93c5fd;border-radius:8px;">
+        <div style="font-weight:600;font-size:13px;color:#1e40af;margin-bottom:10px;">⇄ Conversión cruzada (${f.loanCurrency} → ${accountCcy})</div>
+        <div class="text-muted" style="font-size:11.5px;margin-bottom:10px;">El préstamo se le entrega en ${f.loanCurrency} pero la cuenta está en ${accountCcy}. Elegí qué tasa usar:</div>
+        <div style="display:flex;flex-direction:column;gap:6px;margin-bottom:12px;">
+          ${applicableRates.map(r => `
+            <label style="display:flex;align-items:center;gap:10px;padding:8px 12px;background:white;border:1px solid var(--border);border-radius:6px;cursor:pointer;${f.conversionRateType===r.type && !f.useCustomRate?'border-color:var(--accent);background:#f3f6f0;':''}">
+              <input type="radio" name="loanRate" ${f.conversionRateType===r.type && !f.useCustomRate?'checked':''} onchange="selectLoanRate('${r.type}', ${r.value})">
+              <div style="flex:1;font-size:12px;">
+                <strong>${r.label}</strong> · ${r.value.toLocaleString('es-VE',{maximumFractionDigits:4})}
+                <span class="text-muted" style="font-size:11px;display:block;">${r.updatedDate||'—'}</span>
+              </div>
+            </label>
+          `).join('')}
+          <label style="display:flex;align-items:center;gap:10px;padding:8px 12px;background:white;border:1px solid var(--border);border-radius:6px;cursor:pointer;${f.useCustomRate?'border-color:var(--accent);background:#f3f6f0;':''}">
+            <input type="radio" name="loanRate" ${f.useCustomRate?'checked':''} onchange="useCustomLoanRate()">
+            <div style="flex:1;font-size:12px;">
+              <strong>Personalizada</strong>
+              ${f.useCustomRate ? `<input type="number" step="0.0001" class="input" style="margin-top:6px;" value="${f.conversionRate}" oninput="updateCustomLoanRate(this.value)" placeholder="Ej: 487">` : `<span class="text-muted" style="font-size:11px;display:block;">Acuerdo especial, P2P privado, etc.</span>`}
+            </div>
+          </label>
+        </div>
+        <div style="padding:10px 12px;background:white;border-radius:6px;display:grid;grid-template-columns:1fr auto 1fr;gap:8px;align-items:center;font-size:12px;">
+          <div>
+            <div class="text-muted" style="font-size:10px;">Vendedor recibe</div>
+            <div class="td-mono td-strong" id="loan-recv">${currency.format(amt, f.loanCurrency)}</div>
+          </div>
+          <div style="text-align:center;color:var(--ink-3);font-size:18px;">→</div>
+          <div style="text-align:right;">
+            <div class="text-muted" style="font-size:10px;">Sale de cuenta</div>
+            <div class="td-mono td-strong" id="loan-out" style="color:var(--danger);">${currency.format(amountFromAccount, accountCcy)}</div>
+          </div>
+        </div>
+        ${insufficientFunds ? '<div style="margin-top:8px;padding:8px 10px;background:#fee2e2;border-radius:6px;font-size:12px;color:#991b1b;">⚠️ Saldo insuficiente en la cuenta</div>' : ''}
+      </div>
+    ` : `
+      ${insufficientFunds ? '<div style="margin-top:14px;padding:10px 14px;background:#fee2e2;border-radius:6px;font-size:12px;color:#991b1b;">⚠️ Saldo insuficiente en la cuenta</div>' : ''}
+      <div style="margin-top:14px;padding:10px 14px;background:var(--surface-2);border-radius:6px;font-size:12px;color:var(--ink-2);">
+        ✓ Préstamo en ${f.loanCurrency} desde cuenta del mismo tipo. Sin conversión.
+      </div>
+    `}
   `;
   document.getElementById('loan-body').innerHTML = html;
+}
+
+function setLoanAmount(val) {
+  _loanForm.amount = val;
+  refreshLoanPreview();
+}
+
+function setLoanCurrency(ccy) {
+  _loanForm.loanCurrency = ccy;
+  _loanForm.useCustomRate = false;
+  const bcv = currency.getRate(ccy === 'EUR' ? 'BCV_EUR' : 'BCV_USD');
+  if (bcv) {
+    _loanForm.conversionRate = bcv.value;
+    _loanForm.conversionRateType = bcv.type;
+  }
+  renderLoanForm();
+}
+
+function selectLoanRate(rateType, value) {
+  _loanForm.conversionRateType = rateType;
+  _loanForm.conversionRate = parseFloat(value) || 0;
+  _loanForm.useCustomRate = false;
+  renderLoanForm();
+}
+
+function useCustomLoanRate() {
+  _loanForm.useCustomRate = true;
+  _loanForm.conversionRateType = 'CUSTOM';
+  renderLoanForm();
+}
+
+function updateCustomLoanRate(val) {
+  _loanForm.conversionRate = parseFloat(val) || 0;
+  refreshLoanPreview();
+}
+
+function refreshLoanPreview() {
+  const f = _loanForm;
+  if (!f) return;
+  const account = db.getById(db.COLLECTIONS.bankAccounts, f.bankAccountId);
+  if (!account) return;
+  const accountCcy = account.currency;
+  const isCross = f.loanCurrency !== accountCcy;
+  const amt = parseFloat(f.amount) || 0;
+  let amountFromAccount = amt;
+  if (isCross && f.conversionRate > 0) {
+    let amtInVES = 0;
+    if (f.loanCurrency === 'VES') amtInVES = amt;
+    else amtInVES = amt * f.conversionRate;
+    if (accountCcy === 'VES') amountFromAccount = amtInVES;
+    else amountFromAccount = f.conversionRate > 0 ? amtInVES / f.conversionRate : 0;
+    amountFromAccount = Math.round(amountFromAccount * 100) / 100;
+  }
+  const elRecv = document.getElementById('loan-recv');
+  const elOut = document.getElementById('loan-out');
+  if (elRecv) elRecv.textContent = currency.format(amt, f.loanCurrency);
+  if (elOut) elOut.textContent = currency.format(amountFromAccount, accountCcy);
 }
 
 function confirmGiveLoan() {
@@ -483,18 +805,35 @@ function confirmGiveLoan() {
   if (!f) return;
   const amount = parseFloat(f.amount) || 0;
   if (amount <= 0) { ui.toast('Indicá un monto válido', 'error'); return; }
+  const account = db.getById(db.COLLECTIONS.bankAccounts, f.bankAccountId);
+  if (!account) { ui.toast('Selecciona una cuenta', 'error'); return; }
+
+  const isCross = f.loanCurrency !== account.currency;
+  if (isCross) {
+    if (f.useCustomRate) {
+      const inp = document.querySelector('input[type="number"][step="0.0001"]');
+      if (inp) f.conversionRate = parseFloat(inp.value) || 0;
+    }
+    if (!f.conversionRate || f.conversionRate <= 0) {
+      ui.toast('Indicá una tasa válida', 'error');
+      return;
+    }
+  }
+
   try {
     commissions.giveLoan({
       userId: f.userId,
       amount,
-      currency: f.currency,
+      currency: f.loanCurrency,
       bankAccountId: f.bankAccountId,
+      conversionRate: isCross ? f.conversionRate : null,
+      conversionRateType: isCross ? f.conversionRateType : null,
       date: f.date,
       notes: f.notes
     });
     ui.closeModal();
     _loanForm = null;
-    ui.toast(`Préstamo de ${currency.format(amount, f.currency)} otorgado a ${f.userName}`, 'success');
+    ui.toast(`Préstamo de ${currency.format(amount, f.loanCurrency)} otorgado a ${f.userName}`, 'success');
     render();
   } catch (err) {
     ui.toast(err.message, 'error');
@@ -540,12 +879,27 @@ Object.assign(window, {
   onSearch: typeof onSearch !== 'undefined' ? onSearch : undefined,
   openDetail: typeof openDetail !== 'undefined' ? openDetail : undefined,
   goBackToList: typeof goBackToList !== 'undefined' ? goBackToList : undefined,
+  // Pago
   openPayCommission: typeof openPayCommission !== 'undefined' ? openPayCommission : undefined,
   renderPayCommissionForm: typeof renderPayCommissionForm !== 'undefined' ? renderPayCommissionForm : undefined,
+  setPayAmount: typeof setPayAmount !== 'undefined' ? setPayAmount : undefined,
+  setPayCurrency: typeof setPayCurrency !== 'undefined' ? setPayCurrency : undefined,
+  selectPayRate: typeof selectPayRate !== 'undefined' ? selectPayRate : undefined,
+  useCustomPayRate: typeof useCustomPayRate !== 'undefined' ? useCustomPayRate : undefined,
+  updateCustomPayRate: typeof updateCustomPayRate !== 'undefined' ? updateCustomPayRate : undefined,
+  refreshPayPreview: typeof refreshPayPreview !== 'undefined' ? refreshPayPreview : undefined,
   confirmPayCommission: typeof confirmPayCommission !== 'undefined' ? confirmPayCommission : undefined,
+  // Préstamo
   openGiveLoan: typeof openGiveLoan !== 'undefined' ? openGiveLoan : undefined,
   renderLoanForm: typeof renderLoanForm !== 'undefined' ? renderLoanForm : undefined,
+  setLoanAmount: typeof setLoanAmount !== 'undefined' ? setLoanAmount : undefined,
+  setLoanCurrency: typeof setLoanCurrency !== 'undefined' ? setLoanCurrency : undefined,
+  selectLoanRate: typeof selectLoanRate !== 'undefined' ? selectLoanRate : undefined,
+  useCustomLoanRate: typeof useCustomLoanRate !== 'undefined' ? useCustomLoanRate : undefined,
+  updateCustomLoanRate: typeof updateCustomLoanRate !== 'undefined' ? updateCustomLoanRate : undefined,
+  refreshLoanPreview: typeof refreshLoanPreview !== 'undefined' ? refreshLoanPreview : undefined,
   confirmGiveLoan: typeof confirmGiveLoan !== 'undefined' ? confirmGiveLoan : undefined,
+  // Anular
   cancelPayment: typeof cancelPayment !== 'undefined' ? cancelPayment : undefined,
   cancelLoan: typeof cancelLoan !== 'undefined' ? cancelLoan : undefined,
 });
