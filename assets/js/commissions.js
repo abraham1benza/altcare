@@ -350,6 +350,9 @@ const commissions = {
       bankAccountName: account.name,
       date: args.date || new Date().toISOString().slice(0,10),
       notes: args.notes || '',
+      // Tasa usada (si hubo conversión a moneda de cuenta)
+      conversionRate: args.conversionRate || null,
+      conversionRateType: args.conversionRateType || null,
       loanRepaymentId: args.loanIdToRepay || null,
       loanRepayAmount: parseFloat(args.loanRepayAmount) || 0,
       createdAt: new Date().toISOString(),
@@ -357,13 +360,15 @@ const commissions = {
     };
     const saved = db.save(db.COLLECTIONS.commissionPayments, payment);
 
-    // Movimiento bancario (sale plata)
+    // Movimiento bancario (sale plata) — pasamos la tasa elegida
     if (typeof payments !== 'undefined' && payments.registerBankMove) {
       payments.registerBankMove({
         accountId: args.bankAccountId,
         type: 'WITHDRAWAL',
         amount,
         currency: ccy,
+        rate: args.conversionRate || null,
+        rateType: args.conversionRateType || null,
         date: saved.date,
         reference: `Pago de comisión a ${saved.userName}${saved.notes?` · ${saved.notes}`:''}`,
         counterpartyName: saved.userName
@@ -461,6 +466,9 @@ const commissions = {
       bankAccountName: account.name,
       date: args.date || new Date().toISOString().slice(0,10),
       notes: args.notes || '',
+      // Tasa usada (si hubo conversión a moneda de cuenta)
+      conversionRate: args.conversionRate || null,
+      conversionRateType: args.conversionRateType || null,
       status: 'OPEN',
       repayments: [],
       createdAt: new Date().toISOString(),
@@ -468,13 +476,15 @@ const commissions = {
     };
     const saved = db.save(db.COLLECTIONS.loans, loan);
 
-    // Movimiento bancario: sale plata
+    // Movimiento bancario: sale plata — pasamos la tasa elegida
     if (typeof payments !== 'undefined' && payments.registerBankMove) {
       payments.registerBankMove({
         accountId: args.bankAccountId,
         type: 'WITHDRAWAL',
         amount,
         currency: ccy,
+        rate: args.conversionRate || null,
+        rateType: args.conversionRateType || null,
         date: saved.date,
         reference: `Préstamo a ${saved.userName}${saved.notes?` · ${saved.notes}`:''}`,
         counterpartyName: saved.userName
