@@ -363,6 +363,12 @@ function renderDashboard() {
   }, 0);
   const totalFGValueUSD = fgLots.reduce((s,l) => s + ((l.balance||0) * (l.unitCost||0)), 0);
 
+  // Valor del inventario PT a precio de venta (distribuidor y peluquería)
+  // Solo lotes liberados — los en cuarentena o rechazados no son vendibles
+  const fgSellable = fgLots.filter(l => l.status === 'LIBERADO');
+  const totalFGSaleDistUSD = fgSellable.reduce((s, l) => s + ((l.balance||0) * (l.priceDistributor||0)), 0);
+  const totalFGSalePharmUSD = fgSellable.reduce((s, l) => s + ((l.balance||0) * (l.pricePharmacy||0)), 0);
+
   // === HELPER PARA KPIs (consolidado en moneda del modo activo) ===
   const renderMultiKPI = (byCcy, color) => {
     // Convertir todos los montos a la moneda del modo activo y sumar
@@ -487,6 +493,27 @@ function renderDashboard() {
       </a>
       ` : ''}
     </div>
+
+    ${isGerencial && isAdminUser ? `
+    <!-- Valor del inventario a precio de venta (solo admin gerencial) -->
+    <div class="divider-section"><span class="section-title" style="margin:0;">Valor del inventario a precio de venta</span></div>
+    <div class="grid grid-2 mb-24">
+      <a href="modules/producto-terminado.html" class="kpi kpi-clickable" style="text-decoration:none;color:inherit;cursor:pointer;display:block;border-left:3px solid var(--gold);">
+        <div class="kpi-mark">${ui.icon('currency')}</div>
+        <div class="kpi-label">PT a precio distribuidor</div>
+        <div class="kpi-value" style="font-size:26px;color:var(--gold-deep);">$${totalFGSaleDistUSD.toLocaleString('en-US',{minimumFractionDigits:0,maximumFractionDigits:0})}</div>
+        <div class="kpi-value-sub">${fgSellable.length} lote${fgSellable.length!==1?'s':''} liberado${fgSellable.length!==1?'s':''} · margen vs costo: $${(totalFGSaleDistUSD - totalFGValueUSD).toLocaleString('en-US',{minimumFractionDigits:0,maximumFractionDigits:0})}</div>
+        <div class="kpi-action">Ver lotes PT →</div>
+      </a>
+      <a href="modules/producto-terminado.html" class="kpi kpi-clickable" style="text-decoration:none;color:inherit;cursor:pointer;display:block;border-left:3px solid var(--gold-bright);">
+        <div class="kpi-mark">${ui.icon('currency')}</div>
+        <div class="kpi-label">PT a precio peluquería</div>
+        <div class="kpi-value" style="font-size:26px;color:var(--gold-deep);">$${totalFGSalePharmUSD.toLocaleString('en-US',{minimumFractionDigits:0,maximumFractionDigits:0})}</div>
+        <div class="kpi-value-sub">${fgSellable.length} lote${fgSellable.length!==1?'s':''} liberado${fgSellable.length!==1?'s':''} · margen vs costo: $${(totalFGSalePharmUSD - totalFGValueUSD).toLocaleString('en-US',{minimumFractionDigits:0,maximumFractionDigits:0})}</div>
+        <div class="kpi-action">Ver lotes PT →</div>
+      </a>
+    </div>
+    ` : ''}
 
     <!-- Listas comerciales -->
     <div class="grid" style="grid-template-columns:1fr 1fr;gap:16px;margin-bottom:24px;">
