@@ -58,10 +58,10 @@ function renderList() {
   //   - Documentos cuyos clientes están asignados al user actual (o su equipo)
   if (!auth.canSeeAll()) {
     const visibleUsers = auth.visibleUserIds() || [];
-    // Pre-calcular clientes visibles
+    // Pre-calcular clientes visibles (soporta array de vendedores)
     const myCustomerIds = new Set(
       db.getAll(db.COLLECTIONS.customers)
-        .filter(c => c.salesRepUserId && visibleUsers.includes(c.salesRepUserId))
+        .filter(c => auth.canSeeCustomer(c))
         .map(c => c.id)
     );
     docs = docs.filter(d =>

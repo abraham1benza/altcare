@@ -32,7 +32,12 @@ function render() {
   if (access === 'own') {
     const visibleUsers = auth.visibleUserIds();
     if (visibleUsers !== null) {
-      items = items.filter(c => c.salesRepUserId && visibleUsers.includes(c.salesRepUserId));
+      items = items.filter(c => {
+        // Compat: array nuevo + campo single viejo
+        const ids = c.salesRepUserIds || [];
+        if (c.salesRepUserId && !ids.includes(c.salesRepUserId)) ids.push(c.salesRepUserId);
+        return ids.some(id => visibleUsers.includes(id));
+      });
     }
   }
   const allItems = items;
@@ -54,13 +59,28 @@ function render() {
           <th>RIF</th>
           <th>Tipo</th>
           <th>Contacto</th>
+          <th>Vendedor(es)</th>
           <th>Términos</th>
           <th>Moneda</th>
           <th>Crédito</th>
           <th style="text-align:right;width:110px;">Acciones</th>
         </tr></thead>
         <tbody>
-          ${items.map(r => `
+          ${items.map(r => {
+            // Resolver vendedores: array nuevo + retrocompat con single
+            const ids = (r.salesRepUserIds || []).slice();
+            if (r.salesRepUserId && !ids.includes(r.salesRepUserId)) ids.push(r.salesRepUserId);
+            const vendorNames = ids
+              .map(uid => db.getById(db.COLLECTIONS.users, uid))
+              .filter(Boolean)
+              .map(u => u.fullName || u.username);
+            const fallbackName = r.salesRep || '';
+            const vendorDisplay = vendorNames.length > 0
+              ? vendorNames.map(n => `<span class="badge badge-accent" style="font-size:10px;margin-right:3px;">${ui.escape(n)}</span>`).join('')
+              : (fallbackName
+                  ? `<span class="text-muted" style="font-size:11px;">${ui.escape(fallbackName)}</span><div style="font-size:10px;color:#92400e;">⚠ sin vincular</div>`
+                  : '<span class="td-muted">—</span>');
+            return `
             <tr>
               <td><span class="td-mono td-strong">${r.code || '—'}</span></td>
               <td>
@@ -73,6 +93,7 @@ function render() {
                 ${r.contactName ? ui.escape(r.contactName) : '<span class="td-muted">—</span>'}
                 ${r.phone ? `<div class="text-muted" style="font-size:11px;">${ui.escape(r.phone)}</div>` : ''}
               </td>
+              <td>${vendorDisplay}</td>
               <td>${r.paymentTerms ? `<span class="td-mono">${ui.escape(r.paymentTerms)}</span>` : '<span class="td-muted">—</span>'}</td>
               <td><span class="badge ${r.preferredCurrency==='USD'?'badge-accent':'badge-plain'}">${r.preferredCurrency || 'VES'}</span></td>
               <td>${r.creditLimit ? `<span class="td-mono">${currency.formatCompact(r.creditLimit, r.preferredCurrency || 'VES')}</span>` : '<span class="td-muted">—</span>'}</td>
@@ -81,7 +102,8 @@ function render() {
                 <button class="btn-icon" onclick="deleteItem('${r.id}')" title="Eliminar">${ui.icon('trash')}</button>
               </td>
             </tr>
-          `).join('')}
+          `;
+          }).join('')}
         </tbody>
       </table>`
     : (allItems.length === 0
@@ -93,6 +115,15 @@ function render() {
         </div>`
       : `<div class="empty-state"><div class="empty-state-title">Sin resultados</div><div class="empty-state-text">Ningún cliente coincide con tu búsqueda.</div></div>`);
 
+  // Detectar clientes con vendedor en texto pero sin vincular (problema típico post-import)
+  const isAdmin = auth.canSeeAll();
+  const orphanCustomers = isAdmin
+    ? db.getAll(db.COLLECTIONS.customers).filter(c => {
+        const hasIds = (c.salesRepUserIds && c.salesRepUserIds.length > 0) || c.salesRepUserId;
+        return !hasIds && c.salesRep && c.salesRep.trim() !== '';
+      })
+    : [];
+
   const content = `
     <div class="action-bar">
       <div class="action-bar-left">
@@ -103,6 +134,20 @@ function render() {
         <button class="btn btn-primary" onclick="newItem()">${ui.icon('plus')} Nuevo cliente</button>
       </div>
     </div>
+
+    ${orphanCustomers.length > 0 ? `
+      <div class="card mb-24" style="background:#fef3c7;border-color:#fcd34d;">
+        <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap;">
+          <div style="flex:1;min-width:240px;">
+            <div style="font-weight:600;font-size:13px;color:#78350f;margin-bottom:4px;">⚠️ ${orphanCustomers.length} cliente${orphanCustomers.length!==1?'s':''} con vendedor desvinculado</div>
+            <div class="text-muted" style="font-size:12px;line-height:1.5;color:#78350f;">
+              Estos clientes tienen un vendedor en texto (importados antes de crear los usuarios). Los vendedores no los ven en su lista. Hacé click en "Reparar" para vincular automáticamente buscando el usuario por nombre.
+            </div>
+          </div>
+          <button class="btn btn-primary" onclick="repairSalesReps()" style="background:#92400e;border-color:#92400e;">🔗 Reparar vendedores</button>
+        </div>
+      </div>
+    ` : ''}
 
     <div class="table-wrap">
       <div class="table-toolbar">
@@ -233,9 +278,37 @@ function openForm(item) {
             <label class="field-label">Descuento habitual (%)</label>
             <input class="input" type="number" step="0.01" name="defaultDiscount" value="${item.defaultDiscount||0}">
           </div>
-          <div class="field">
-            <label class="field-label">Vendedor asignado</label>
-            <input class="input" name="salesRep" value="${ui.escape(item.salesRep||'')}">
+          <div class="field" style="grid-column:1/-1;">
+            <label class="field-label">Vendedores asignados</label>
+            ${(() => {
+              // Lista de usuarios candidatos: ventas, gerentes, admins activos
+              const allUsers = db.getAll(db.COLLECTIONS.users)
+                .filter(u => u.active !== false)
+                .sort((a, b) => (a.fullName||a.username||'').localeCompare(b.fullName||b.username||''));
+
+              if (allUsers.length === 0) {
+                return '<div class="text-muted" style="font-size:12px;padding:8px;">No hay usuarios para asignar. Creá vendedores en el módulo Usuarios.</div>';
+              }
+
+              // Resolver array de IDs asignados (con retrocompat con campo viejo single)
+              const assigned = new Set(item.salesRepUserIds || []);
+              if (item.salesRepUserId && !assigned.has(item.salesRepUserId)) assigned.add(item.salesRepUserId);
+
+              return `<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:6px;padding:10px;background:var(--surface-2);border:1px solid var(--border);border-radius:8px;max-height:200px;overflow-y:auto;">
+                ${allUsers.map(u => {
+                  const checked = assigned.has(u.id);
+                  const roleLabel = u.role === 'admin' ? 'admin' : u.role === 'gerente' ? 'gerente' : '';
+                  return `<label style="display:flex;align-items:center;gap:8px;padding:6px 8px;background:white;border-radius:5px;cursor:pointer;border:1px solid ${checked?'var(--accent)':'var(--border)'};${checked?'background:#f3f6f0;':''}">
+                    <input type="checkbox" name="salesRepUserIds_${u.id}" value="${u.id}" ${checked?'checked':''}>
+                    <div style="flex:1;min-width:0;font-size:12px;">
+                      <div style="font-weight:${checked?'600':'400'};color:${checked?'var(--accent-ink)':'var(--ink-1)'};">${ui.escape(u.fullName||u.username)}</div>
+                      ${roleLabel ? `<div class="text-muted" style="font-size:10px;">${roleLabel}</div>` : ''}
+                    </div>
+                  </label>`;
+                }).join('')}
+              </div>
+              <div class="field-hint">Podés asignar varios vendedores. Cada uno verá este cliente en su lista. Si no marcás ninguno, solo admin/gerente lo verán.</div>`;
+            })()}
           </div>
         </div>
 
@@ -257,17 +330,42 @@ function saveItem(e, id) {
   const data = ui.formData(e.target);
   if (!data.name || !data.rif) { ui.toast('Razón social y RIF/Cédula son obligatorios', 'error'); return; }
 
-  if (id) {
-    // Edición: respetar el salesRepUserId existente (no auto-asignar al editor actual)
-    data.id = id;
-    const existing = db.getById(db.COLLECTIONS.customers, id);
-    if (existing && existing.salesRepUserId) data.salesRepUserId = existing.salesRepUserId;
+  // Procesar checkboxes de vendedores asignados
+  const fd = new FormData(e.target);
+  const salesRepUserIds = [];
+  for (const [key, val] of fd.entries()) {
+    if (key.startsWith('salesRepUserIds_') && val) {
+      salesRepUserIds.push(val);
+      delete data[key];
+    }
+  }
+  data.salesRepUserIds = salesRepUserIds;
+
+  // Generar el nombre de vendedor combinado para mostrar (compat con código viejo)
+  if (salesRepUserIds.length > 0) {
+    const names = salesRepUserIds
+      .map(uid => db.getById(db.COLLECTIONS.users, uid))
+      .filter(Boolean)
+      .map(u => u.fullName || u.username);
+    data.salesRep = names.join(' / ');
   } else {
-    // Creación nueva: auto-asignar al usuario actual SI no es admin/gerente
-    const me = auth.currentUser();
-    if (me && !auth.isAdmin() && !auth.isManager()) {
-      data.salesRepUserId = me.id;
-      if (!data.salesRep) data.salesRep = me.fullName || me.username;
+    data.salesRep = '';
+  }
+
+  // Limpiar el campo viejo single si existía
+  delete data.salesRepUserId;
+
+  if (id) {
+    data.id = id;
+  } else {
+    // Creación nueva: si el usuario no es admin/gerente y no marcó vendedores,
+    // auto-asignarse a sí mismo (para que él lo vea en su lista)
+    if (salesRepUserIds.length === 0) {
+      const me = auth.currentUser();
+      if (me && !auth.isAdmin() && !auth.isManager()) {
+        data.salesRepUserIds = [me.id];
+        data.salesRep = me.fullName || me.username;
+      }
     }
   }
 
@@ -290,6 +388,135 @@ function deleteItem(id) {
   );
 }
 
+/**
+ * Repara clientes con vendedor en texto pero sin vincular a un usuario.
+ * Busca el usuario por nombre y le asigna el salesRepUserIds.
+ */
+function repairSalesReps() {
+  const customers = db.getAll(db.COLLECTIONS.customers).filter(c => {
+    const hasIds = (c.salesRepUserIds && c.salesRepUserIds.length > 0) || c.salesRepUserId;
+    return !hasIds && c.salesRep && c.salesRep.trim() !== '';
+  });
+
+  if (customers.length === 0) {
+    ui.toast('No hay clientes para reparar', 'info');
+    return;
+  }
+
+  const allUsers = db.getAll(db.COLLECTIONS.users).filter(u => u.active !== false);
+
+  // Pre-calcular: agrupar nombres distintos de salesRep para mostrar al usuario
+  const salesRepGroups = {};
+  customers.forEach(c => {
+    const name = c.salesRep.trim();
+    salesRepGroups[name] = (salesRepGroups[name] || 0) + 1;
+  });
+
+  // Para cada nombre, buscar match
+  const matchedNames = {};
+  const unmatchedNames = [];
+  for (const repName of Object.keys(salesRepGroups)) {
+    const lowerRepName = repName.toLowerCase();
+    // El nombre puede tener varios separados por " / " (clientes editados después con multi-vendedor)
+    const parts = repName.split('/').map(s => s.trim()).filter(Boolean);
+    const userIdsFound = [];
+    for (const part of parts) {
+      const lower = part.toLowerCase();
+      const matched = allUsers.find(u => {
+        const fn = (u.fullName || '').toLowerCase();
+        const un = (u.username || '').toLowerCase();
+        return fn === lower || un === lower || (fn && fn.includes(lower)) || (lower && lower.includes(fn) && fn);
+      });
+      if (matched) userIdsFound.push(matched.id);
+    }
+    if (userIdsFound.length > 0) {
+      matchedNames[repName] = userIdsFound;
+    } else {
+      unmatchedNames.push(repName);
+    }
+  }
+
+  // Mostrar diálogo de confirmación con resultados del análisis
+  const willMatchCount = customers.filter(c => matchedNames[c.salesRep.trim()]).length;
+
+  let summaryHtml = `<div style="font-size:13px;line-height:1.5;">
+    <p>Se va a procesar ${customers.length} cliente${customers.length!==1?'s':''}:</p>
+    <ul style="margin:8px 0;padding-left:20px;">`;
+
+  for (const [name, count] of Object.entries(salesRepGroups)) {
+    if (matchedNames[name]) {
+      const userNames = matchedNames[name].map(uid => {
+        const u = db.getById(db.COLLECTIONS.users, uid);
+        return u?.fullName || u?.username || '?';
+      }).join(', ');
+      summaryHtml += `<li><strong>${ui.escape(name)}</strong> (${count}) → vincular a: <strong style="color:var(--success);">${ui.escape(userNames)}</strong></li>`;
+    } else {
+      summaryHtml += `<li><strong>${ui.escape(name)}</strong> (${count}) → <span style="color:var(--danger);">no se encontró usuario</span></li>`;
+    }
+  }
+  summaryHtml += `</ul>`;
+
+  if (unmatchedNames.length > 0) {
+    summaryHtml += `<p style="color:#92400e;font-size:12px;margin-top:8px;">
+      ⚠️ Para los nombres sin match, primero creá esos usuarios en el módulo Usuarios y volvé a ejecutar la reparación.
+    </p>`;
+  }
+
+  summaryHtml += `<p style="margin-top:8px;"><strong>${willMatchCount} cliente${willMatchCount!==1?'s':''}</strong> serán reparados.</p></div>`;
+
+  ui.openModal({
+    title: '🔗 Reparar vendedores',
+    body: summaryHtml,
+    footer: `
+      <button class="btn btn-secondary" onclick="ui.closeModal()">Cancelar</button>
+      ${willMatchCount > 0 ? `<button class="btn btn-primary" onclick="doRepairSalesReps()">${ui.icon('check')} Reparar ${willMatchCount} cliente${willMatchCount!==1?'s':''}</button>` : ''}
+    `
+  });
+}
+
+function doRepairSalesReps() {
+  const customers = db.getAll(db.COLLECTIONS.customers).filter(c => {
+    const hasIds = (c.salesRepUserIds && c.salesRepUserIds.length > 0) || c.salesRepUserId;
+    return !hasIds && c.salesRep && c.salesRep.trim() !== '';
+  });
+  const allUsers = db.getAll(db.COLLECTIONS.users).filter(u => u.active !== false);
+
+  let repaired = 0;
+  let skipped = 0;
+
+  for (const c of customers) {
+    const repName = c.salesRep.trim();
+    const parts = repName.split('/').map(s => s.trim()).filter(Boolean);
+    const userIdsFound = [];
+    for (const part of parts) {
+      const lower = part.toLowerCase();
+      const matched = allUsers.find(u => {
+        const fn = (u.fullName || '').toLowerCase();
+        const un = (u.username || '').toLowerCase();
+        return fn === lower || un === lower || (fn && fn.includes(lower)) || (lower && lower.includes(fn) && fn);
+      });
+      if (matched && !userIdsFound.includes(matched.id)) userIdsFound.push(matched.id);
+    }
+    if (userIdsFound.length > 0) {
+      c.salesRepUserIds = userIdsFound;
+      // Actualizar también el texto para que sea consistente
+      const names = userIdsFound.map(uid => {
+        const u = db.getById(db.COLLECTIONS.users, uid);
+        return u?.fullName || u?.username || '';
+      }).filter(Boolean);
+      c.salesRep = names.join(' / ');
+      db.save(db.COLLECTIONS.customers, c);
+      repaired++;
+    } else {
+      skipped++;
+    }
+  }
+
+  ui.closeModal();
+  ui.toast(`✓ ${repaired} cliente${repaired!==1?'s':''} reparado${repaired!==1?'s':''}${skipped > 0 ? ` · ${skipped} omitidos (sin match)` : ''}`, 'success', 5000);
+  render();
+}
+
 render();
 
 
@@ -302,6 +529,8 @@ Object.assign(window, {
   openForm: typeof openForm !== 'undefined' ? openForm : undefined,
   saveItem: typeof saveItem !== 'undefined' ? saveItem : undefined,
   deleteItem: typeof deleteItem !== 'undefined' ? deleteItem : undefined,
+  repairSalesReps: typeof repairSalesReps !== 'undefined' ? repairSalesReps : undefined,
+  doRepairSalesReps: typeof doRepairSalesReps !== 'undefined' ? doRepairSalesReps : undefined,
 });
 });
 </script>

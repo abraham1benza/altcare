@@ -728,22 +728,29 @@ async function doImport(rows) {
 }
 
 function importCliente(row) {
-  let salesRepUserId = '';
+  const salesRepUserIds = [];
   let salesRepName = '';
   if (row.vendedor) {
     const users = db.getAll(db.COLLECTIONS.users);
-    const v = row.vendedor.toLowerCase().trim();
-    const matched = users.find(u => {
-      const fn = (u.fullName || '').toLowerCase();
-      const un = (u.username || '').toLowerCase();
-      return fn === v || un === v || fn.includes(v) || v.includes(fn);
-    });
-    if (matched) {
-      salesRepUserId = matched.id;
-      salesRepName = matched.fullName || matched.username;
-    } else {
-      salesRepName = row.vendedor;
+    // Soportar múltiples vendedores separados por "/" o ","
+    const parts = row.vendedor.split(/[\/,]/).map(s => s.trim()).filter(Boolean);
+    const matchedNames = [];
+    for (const part of parts) {
+      const v = part.toLowerCase();
+      const matched = users.find(u => {
+        const fn = (u.fullName || '').toLowerCase();
+        const un = (u.username || '').toLowerCase();
+        return fn === v || un === v || (fn && fn.includes(v)) || (v && v.includes(fn) && fn);
+      });
+      if (matched && !salesRepUserIds.includes(matched.id)) {
+        salesRepUserIds.push(matched.id);
+        matchedNames.push(matched.fullName || matched.username);
+      } else if (!matched) {
+        // No se encontró usuario: dejamos el nombre como referencia para reparación posterior
+        matchedNames.push(part);
+      }
     }
+    salesRepName = matchedNames.join(' / ');
   }
 
   const customer = {
@@ -765,7 +772,7 @@ function importCliente(row) {
     creditLimit: 0,
     defaultDiscount: 0,
     salesRep: salesRepName,
-    salesRepUserId: salesRepUserId,
+    salesRepUserIds: salesRepUserIds,
     notes: 'Importado masivamente',
     creditBalance: 0,
     active: true

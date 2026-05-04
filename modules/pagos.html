@@ -63,7 +63,7 @@ function renderList() {
   if (!isAdmin) {
     myCustomerIds = new Set(
       db.getAll(db.COLLECTIONS.customers)
-        .filter(c => c.salesRepUserId && visibleUsers.includes(c.salesRepUserId))
+        .filter(c => auth.canSeeCustomer(c))
         .map(c => c.id)
     );
   }
