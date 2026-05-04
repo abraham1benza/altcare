@@ -190,7 +190,7 @@ const reports = {
       const visibleUsers = auth.visibleUserIds() || [];
       const myCustomerIds = new Set(
         db.getAll(db.COLLECTIONS.customers)
-          .filter(c => c.salesRepUserId && visibleUsers.includes(c.salesRepUserId))
+          .filter(c => auth.canSeeCustomer(c))
           .map(c => c.id)
       );
       docs = docs.filter(d =>

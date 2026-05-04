@@ -152,6 +152,28 @@ const auth = {
     });
   },
 
+  /**
+   * Devuelve los UIDs de vendedores asignados a un cliente.
+   * Soporta el formato nuevo (salesRepUserIds: array) y el viejo (salesRepUserId: single).
+   */
+  getCustomerOwners(customer) {
+    if (!customer) return [];
+    const ids = (customer.salesRepUserIds || []).slice();
+    if (customer.salesRepUserId && !ids.includes(customer.salesRepUserId)) ids.push(customer.salesRepUserId);
+    return ids;
+  },
+
+  /**
+   * ¿El usuario actual puede ver este cliente?
+   */
+  canSeeCustomer(customer) {
+    if (this.canSeeAll()) return true;
+    const owners = this.getCustomerOwners(customer);
+    if (owners.length === 0) return false; // sin dueño = solo admin
+    const visible = this.visibleUserIds() || [];
+    return owners.some(uid => visible.includes(uid));
+  },
+
   // ====== MODOS DE VISTA ======
 
   /** Modos disponibles del sistema */
