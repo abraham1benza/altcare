@@ -181,9 +181,23 @@ const reports = {
   // ====== LIBRO DE VENTAS (SENIAT) ======
 
   libroVentas(from, to) {
-    const docs = db.getAll(db.COLLECTIONS.salesOrders)
+    let docs = db.getAll(db.COLLECTIONS.salesOrders)
       .filter(d => d.type === 'FACTURA' && this.inRange(d.issueDate, from, to))
       .sort((a,b) => (a.issueDate||'').localeCompare(b.issueDate||''));
+
+    // Filtrar por visibilidad
+    if (typeof auth !== 'undefined' && auth.canSeeAll && !auth.canSeeAll()) {
+      const visibleUsers = auth.visibleUserIds() || [];
+      const myCustomerIds = new Set(
+        db.getAll(db.COLLECTIONS.customers)
+          .filter(c => c.salesRepUserId && visibleUsers.includes(c.salesRepUserId))
+          .map(c => c.id)
+      );
+      docs = docs.filter(d =>
+        (d.salespersonId && visibleUsers.includes(d.salespersonId)) ||
+        (d.customerId && myCustomerIds.has(d.customerId))
+      );
+    }
 
     const creditNotes = db.getAll(db.COLLECTIONS.creditNotes)
       .filter(n => n.status !== 'CANCELLED' && this.inRange(n.issueDate, from, to));

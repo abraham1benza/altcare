@@ -72,6 +72,86 @@ const auth = {
     return window.fb?.auth?.currentUser?.uid || null;
   },
 
+  // ====== VISIBILIDAD Y AISLAMIENTO POR ROL ======
+
+  /** ¿El usuario actual es admin? Admin ve todo siempre. */
+  isAdmin() {
+    return this._profile?.role === 'admin';
+  },
+
+  /** ¿El usuario actual es gerente? Gerente ve lo de su equipo. */
+  isManager() {
+    return this._profile?.role === 'gerente';
+  },
+
+  /**
+   * Devuelve los UIDs de usuarios cuyos datos puede VER el usuario actual.
+   * - Admin: null (significa "todos")
+   * - Gerente: él + todos sus subordinados (users con managerId === él)
+   * - Otros (vendedor, etc): solo él mismo
+   *
+   * Cuando devuelve null, significa "sin filtro" (ver todo).
+   * Cuando devuelve un array, significa filtrar por esos UIDs.
+   */
+  visibleUserIds() {
+    if (!this._profile) return [];
+    if (this.isAdmin()) return null; // ve todo
+    const me = this._profile.id;
+    if (this.isManager()) {
+      // gerente ve sus propios datos + los de quienes lo tienen como managerId
+      const allUsers = (typeof db !== 'undefined') ? db.getAll(db.COLLECTIONS.users) : [];
+      const team = allUsers.filter(u => u.managerId === me).map(u => u.id);
+      return [me, ...team];
+    }
+    return [me]; // ventas, etc: solo lo suyo
+  },
+
+  /** Helper booleano: ¿puede ver TODO? (admin) */
+  canSeeAll() {
+    return this.isAdmin();
+  },
+
+  /**
+   * ¿Puede ver los datos de este userId?
+   * @param {string} targetUserId - el dueño del recurso (ej: salesRepUserId, salespersonId)
+   */
+  canSeeUserData(targetUserId) {
+    if (this.canSeeAll()) return true;
+    if (!targetUserId) return this.isAdmin(); // sin dueño: solo admin
+    const visible = this.visibleUserIds();
+    if (visible === null) return true;
+    return visible.includes(targetUserId);
+  },
+
+  /**
+   * Para clientes: ¿el vendedor tiene acceso global o solo a los suyos?
+   * Se respeta la propiedad `clientAccess` del perfil:
+   *   'all' = ve todos los clientes (puede leer pero no editar los que no son suyos)
+   *   'own' = solo los suyos (default si no está seteado)
+   * Admin/gerente siempre 'all'.
+   */
+  getClientAccess() {
+    if (this.isAdmin() || this.isManager()) return 'all';
+    return this._profile?.clientAccess || 'own';
+  },
+
+  /**
+   * Filtra una lista de items según visibilidad.
+   * @param {Array} items - lista de objetos
+   * @param {string} ownerKey - nombre del campo que tiene el userId dueño (ej: 'salespersonId', 'salesRepUserId')
+   */
+  filterByVisibility(items, ownerKey) {
+    if (this.canSeeAll()) return items;
+    const visible = this.visibleUserIds();
+    if (visible === null) return items;
+    return items.filter(it => {
+      const owner = it[ownerKey];
+      // Items sin dueño asignado: solo admin los ve. Pero como ya pasamos canSeeAll, si llegamos acá no es admin → ocultar.
+      if (!owner) return false;
+      return visible.includes(owner);
+    });
+  },
+
   // ====== MODOS DE VISTA ======
 
   /** Modos disponibles del sistema */
@@ -336,6 +416,9 @@ const auth = {
         commissionRateSale: data.commissionRateSale != null ? data.commissionRateSale : null,
         commissionRateCollection: data.commissionRateCollection != null ? data.commissionRateCollection : null,
         commissionBase: data.commissionBase || null,
+        // Visibilidad
+        clientAccess: data.clientAccess || 'own',  // 'own' | 'all'
+        managerId: data.managerId || null,          // gerente directo (para isolation)
         createdAt: new Date().toISOString(),
         createdBy: currentAdminEmail || 'sistema'
       };
