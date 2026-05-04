@@ -91,6 +91,36 @@ function render() {
         </div>
       </div>
 
+      <!-- COMISIONES DEFAULT -->
+      <div class="card mb-24">
+        <div class="card-header">
+          <div>
+            <div class="card-title">💼 Comisiones de venta (defaults)</div>
+            <div class="text-muted" style="font-size:12px;margin-top:2px;">Estos valores se aplican como defaults a vendedores nuevos. Cada vendedor puede tener un % distinto en su perfil.</div>
+          </div>
+        </div>
+        <div class="form-grid form-grid-2">
+          <div class="field">
+            <label class="field-label">% Comisión por venta (default)</label>
+            <input class="input" type="number" step="0.01" name="defaultCommissionRateSale" value="${cfg.defaultCommissionRateSale ?? 5}">
+            <div class="field-hint">Se devenga al emitir factura</div>
+          </div>
+          <div class="field">
+            <label class="field-label">% Comisión por cobranza (default)</label>
+            <input class="input" type="number" step="0.01" name="defaultCommissionRateCollection" value="${cfg.defaultCommissionRateCollection ?? 2}">
+            <div class="field-hint">Se devenga proporcionalmente con cada cobro</div>
+          </div>
+          <div class="field" style="grid-column:1/-1;">
+            <label class="field-label">Base de cálculo (default)</label>
+            <select class="select" name="defaultCommissionBase">
+              <option value="SUBTOTAL" ${(cfg.defaultCommissionBase??'SUBTOTAL')==='SUBTOTAL'?'selected':''}>Subtotal (sin IVA) — recomendado</option>
+              <option value="TOTAL" ${cfg.defaultCommissionBase==='TOTAL'?'selected':''}>Total (con IVA)</option>
+            </select>
+            <div class="field-hint">Sobre qué monto se aplica el % (los admins pueden cambiar esto en cada vendedor)</div>
+          </div>
+        </div>
+      </div>
+
       <div class="card mb-24">
         <div class="card-header">
           <div>

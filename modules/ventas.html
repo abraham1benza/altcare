@@ -18,6 +18,7 @@
 <script src="../assets/js/purchases.js"></script>
 <script src="../assets/js/sales.js"></script>
 <script src="../assets/js/payments.js"></script>
+<script src="../assets/js/commissions.js"></script>
 <script src="../assets/js/ui.js"></script>
 <script>
 moduleInit('ventas').then(async (ok) => {
@@ -290,6 +291,10 @@ function newDoc(initialType) {
   const cfg = db.getById(db.COLLECTIONS.config, 'main') || {};
   const docType = initialType || 'PEDIDO';
   const codePrefix = docType === 'NOTA_ENTREGA' ? 'NE' : 'V';
+  // Auto-asignar vendedor: usuario logueado (si tiene comisión habilitada)
+  const me = auth.currentUser();
+  const meUser = me ? db.query(db.COLLECTIONS.users, u => u.email === me.email)[0] : null;
+  const autoVendor = (meUser && meUser.commissionEnabled) ? meUser : null;
   creating = {
     type: docType,
     code: db.nextCode(db.COLLECTIONS.salesOrders, codePrefix),
@@ -300,7 +305,9 @@ function newDoc(initialType) {
     dueDate: '',
     paymentTerms: cfg.invoicePaymentTermsDefault || 'Contado',
     items: [],
-    notes: ''
+    notes: '',
+    salespersonId: autoVendor ? autoVendor.id : '',
+    salespersonName: autoVendor ? (autoVendor.fullName || autoVendor.username) : ''
   };
   view = 'create'; render();
 }
@@ -387,6 +394,20 @@ function renderCreate() {
             <option value="USD" ${c.currency==='USD'?'selected':''}>Dólares (USD)</option>
             <option value="EUR" ${c.currency==='EUR'?'selected':''}>Euros (EUR)</option>
           </select></div>
+          ${(() => {
+            const me = auth.currentUser();
+            const isAdmin = me && (me.role === 'admin' || me.role === 'gerente');
+            const vendors = db.getAll(db.COLLECTIONS.users).filter(u => u.commissionEnabled === true && u.active !== false);
+            if (isAdmin) {
+              return `<div class="field"><label class="field-label">Vendedor (comisión)</label><select class="select" onchange="setSalesperson(this.value)">
+                <option value="">— Sin comisión —</option>
+                ${vendors.map(v => `<option value="${v.id}" ${v.id===c.salespersonId?'selected':''}>${ui.escape(v.fullName||v.username)}</option>`).join('')}
+              </select><div class="field-hint">Quién genera comisión por esta venta. Solo admins pueden cambiar.</div></div>`;
+            } else if (c.salespersonName) {
+              return `<div class="field"><label class="field-label">Vendedor</label><input class="input" value="${ui.escape(c.salespersonName)}" disabled><div class="field-hint">Solo un admin puede cambiarlo.</div></div>`;
+            }
+            return '';
+          })()}
           ${c.currency !== 'VES' ? `<div class="field" style="grid-column:1/-1;"><label class="field-label">Tasa para conversión a Bs (libro de ventas)</label><select class="select" onchange="creating.rateType=this.value">${currency.getRates().map(r => `<option value="${r.type}" ${r.type===c.rateType?'selected':''}>${r.label} (${r.value.toFixed(2)})</option>`).join('')}</select><div class="field-hint">SENIAT exige reportar todo en Bs aunque factures en USD</div></div>` : ''}
         </div>
       </div>
@@ -441,6 +462,19 @@ function onCustomerChange(cid) {
     if (cu.paymentTerms) creating.paymentTerms = cu.paymentTerms;
   }
   render();
+}
+
+function setSalesperson(userId) {
+  if (!userId) {
+    creating.salespersonId = '';
+    creating.salespersonName = '';
+    return;
+  }
+  const u = db.getById(db.COLLECTIONS.users, userId);
+  if (u) {
+    creating.salespersonId = u.id;
+    creating.salespersonName = u.fullName || u.username;
+  }
 }
 
 function addItem() {
@@ -534,7 +568,9 @@ function saveDoc() {
       status: c.type || 'PEDIDO',
       notes: c.notes,
       paymentTerms: c.paymentTerms,
-      dueDate: c.dueDate
+      dueDate: c.dueDate,
+      salespersonId: c.salespersonId || null,
+      salespersonName: c.salespersonName || ''
     });
     const labels = { PEDIDO: 'Pedido', NOTA_ENTREGA: 'Nota de Entrega', COTIZACION: 'Cotización', FACTURA: 'Factura' };
     ui.toast(`${labels[c.type] || 'Pedido'} creada`, 'success');
@@ -1805,6 +1841,7 @@ Object.assign(window, {
   renderCreate: typeof renderCreate !== 'undefined' ? renderCreate : undefined,
   renderVenSummary: typeof renderVenSummary !== 'undefined' ? renderVenSummary : undefined,
   onCustomerChange: typeof onCustomerChange !== 'undefined' ? onCustomerChange : undefined,
+  setSalesperson: typeof setSalesperson !== 'undefined' ? setSalesperson : undefined,
   addItem: typeof addItem !== 'undefined' ? addItem : undefined,
   updateItemFormula: typeof updateItemFormula !== 'undefined' ? updateItemFormula : undefined,
   updateItemFast: typeof updateItemFast !== 'undefined' ? updateItemFast : undefined,

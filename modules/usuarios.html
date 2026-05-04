@@ -186,6 +186,7 @@ function openForm(item) {
                   { key: 'ventas', label: 'Ventas', group: 'comercial' },
                   { key: 'compras', label: 'Compras', group: 'comercial' },
                   { key: 'pagos', label: 'Pagos', group: 'comercial' },
+                  { key: 'comisiones', label: 'Comisiones', group: 'comercial' },
                   { key: 'cuentas-bancarias', label: 'Cuentas Bancarias', group: 'comercial' },
                   { key: 'metodos-pago', label: 'Métodos de Pago', group: 'comercial' },
                   { key: 'materias-primas', label: 'Materias Primas', group: 'inventario' },
@@ -219,6 +220,38 @@ function openForm(item) {
               })()}
             </div>
             <div class="field-hint" style="margin-top:6px;">📌 = módulo del rol predeterminado · Sin marcar = oculto del sidebar y bloqueado por URL</div>
+          </div>
+
+          <!-- COMISIONES -->
+          <div class="field" style="grid-column:1/-1;margin-top:8px;padding:14px;background:#f0f9ff;border:1px solid #bae6fd;border-radius:8px;">
+            <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;">
+              <strong style="font-size:13px;color:#0369a1;">💼 Comisiones de venta</strong>
+            </div>
+            <label class="checkbox-row" style="margin-bottom:10px;">
+              <input type="checkbox" name="commissionEnabled" ${item.commissionEnabled?'checked':''} onchange="document.getElementById('commission-fields').style.display=this.checked?'grid':'none'">
+              <span style="margin-left:6px;font-size:13px;">Este usuario gana comisiones por ventas asignadas a su nombre</span>
+            </label>
+            <div id="commission-fields" class="form-grid form-grid-2" style="display:${item.commissionEnabled?'grid':'none'};">
+              <div class="field">
+                <label class="field-label">% Comisión por venta</label>
+                <input class="input" type="number" step="0.01" name="commissionRateSale" value="${item.commissionRateSale!=null?item.commissionRateSale:''}" placeholder="Default global">
+                <div class="field-hint">Vacío = usar el % default global</div>
+              </div>
+              <div class="field">
+                <label class="field-label">% Comisión por cobranza</label>
+                <input class="input" type="number" step="0.01" name="commissionRateCollection" value="${item.commissionRateCollection!=null?item.commissionRateCollection:''}" placeholder="Default global">
+                <div class="field-hint">Vacío = usar el % default global</div>
+              </div>
+              <div class="field" style="grid-column:1/-1;">
+                <label class="field-label">Base de cálculo (solo admin)</label>
+                <select class="select" name="commissionBase">
+                  <option value="">Default global</option>
+                  <option value="SUBTOTAL" ${item.commissionBase==='SUBTOTAL'?'selected':''}>Subtotal (sin IVA)</option>
+                  <option value="TOTAL" ${item.commissionBase==='TOTAL'?'selected':''}>Total (con IVA)</option>
+                </select>
+                <div class="field-hint">Sobre qué monto se aplica el %</div>
+              </div>
+            </div>
           </div>
         </div>
       </form>
@@ -315,6 +348,13 @@ async function saveItem(e, id) {
     data.hiddenModules = [];
   }
 
+  // Procesar campos de comisión
+  data.commissionEnabled = !!fd.get('commissionEnabled');
+  // Si el campo viene vacío, dejarlo null para que use el default global
+  data.commissionRateSale = data.commissionRateSale != null && data.commissionRateSale !== '' ? parseFloat(data.commissionRateSale) : null;
+  data.commissionRateCollection = data.commissionRateCollection != null && data.commissionRateCollection !== '' ? parseFloat(data.commissionRateCollection) : null;
+  data.commissionBase = data.commissionBase || null;
+
   if (!id) {
     // CREACIÓN: validar y crear en Firebase Auth + Firestore
     // Protección: no permitir crear con email o alias del admin actual (caso autocompletado)
@@ -343,7 +383,11 @@ async function saveItem(e, id) {
       allowedModes: data.allowedModes,
       extraModules: data.extraModules || [],
       hiddenModules: data.hiddenModules || [],
-      active: data.active
+      active: data.active,
+      commissionEnabled: data.commissionEnabled,
+      commissionRateSale: data.commissionRateSale,
+      commissionRateCollection: data.commissionRateCollection,
+      commissionBase: data.commissionBase
     });
 
     if (!result.ok) {
