@@ -23,6 +23,12 @@ const TAXPAYER_TYPES = ['Contribuyente Ordinario', 'Contribuyente Formal', 'Cont
 const CUSTOMER_TYPES = ['Mayorista', 'Distribuidor', 'Salón de belleza', 'Tienda', 'Particular', 'Marca privada'];
 
 let searchTerm = '';
+let sortState = { key: 'code', dir: 'asc' };
+
+function onSort(key) {
+  sortState = ui.toggleSort(sortState, key);
+  render();
+}
 
 function render() {
   let items = db.getAll(db.COLLECTIONS.customers);
@@ -51,18 +57,39 @@ function render() {
     );
   }
 
+  // Aplicar ordenamiento
+  items = ui.applySort(items, sortState, (item, key) => {
+    if (key === 'code') return item.code || '';
+    if (key === 'name') return item.name || '';
+    if (key === 'rif') return item.rif || '';
+    if (key === 'customerType') return item.customerType || '';
+    if (key === 'contactName') return item.contactName || '';
+    if (key === 'vendor') {
+      // Ordenar por nombre del primer vendedor asignado
+      const ids = (item.salesRepUserIds || []).slice();
+      if (item.salesRepUserId && !ids.includes(item.salesRepUserId)) ids.push(item.salesRepUserId);
+      if (ids.length === 0) return 'zzz' + (item.salesRep || ''); // sin vendedor al final
+      const u = db.getById(db.COLLECTIONS.users, ids[0]);
+      return u ? (u.fullName || u.username || '') : (item.salesRep || '');
+    }
+    if (key === 'paymentTerms') return item.paymentTerms || '';
+    if (key === 'preferredCurrency') return item.preferredCurrency || 'VES';
+    if (key === 'creditLimit') return parseFloat(item.creditLimit) || 0;
+    return '';
+  });
+
   const tableHtml = items.length
     ? `<table>
         <thead><tr>
-          <th>Código</th>
-          <th>Razón social</th>
-          <th>RIF</th>
-          <th>Tipo</th>
-          <th>Contacto</th>
-          <th>Vendedor(es)</th>
-          <th>Términos</th>
-          <th>Moneda</th>
-          <th>Crédito</th>
+          ${ui.sortableTh('Código', 'code', sortState, 'onSort')}
+          ${ui.sortableTh('Razón social', 'name', sortState, 'onSort')}
+          ${ui.sortableTh('RIF', 'rif', sortState, 'onSort')}
+          ${ui.sortableTh('Tipo', 'customerType', sortState, 'onSort')}
+          ${ui.sortableTh('Contacto', 'contactName', sortState, 'onSort')}
+          ${ui.sortableTh('Vendedor(es)', 'vendor', sortState, 'onSort')}
+          ${ui.sortableTh('Términos', 'paymentTerms', sortState, 'onSort')}
+          ${ui.sortableTh('Moneda', 'preferredCurrency', sortState, 'onSort')}
+          ${ui.sortableTh('Crédito', 'creditLimit', sortState, 'onSort', { align: 'right' })}
           <th style="text-align:right;width:110px;">Acciones</th>
         </tr></thead>
         <tbody>
@@ -70,13 +97,14 @@ function render() {
             // Resolver vendedores: array nuevo + retrocompat con single
             const ids = (r.salesRepUserIds || []).slice();
             if (r.salesRepUserId && !ids.includes(r.salesRepUserId)) ids.push(r.salesRepUserId);
-            const vendorNames = ids
-              .map(uid => db.getById(db.COLLECTIONS.users, uid))
-              .filter(Boolean)
-              .map(u => u.fullName || u.username);
+            const vendorEntries = ids
+              .map(uid => ({ uid, user: db.getById(db.COLLECTIONS.users, uid) }))
+              .filter(e => e.user);
             const fallbackName = r.salesRep || '';
-            const vendorDisplay = vendorNames.length > 0
-              ? vendorNames.map(n => `<span class="badge badge-accent" style="font-size:10px;margin-right:3px;">${ui.escape(n)}</span>`).join('')
+            const vendorDisplay = vendorEntries.length > 0
+              ? vendorEntries.map(e =>
+                  ui.vendorBadge(e.uid, e.user.fullName || e.user.username)
+                ).join(' ')
               : (fallbackName
                   ? `<span class="text-muted" style="font-size:11px;">${ui.escape(fallbackName)}</span><div style="font-size:10px;color:#92400e;">⚠ sin vincular</div>`
                   : '<span class="td-muted">—</span>');
@@ -93,10 +121,10 @@ function render() {
                 ${r.contactName ? ui.escape(r.contactName) : '<span class="td-muted">—</span>'}
                 ${r.phone ? `<div class="text-muted" style="font-size:11px;">${ui.escape(r.phone)}</div>` : ''}
               </td>
-              <td>${vendorDisplay}</td>
+              <td><div style="display:flex;flex-wrap:wrap;gap:4px;">${vendorDisplay}</div></td>
               <td>${r.paymentTerms ? `<span class="td-mono">${ui.escape(r.paymentTerms)}</span>` : '<span class="td-muted">—</span>'}</td>
               <td><span class="badge ${r.preferredCurrency==='USD'?'badge-accent':'badge-plain'}">${r.preferredCurrency || 'VES'}</span></td>
-              <td>${r.creditLimit ? `<span class="td-mono">${currency.formatCompact(r.creditLimit, r.preferredCurrency || 'VES')}</span>` : '<span class="td-muted">—</span>'}</td>
+              <td style="text-align:right;">${r.creditLimit ? `<span class="td-mono">${currency.formatCompact(r.creditLimit, r.preferredCurrency || 'VES')}</span>` : '<span class="td-muted">—</span>'}</td>
               <td class="td-actions">
                 <button class="btn-icon" onclick="editItem('${r.id}')" title="Editar">${ui.icon('edit')}</button>
                 <button class="btn-icon" onclick="deleteItem('${r.id}')" title="Eliminar">${ui.icon('trash')}</button>
@@ -524,6 +552,7 @@ render();
 Object.assign(window, {
   render: typeof render !== 'undefined' ? render : undefined,
   onSearch: typeof onSearch !== 'undefined' ? onSearch : undefined,
+  onSort: typeof onSort !== 'undefined' ? onSort : undefined,
   newItem: typeof newItem !== 'undefined' ? newItem : undefined,
   editItem: typeof editItem !== 'undefined' ? editItem : undefined,
   openForm: typeof openForm !== 'undefined' ? openForm : undefined,
