@@ -376,6 +376,13 @@ const payments = {
         purchases.applyPaymentToInvoice(saved.relatedDocId, saved.id, saved.amountInDocCurrency, saved.rateAtPayment, saved.rateTypeAtPayment);
       } else {
         sales.applyPayment(saved.relatedDocId, saved.id, saved.amountInDocCurrency, saved.rateAtPayment, saved.rateTypeAtPayment);
+        // Comisión por cobranza (solo si la factura tiene vendedor con comisión)
+        if (typeof commissions !== 'undefined') {
+          try {
+            const doc = db.getById(db.COLLECTIONS.salesOrders, saved.relatedDocId);
+            if (doc) commissions.registerCollectionCommission(saved, doc);
+          } catch (e) { console.warn('[payments] Error comisión cobranza:', e.message); }
+        }
       }
     }
 

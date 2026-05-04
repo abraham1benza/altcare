@@ -274,7 +274,7 @@ const sales = {
    * Crea un documento de venta en estado inicial (PEDIDO por defecto).
    * Items: [{ formulaId, formulaName, fgLotId (opcional), quantity, unitPrice, unit, notes }]
    */
-  create({ customerId, currency: docCurrency, rateType, items, status, notes, paymentTerms, dueDate }) {
+  create({ customerId, currency: docCurrency, rateType, items, status, notes, paymentTerms, dueDate, salespersonId, salespersonName }) {
     const customer = db.getById(db.COLLECTIONS.customers, customerId);
     if (!customer) throw new Error('Cliente no encontrado');
     if (!items || !items.length) throw new Error('Debe haber al menos un ítem');
@@ -355,6 +355,9 @@ const sales = {
       payments: [],
       // Asignación de lotes (al convertir a FACTURA o crear como NE)
       lotsAssigned: false,
+      // Vendedor asignado (para comisiones)
+      salespersonId: salespersonId || null,
+      salespersonName: salespersonName || '',
       // Cancelación
       cancelled: false,
       cancellationReason: null,
@@ -362,6 +365,11 @@ const sales = {
     };
 
     const saved = db.save(db.COLLECTIONS.salesOrders, doc);
+
+    // Si nace como FACTURA con vendedor asignado, generar comisión por venta
+    if (docType === 'FACTURA' && saved.salespersonId && typeof commissions !== 'undefined') {
+      try { commissions.registerSaleCommission(saved); } catch (e) { console.warn('[sales] Error comisión venta:', e.message); }
+    }
 
     // Si el tipo afecta stock (PEDIDO/NE/FACTURA), descontar inventario FEFO automáticamente
     // COTIZACION no toca stock (es solo presupuesto)
@@ -468,6 +476,11 @@ const sales = {
       }
     }
 
+    // Si pasó a FACTURA y tiene vendedor, generar comisión por venta
+    if (newStatus === 'FACTURA' && saved.salespersonId && typeof commissions !== 'undefined') {
+      try { commissions.registerSaleCommission(saved); } catch (e) { console.warn('[sales] Error comisión venta:', e.message); }
+    }
+
     return db.getById(db.COLLECTIONS.salesOrders, saved.id);
   },
 
@@ -559,6 +572,11 @@ const sales = {
     // Si tenía lotes asignados, devolverlos al stock
     if (doc.lotsAssigned) {
       this.reverseStockAllocations(docId, reason || 'cancelación');
+    }
+    // Reversar comisiones generadas (venta + cobranzas)
+    if (typeof commissions !== 'undefined') {
+      try { commissions.reverseCommissionsForInvoice(docId, reason || 'Factura anulada'); }
+      catch (e) { console.warn('[sales] Error reversando comisiones:', e.message); }
     }
     // Recargar después del reverso
     const updated = db.getById(db.COLLECTIONS.salesOrders, docId);

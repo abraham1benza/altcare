@@ -42,6 +42,10 @@ const COLLECTIONS = {
   withholdingVouchers: 'withholdingVouchers',
   salesOrders: 'salesOrders',
   creditNotes: 'creditNotes',
+  // Comisiones
+  commissionEvents: 'commissionEvents',     // eventos de devengo (venta o cobranza)
+  commissionPayments: 'commissionPayments', // pagos al vendedor
+  loans: 'loans',                            // préstamos a vendedores
   salesInvoices: 'salesInvoices',
   paymentMethods: 'paymentMethods',
   bankAccounts: 'bankAccounts',
