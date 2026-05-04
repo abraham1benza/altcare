@@ -141,29 +141,18 @@ input, select, textarea { font-family: inherit; font-size: inherit; color: inher
   gap: 12px;
 }
 .brand-logo {
-  width: 38px;
-  height: 38px;
+  width: 42px;
+  height: 42px;
   flex-shrink: 0;
   display: grid;
   place-items: center;
-  background: var(--gold);
-  border-radius: 10px;
-  box-shadow: 0 2px 8px rgba(212, 160, 23, 0.3);
   position: relative;
-  overflow: hidden;
+  filter: drop-shadow(0 2px 8px rgba(212, 160, 23, 0.25));
 }
-.brand-logo::before {
-  content: '';
-  position: absolute;
-  inset: 0;
-  background: linear-gradient(135deg, rgba(255,255,255,0.25) 0%, transparent 60%);
-  pointer-events: none;
-}
-.brand-logo svg {
-  width: 22px;
-  height: 22px;
-  position: relative;
-  z-index: 1;
+.brand-logo img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
 }
 .brand-text { display: flex; flex-direction: column; min-width: 0; flex: 1; }
 .brand-mark {
@@ -1141,6 +1130,13 @@ tbody tr:hover { background: rgba(212, 160, 23, 0.04); }
   pointer-events: none;
 }
 .login-art-content { position: relative; z-index: 1; }
+.login-art-logo-img {
+  width: 240px;
+  height: auto;
+  margin-bottom: 18px;
+  filter: drop-shadow(0 8px 32px rgba(212, 160, 23, 0.25));
+  display: block;
+}
 .login-art-logo {
   width: 64px;
   height: 64px;
