@@ -38,8 +38,6 @@ function render() {
 
 function renderSendNew() {
   const templates = notifications.getTemplates().filter(t => t.enabled !== false);
-  const customers = db.getAll(db.COLLECTIONS.customers).filter(c => c.active !== false);
-  const suppliers = db.getAll(db.COLLECTIONS.suppliers).filter(s => s.active !== false);
 
   ui.renderLayout({
     activeModule: 'notificaciones', pageEyebrow: 'Comunicación', pageTitle: 'Notificaciones',
@@ -50,16 +48,24 @@ function renderSendNew() {
         <div class="form-grid form-grid-2">
           <div class="field" style="grid-column:1/-1;">
             <label class="field-label">Destinatario</label>
-            <select class="select" id="contact-select" onchange="onContactChange()">
-              <option value="">— Selecciona destinatario —</option>
-              <optgroup label="👥 Clientes">
-                ${customers.map(c => `<option value="customer:${c.id}">${ui.escape(c.name)} ${c.phone||c.whatsapp?`· ${ui.escape(c.whatsapp||c.phone)}`:''}</option>`).join('')}
-              </optgroup>
-              <optgroup label="🏭 Proveedores">
-                ${suppliers.map(s => `<option value="supplier:${s.id}">${ui.escape(s.name)} ${s.phone||s.whatsapp?`· ${ui.escape(s.whatsapp||s.phone)}`:''}</option>`).join('')}
-              </optgroup>
-              <option value="manual">+ Número manual (sin contacto guardado)</option>
-            </select>
+            <div style="position:relative;">
+              <input
+                id="contact-search"
+                class="input"
+                placeholder="🔍 Buscá por nombre, RIF, o teléfono..."
+                autocomplete="off"
+                oninput="onContactSearch(this.value)"
+                onfocus="showContactDropdown()"
+                onblur="setTimeout(hideContactDropdown, 200)">
+              <div id="contact-dropdown" style="display:none;position:absolute;top:calc(100% + 4px);left:0;right:0;max-height:280px;overflow-y:auto;background:white;border:1px solid var(--border);border-radius:8px;box-shadow:0 6px 18px rgba(0,0,0,0.08);z-index:50;"></div>
+            </div>
+            <div id="contact-selected" style="display:none;margin-top:8px;padding:10px 12px;background:var(--accent-soft);border:1px solid var(--accent);border-radius:6px;font-size:12.5px;">
+              <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;">
+                <div id="contact-selected-info" style="flex:1;"></div>
+                <button type="button" class="btn btn-ghost btn-sm" onclick="clearContactSelection()" style="font-size:11px;">✕ Cambiar</button>
+              </div>
+            </div>
+            <button type="button" class="btn btn-ghost btn-sm" onclick="useManualPhone()" style="margin-top:6px;font-size:11.5px;">+ Usar número manual (sin contacto)</button>
           </div>
 
           <div id="manual-phone-field" class="field" style="grid-column:1/-1;display:none;">
@@ -100,24 +106,135 @@ function renderSendNew() {
 
 let _selectedContact = null;
 
-function onContactChange() {
-  const val = document.getElementById('contact-select').value;
-  const manualField = document.getElementById('manual-phone-field');
-  if (val === 'manual') {
-    manualField.style.display = 'block';
-    _selectedContact = null;
-  } else if (val) {
-    manualField.style.display = 'none';
-    const [type, id] = val.split(':');
-    const coll = type === 'customer' ? db.COLLECTIONS.customers : db.COLLECTIONS.suppliers;
-    const contact = db.getById(coll, id);
-    _selectedContact = { type, id, contact };
+/** Filtra y muestra los contactos en el dropdown según lo que tipea el usuario */
+function onContactSearch(query) {
+  const dropdown = document.getElementById('contact-dropdown');
+  if (!dropdown) return;
+  const q = (query || '').toLowerCase().trim();
+
+  const customers = db.getAll(db.COLLECTIONS.customers).filter(c => c.active !== false);
+  const suppliers = db.getAll(db.COLLECTIONS.suppliers).filter(s => s.active !== false);
+
+  // Si está vacío y hay foco, mostrar primeros 30 contactos para no abrumar
+  let filteredCustomers = customers;
+  let filteredSuppliers = suppliers;
+
+  if (q.length > 0) {
+    const matches = (item) => {
+      const name = (item.name || '').toLowerCase();
+      const rif = (item.rif || '').toLowerCase().replace(/[\s\-]/g, '');
+      const phone = (item.phone || '').toLowerCase().replace(/[\s\-]/g, '');
+      const wa = (item.whatsapp || '').toLowerCase().replace(/[\s\-]/g, '');
+      const code = (item.code || '').toLowerCase();
+      const qNorm = q.replace(/[\s\-]/g, '');
+      return name.includes(q) || rif.includes(qNorm) || phone.includes(qNorm) || wa.includes(qNorm) || code.includes(q);
+    };
+    filteredCustomers = customers.filter(matches);
+    filteredSuppliers = suppliers.filter(matches);
   } else {
-    manualField.style.display = 'none';
-    _selectedContact = null;
+    // Sin query: limitar a primeros 20 de cada tipo
+    filteredCustomers = customers.slice(0, 20);
+    filteredSuppliers = suppliers.slice(0, 20);
   }
-  // Re-aplicar la plantilla con los datos del nuevo contacto
+
+  const totalShown = filteredCustomers.length + filteredSuppliers.length;
+  const totalAll = customers.length + suppliers.length;
+
+  let html = '';
+
+  if (totalShown === 0) {
+    html = `<div style="padding:16px;text-align:center;color:var(--ink-3);font-size:13px;">
+      Sin resultados para "${ui.escape(query)}". Probá con otro término o usá <a href="javascript:useManualPhone()" style="color:var(--accent-ink);">número manual</a>.
+    </div>`;
+  } else {
+    if (filteredCustomers.length > 0) {
+      html += `<div style="padding:6px 12px;background:#f3f6f0;font-size:10px;text-transform:uppercase;letter-spacing:0.06em;font-weight:600;color:var(--accent-ink);">👥 Clientes (${filteredCustomers.length}${q ? '' : customers.length > 20 ? ' de '+customers.length : ''})</div>`;
+      html += filteredCustomers.map(c => renderContactOption('customer', c)).join('');
+    }
+    if (filteredSuppliers.length > 0) {
+      html += `<div style="padding:6px 12px;background:#fef3c7;font-size:10px;text-transform:uppercase;letter-spacing:0.06em;font-weight:600;color:#78350f;">🏭 Proveedores (${filteredSuppliers.length}${q ? '' : suppliers.length > 20 ? ' de '+suppliers.length : ''})</div>`;
+      html += filteredSuppliers.map(s => renderContactOption('supplier', s)).join('');
+    }
+
+    if (q.length === 0 && totalAll > totalShown) {
+      html += `<div style="padding:8px 12px;text-align:center;font-size:11px;color:var(--ink-3);border-top:1px solid var(--border);">Tipeá para buscar en los ${totalAll} contactos</div>`;
+    }
+  }
+
+  dropdown.innerHTML = html;
+  dropdown.style.display = 'block';
+}
+
+function renderContactOption(type, contact) {
+  const phone = contact.whatsapp || contact.phone || '';
+  const subtitle = [contact.rif, phone].filter(Boolean).join(' · ');
+  // mousedown en lugar de click para que dispare antes del onblur del input
+  return `<div onmousedown="selectContact('${type}','${contact.id}')" style="padding:8px 12px;cursor:pointer;border-bottom:1px solid var(--border-light, #f0f0eb);font-size:13px;" onmouseover="this.style.background='var(--surface-2)'" onmouseout="this.style.background='white'">
+    <div style="font-weight:500;color:var(--ink-1);">${ui.escape(contact.name)}</div>
+    ${subtitle ? `<div style="font-size:11px;color:var(--ink-3);margin-top:2px;">${ui.escape(subtitle)}</div>` : ''}
+  </div>`;
+}
+
+function selectContact(type, id) {
+  const coll = type === 'customer' ? db.COLLECTIONS.customers : db.COLLECTIONS.suppliers;
+  const contact = db.getById(coll, id);
+  if (!contact) return;
+  _selectedContact = { type, id, contact };
+
+  // Ocultar dropdown e input de búsqueda, mostrar pill con el contacto seleccionado
+  hideContactDropdown();
+  const searchInput = document.getElementById('contact-search');
+  if (searchInput) { searchInput.value = ''; searchInput.style.display = 'none'; }
+
+  const phone = contact.whatsapp || contact.phone || '';
+  const typeIcon = type === 'customer' ? '👥' : '🏭';
+  const typeLabel = type === 'customer' ? 'Cliente' : 'Proveedor';
+  document.getElementById('contact-selected-info').innerHTML = `
+    <div style="font-weight:600;font-size:13px;color:var(--accent-ink);">${typeIcon} ${ui.escape(contact.name)}</div>
+    <div style="font-size:11px;color:var(--ink-2);margin-top:2px;">${typeLabel} · ${ui.escape(contact.rif||'sin RIF')}${phone?` · ${ui.escape(phone)}`:' · sin teléfono'}</div>
+  `;
+  document.getElementById('contact-selected').style.display = 'block';
+
+  // Ocultar campo manual si estaba abierto
+  const manualField = document.getElementById('manual-phone-field');
+  if (manualField) manualField.style.display = 'none';
+
+  // Re-aplicar plantilla con datos del contacto
   onTemplateChange();
+}
+
+function clearContactSelection() {
+  _selectedContact = null;
+  document.getElementById('contact-selected').style.display = 'none';
+  const searchInput = document.getElementById('contact-search');
+  if (searchInput) {
+    searchInput.style.display = 'block';
+    searchInput.value = '';
+    searchInput.focus();
+  }
+  const manualField = document.getElementById('manual-phone-field');
+  if (manualField) manualField.style.display = 'none';
+  onTemplateChange();
+}
+
+function showContactDropdown() {
+  if (!_selectedContact) onContactSearch(document.getElementById('contact-search').value || '');
+}
+
+function hideContactDropdown() {
+  const dd = document.getElementById('contact-dropdown');
+  if (dd) dd.style.display = 'none';
+}
+
+function useManualPhone() {
+  _selectedContact = null;
+  document.getElementById('contact-selected').style.display = 'none';
+  const searchInput = document.getElementById('contact-search');
+  if (searchInput) searchInput.style.display = 'none';
+  const manualField = document.getElementById('manual-phone-field');
+  if (manualField) manualField.style.display = 'block';
+  hideContactDropdown();
+  setTimeout(() => document.getElementById('manual-phone')?.focus(), 100);
 }
 
 function onTemplateChange() {
@@ -147,10 +264,14 @@ function onTemplateChange() {
 }
 
 function resetForm() {
-  document.getElementById('contact-select').value = '';
+  // Restaurar buscador
+  const searchInput = document.getElementById('contact-search');
+  if (searchInput) { searchInput.style.display = 'block'; searchInput.value = ''; }
+  document.getElementById('contact-selected').style.display = 'none';
   document.getElementById('template-select').value = '';
   document.getElementById('message-text').value = '';
   document.getElementById('manual-phone-field').style.display = 'none';
+  hideContactDropdown();
   _selectedContact = null;
 }
 
@@ -473,12 +594,8 @@ function handleUrlParams() {
       return;
     }
 
-    // Pre-seleccionar contacto
-    const contactSelect = document.getElementById('contact-select');
-    if (contactSelect) {
-      contactSelect.value = `${type}:${prepared.contact.id}`;
-      onContactChange();
-    }
+    // Pre-seleccionar contacto (usa la nueva función de selección directa)
+    selectContact(type, prepared.contact.id);
 
     // Pre-seleccionar plantilla
     if (templateKey) {
@@ -504,7 +621,9 @@ handleUrlParams();
 // Exponer al window
 Object.assign(window, {
   render, renderSendNew, renderTemplates, renderTemplateEdit, renderHistory,
-  onContactChange, onTemplateChange, doSend, resetForm,
+  onTemplateChange, doSend, resetForm,
+  // Selector de contacto con buscador
+  onContactSearch, selectContact, clearContactSelection, showContactDropdown, hideContactDropdown, useManualPhone,
   newTemplate, editTemplate, saveTemplate, cancelTemplateEdit, deleteTemplate, insertVariable,
   changeTab
 });
