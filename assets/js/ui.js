@@ -136,8 +136,18 @@ const ui = {
       <div class="app">
         <aside class="sidebar">
           <div class="brand">
-            <div class="brand-mark"><span>alt</span>care</div>
-            <div class="brand-sub">Manufacturing OS</div>
+            <div class="brand-logo">
+              <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <path d="M12 2L2 22h20L12 2z" fill="#0a0a08" stroke="#0a0a08" stroke-width="0.5" stroke-linejoin="round"/>
+                <ellipse cx="10.5" cy="14" rx="1.6" ry="2.4" transform="rotate(-25 10.5 14)" fill="#0a0a08"/>
+                <ellipse cx="13.5" cy="14" rx="1.6" ry="2.4" transform="rotate(25 13.5 14)" fill="#0a0a08"/>
+                <line x1="12" y1="14" x2="12" y2="19" stroke="#0a0a08" stroke-width="0.6" stroke-linecap="round"/>
+              </svg>
+            </div>
+            <div class="brand-text">
+              <div class="brand-mark">ALT<span>care</span></div>
+              <div class="brand-sub">Manufacturing OS</div>
+            </div>
           </div>
           ${modeSelectorHtml}
           <nav>${navHtml}</nav>
