@@ -253,6 +253,17 @@ function renderDashboard() {
   const fgLots = db.getAll(db.COLLECTIONS.finishedGoods).filter(l => l.balance > 0);
   const fgQuarantine = db.getAll(db.COLLECTIONS.finishedGoods).filter(l => l.status === 'CUARENTENA' && !l.qcTestId).length;
 
+  // PT con stock bajo: lotes activos liberados cuyo balance está en/bajo el mínimo
+  // Solo considera lotes con minStock > 0 definido
+  const lowStockFG = db.getAll(db.COLLECTIONS.finishedGoods).filter(l => {
+    if (l.active === false) return false;
+    if (l.status !== 'LIBERADO') return false;
+    const min = l.minStock || 0;
+    if (min <= 0) return false;
+    return (l.balance || 0) <= min;
+  });
+  const lowStockFGCount = lowStockFG.length;
+
   // Inventario: materiales con stock bajo o sin stock
   // Incluye: (a) los que tienen minStock definido y están por debajo
   //          (b) los que tienen stock 0 (sin importar minStock)
@@ -392,6 +403,7 @@ function renderDashboard() {
   if (fgQuarantine > 0) alerts.push({ severity: 'info', text: `${fgQuarantine} lote(s) de PT esperando control de calidad`, link: 'modules/calidad.html' });
   if (expSoon > 0) alerts.push({ severity: 'warning', text: `${expSoon} lote(s) próximos a vencer (en menos de ${cfg?.expiryAlertDays||60} días)`, link: 'modules/almacen.html' });
   if (lowStockCount > 0) alerts.push({ severity: 'warning', text: `${lowStockCount} materia(s) prima(s) con stock bajo`, link: 'modules/materias-primas.html' });
+  if (lowStockFGCount > 0) alerts.push({ severity: 'warning', text: `${lowStockFGCount} producto(s) terminado(s) con stock bajo`, link: 'modules/producto-terminado.html' });
 
   const sevColor = { danger: 'var(--danger)', warning: 'var(--warning)', info: 'var(--accent-ink)' };
   const sevBg = { danger: 'var(--danger-soft)', warning: 'var(--warning-soft)', info: 'var(--accent-soft)' };
