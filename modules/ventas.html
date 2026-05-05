@@ -163,6 +163,10 @@ function renderList() {
           <h2 class="action-bar-title">Ventas</h2>
           <span class="action-bar-count">${all.length} documentos · ${counts.pedidos} pedidos · ${counts.cotizaciones} cotizaciones · ${counts.facturas} facturas</span>
         </div>
+        <div class="action-bar-right" style="display:flex;gap:8px;">
+          <button class="btn btn-secondary" onclick="newDoc('NOTA_ENTREGA')" title="Sin IVA, no entra en libros fiscales">${ui.icon('file')} Nueva Nota de Entrega</button>
+          <button class="btn btn-primary" onclick="newDoc('PEDIDO')">${ui.icon('plus')} Nuevo Pedido</button>
+        </div>
       </div>
 
       <div class="grid grid-4 mb-24">
@@ -196,11 +200,6 @@ function renderList() {
 
       <!-- Cuadro: Cuentas por cobrar -->
       ${renderCuentasPorCobrar(all)}
-
-      <div style="display:flex;justify-content:flex-end;gap:8px;padding:24px 0;border-top:1px solid var(--border);margin-top:24px;">
-        <button class="btn btn-secondary" onclick="newDoc('NOTA_ENTREGA')" title="Sin IVA, no entra en libros fiscales">${ui.icon('file')} Nueva Nota de Entrega</button>
-        <button class="btn btn-primary" onclick="newDoc('PEDIDO')">${ui.icon('plus')} Nuevo Pedido</button>
-      </div>
     `
   });
 }
