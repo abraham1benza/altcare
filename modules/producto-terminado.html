@@ -73,7 +73,15 @@ function render() {
         <td><span class="td-mono">${ui.escape(l.productionOrderCode||'—')}</span></td>
         <td><span class="text-muted">${ui.formatDate(l.manufactureDate)}</span></td>
         <td>${l.expiryDate ? `<span class="badge ${expClass}">${ui.formatDate(l.expiryDate)}${days !== null ? ` · ${days}d` : ''}</span>` : '<span class="td-muted">—</span>'}</td>
-        <td style="text-align:right;"><span class="td-mono td-strong">${(l.balance||0).toLocaleString('es-VE',{minimumFractionDigits:2,maximumFractionDigits:3})}</span> <span class="text-muted">${l.unit}</span></td>
+        <td style="text-align:right;">
+          <span class="td-mono td-strong">${(l.balance||0).toLocaleString('es-VE',{minimumFractionDigits:2,maximumFractionDigits:3})}</span>
+          <span class="text-muted">${l.unit}</span>
+          ${(l.minStock || 0) > 0 && (l.balance || 0) <= (l.minStock || 0) && (l.balance || 0) > 0
+            ? `<div style="font-size:10px;color:var(--warning);font-weight:600;margin-top:2px;">⚠ Stock bajo (mín: ${l.minStock})</div>`
+            : (l.minStock || 0) > 0 && (l.balance || 0) === 0
+              ? `<div style="font-size:10px;color:var(--danger);font-weight:600;margin-top:2px;">✕ Sin stock</div>`
+              : ''}
+        </td>
         <td><span class="text-muted" style="font-size:12px;">${ui.escape(whMap[l.warehouseId]||'—')}</span></td>
         <td><span class="badge ${s.color}">${s.label}</span></td>
         ${isGerencialMode ? `<td style="text-align:right;"><span class="td-mono">$${((l.balance||0) * (l.unitCost||0)).toFixed(2)}</span></td>` : ''}
@@ -87,6 +95,10 @@ function render() {
       ? `<div class="empty-state"><div class="empty-state-icon">${ui.icon('box')}</div><div class="empty-state-title">Sin producto terminado</div><div class="empty-state-text">Los lotes de PT se crean automáticamente al terminar una orden de fabricación.</div></div>`
       : `<div class="empty-state"><div class="empty-state-title">Sin resultados</div></div>`);
 
+  // Detectar lotes sin minStock definido (carga previa al feature)
+  const lotsWithoutMin = all.filter(l => l.minStock == null && (l.balance || 0) > 0);
+  const showMigrateBanner = lotsWithoutMin.length > 0 && (typeof auth !== 'undefined' && auth.canSeeAll && auth.canSeeAll());
+
   ui.renderLayout({
     activeModule: 'producto-terminado', pageEyebrow: 'Inventario', pageTitle: 'Producto Terminado',
     contentHtml: `
@@ -96,6 +108,16 @@ function render() {
           <span class="action-bar-count">${all.length} lotes · ${counts.cuarentena} en cuarentena · ${counts.liberado} liberados · ${counts.rechazado} rechazados</span>
         </div>
       </div>
+
+      ${showMigrateBanner ? `
+      <div class="card" style="background:var(--gold-soft);border-color:var(--gold);margin-bottom:16px;padding:14px 18px;display:flex;align-items:center;justify-content:space-between;gap:12px;">
+        <div>
+          <div style="font-weight:600;color:var(--gold-deep);font-size:13px;">📦 ${lotsWithoutMin.length} lote${lotsWithoutMin.length!==1?'s':''} sin stock mínimo configurado</div>
+          <div style="font-size:12px;color:var(--ink-3);margin-top:2px;">Pon un valor por defecto a todos para recibir alertas cuando se acaben.</div>
+        </div>
+        <button class="btn btn-gold" onclick="applyDefaultMinStock()">Aplicar mínimo 25 a todos</button>
+      </div>
+      ` : ''}
 
       <div class="grid ${isGerencialMode ? 'grid-4' : 'grid-3'} mb-24">
         <div class="kpi"><div class="kpi-label">Total liberado</div><div class="kpi-value">${totalAvailable.toLocaleString('es-VE',{minimumFractionDigits:2,maximumFractionDigits:3})}</div><div class="kpi-value-sub">disponible para venta</div></div>
@@ -118,7 +140,38 @@ function render() {
   });
 }
 
-const _doSearchRender = ui.debounce(() => ui.preserveFocus(() => render()), 250);
+
+// Helper local: preserva el foco del input activo a través de un render
+function _preserveFocusRender() {
+  const active = document.activeElement;
+  let snapshot = null;
+  if (active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA' || active.tagName === 'SELECT')) {
+    snapshot = {
+      id: active.id || null,
+      name: active.name || null,
+      tagName: active.tagName,
+      selectionStart: active.selectionStart,
+      selectionEnd: active.selectionEnd
+    };
+  }
+  render();
+  if (!snapshot) return;
+  let target = null;
+  if (snapshot.id) target = document.getElementById(snapshot.id);
+  if (!target && snapshot.name) {
+    target = document.querySelector(snapshot.tagName.toLowerCase() + '[name="' + snapshot.name + '"]');
+  }
+  if (target) {
+    target.focus();
+    try {
+      if (snapshot.selectionStart != null && target.setSelectionRange) {
+        target.setSelectionRange(snapshot.selectionStart, snapshot.selectionEnd);
+      }
+    } catch(e) {}
+  }
+}
+
+const _doSearchRender = ui.debounce(() => _preserveFocusRender(), 250);
 function onSearch(v) { searchTerm = v; _doSearchRender(); }
 function onStatusFilter(v) { statusFilter = v; render(); }
 
@@ -134,6 +187,9 @@ function editLot(id) {
           <div class="field"><label class="field-label">Vencimiento</label><input class="input" type="date" name="expiryDate" value="${l.expiryDate||''}"></div>
           <div class="field"><label class="field-label">Almacén</label><select class="select" name="warehouseId">${warehouses.map(w => `<option value="${w.id}" ${w.id===l.warehouseId?'selected':''}>${ui.escape(w.name)}</option>`).join('')}</select></div>
           <div class="field"><label class="field-label">Estado</label><select class="select" name="status">${Object.entries(PT_STATUS).map(([k,s])=>`<option value="${k}" ${k===l.status?'selected':''}>${s.label}</option>`).join('')}</select></div>
+          <div class="field"><label class="field-label">Stock mínimo</label><input class="input" type="number" name="minStock" value="${l.minStock != null ? l.minStock : 25}" min="0" step="1"><div class="field-hint" style="font-size:11px;color:var(--ink-3);margin-top:4px;">Te alertará cuando el balance sea menor o igual a este valor. Pon 0 para no usar alerta.</div></div>
+          <div class="field"><label class="field-label">Precio distribuidor (USD)</label><input class="input" type="number" name="priceDistributor" value="${l.priceDistributor || 0}" min="0" step="0.0001"></div>
+          <div class="field"><label class="field-label">Precio peluquería (USD)</label><input class="input" type="number" name="pricePharmacy" value="${l.pricePharmacy || 0}" min="0" step="0.0001"></div>
           <div class="field" style="grid-column:1/-1;"><label class="field-label">Notas</label><textarea class="textarea" name="notes">${ui.escape(l.notes||'')}</textarea></div>
         </div>
       </form>
@@ -146,10 +202,28 @@ function saveLot(e, id) {
   e.preventDefault();
   const data = ui.formData(e.target);
   const l = db.getById(db.COLLECTIONS.finishedGoods, id);
+  // Parsear numéricos
+  if (data.minStock != null) data.minStock = parseFloat(data.minStock) || 0;
+  if (data.priceDistributor != null) data.priceDistributor = parseFloat(data.priceDistributor) || 0;
+  if (data.pricePharmacy != null) data.pricePharmacy = parseFloat(data.pricePharmacy) || 0;
   Object.assign(l, data);
   db.save(db.COLLECTIONS.finishedGoods, l);
   ui.closeModal();
   ui.toast('Lote actualizado', 'success');
+  render();
+}
+
+/** Aplica stock mínimo de 25 a todos los lotes que no tengan minStock definido */
+function applyDefaultMinStock() {
+  if (!confirm('Esto aplicará stock mínimo = 25 a todos los lotes que actualmente no tienen ningún mínimo configurado. ¿Continuar?')) return;
+  const lotsToUpdate = db.getAll(db.COLLECTIONS.finishedGoods).filter(l => l.minStock == null);
+  let count = 0;
+  lotsToUpdate.forEach(l => {
+    l.minStock = 25;
+    db.save(db.COLLECTIONS.finishedGoods, l);
+    count++;
+  });
+  ui.toast(`${count} lote${count!==1?'s':''} actualizado${count!==1?'s':''} con stock mínimo de 25`, 'success');
   render();
 }
 
@@ -221,6 +295,7 @@ Object.assign(window, {
   onStatusFilter: typeof onStatusFilter !== 'undefined' ? onStatusFilter : undefined,
   editLot: typeof editLot !== 'undefined' ? editLot : undefined,
   saveLot: typeof saveLot !== 'undefined' ? saveLot : undefined,
+  applyDefaultMinStock: typeof applyDefaultMinStock !== 'undefined' ? applyDefaultMinStock : undefined,
   openLinkFormula: typeof openLinkFormula !== 'undefined' ? openLinkFormula : undefined,
   confirmLinkFormula: typeof confirmLinkFormula !== 'undefined' ? confirmLinkFormula : undefined,
 });
