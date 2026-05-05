@@ -364,9 +364,14 @@ function renderLibroCompras(from, to) {
 function renderLibroVentas(from, to) {
   const { rows, totals } = reports.libroVentas(from, to);
   if (!rows.length) return '<div class="empty-state"><div class="empty-state-title">Sin facturas en el período</div></div>';
+  const counts = {
+    facturas: rows.filter(r => !r.tipoDoc || r.tipoDoc === 'FACTURA').length,
+    nc: rows.filter(r => r.tipoDoc === 'NOTA_CREDITO').length,
+    nd: rows.filter(r => r.tipoDoc === 'NOTA_DEBITO').length
+  };
   return `
     <div class="grid grid-4 mb-24">
-      <div class="kpi"><div class="kpi-label">Facturas</div><div class="kpi-value">${rows.length}</div></div>
+      <div class="kpi"><div class="kpi-label">Documentos</div><div class="kpi-value">${rows.length}</div><div class="kpi-value-sub">${counts.facturas} fact. · ${counts.nc} NC · ${counts.nd} ND</div></div>
       <div class="kpi"><div class="kpi-label">Base imponible</div><div class="kpi-value" style="font-size:18px;">${fmtVES(totals.baseImponible)} Bs.</div></div>
       <div class="kpi"><div class="kpi-label">IVA débito fiscal</div><div class="kpi-value" style="font-size:18px;color:var(--accent-ink);">${fmtVES(totals.iva)} Bs.</div></div>
       <div class="kpi"><div class="kpi-label">Total ventas</div><div class="kpi-value" style="font-size:18px;">${fmtVES(totals.total)} Bs.</div></div>
@@ -375,13 +380,20 @@ function renderLibroVentas(from, to) {
     <div class="table-wrap">
       <table>
         <thead><tr>
-          <th>#</th><th>Fecha</th><th>RIF Cliente</th><th>Cliente</th><th>N° Factura</th><th>N° Control</th>
+          <th>#</th><th>Fecha</th><th>Tipo</th><th>RIF Cliente</th><th>Cliente</th><th>N° Factura</th><th>N° Control</th>
           <th style="text-align:right;">Tasa</th>
           <th style="text-align:right;">Base imp.</th><th style="text-align:right;">IVA</th><th style="text-align:right;">Exento</th><th style="text-align:right;">Total</th>
         </tr></thead>
-        <tbody>${rows.map(r => `<tr ${r.cancelled?'style="opacity:0.5;"':''}>
+        <tbody>${rows.map(r => {
+          const tipoBadge = r.tipoDoc === 'NOTA_CREDITO'
+            ? '<span class="badge" style="background:#fdf2f2;color:#a83232;border:1px solid #e8c8c8;font-size:10px;">NC</span>'
+            : r.tipoDoc === 'NOTA_DEBITO'
+              ? '<span class="badge" style="background:#fef3c7;color:#78350f;border:1px solid #fcd34d;font-size:10px;">ND</span>'
+              : '<span class="badge badge-plain" style="font-size:10px;">FACT</span>';
+          return `<tr ${r.cancelled?'style="opacity:0.5;"':''}>
           <td>${r.n}</td>
           <td><span class="text-muted">${fmtDate(r.fecha)}</span></td>
+          <td>${tipoBadge}${r.nFacturaAfectada?`<div class="text-muted" style="font-size:10px;margin-top:2px;">→ ${ui.escape(r.nFacturaAfectada)}</div>`:''}</td>
           <td><span class="td-mono">${ui.escape(r.rifCliente)}</span></td>
           <td>${ui.escape(r.nombreCliente)}${r.cancelled?' <span class="badge badge-danger" style="font-size:9px;">ANULADA</span>':''}</td>
           <td><span class="td-mono">${ui.escape(r.nFactura)}</span></td>
@@ -394,9 +406,10 @@ function renderLibroVentas(from, to) {
           <td style="text-align:right;"><span class="td-mono">${fmtVES(r.iva)}</span></td>
           <td style="text-align:right;"><span class="td-mono">${fmtVES(r.exento)}</span></td>
           <td style="text-align:right;"><span class="td-mono td-strong">${fmtVES(r.total)}</span></td>
-        </tr>`).join('')}
+        </tr>`;
+        }).join('')}
         <tr style="background:var(--ink);color:white;font-weight:600;">
-          <td colspan="7">TOTALES (Bs.)</td>
+          <td colspan="8">TOTALES (Bs.)</td>
           <td style="text-align:right;"><span class="td-mono">${fmtVES(totals.baseImponible)}</span></td>
           <td style="text-align:right;"><span class="td-mono">${fmtVES(totals.iva)}</span></td>
           <td style="text-align:right;"><span class="td-mono">${fmtVES(totals.exento)}</span></td>
