@@ -415,6 +415,26 @@ input, select, textarea { font-family: inherit; font-size: inherit; color: inher
   .content { padding: 18px 14px; }
 }
 
+/* ============== PERMISOS GLOBALES ==============
+   Cuando el usuario actual no puede editar/eliminar en este módulo,
+   `auth.applyPermissionClasses()` agrega `.no-edit` o `.no-delete` al <body>.
+   Estas reglas ocultan los botones correspondientes en cualquier vista.
+   Cubrimos los patrones usados en todo el sistema:
+     - <button title="Editar"> / <button title="Eliminar">
+     - <button onclick="editItem(...)"> / <button onclick="deleteItem(...)">
+     - <a/<button> con `data-perm="edit"` / `data-perm="delete"` para casos custom
+*/
+body.no-edit [title="Editar"],
+body.no-edit [onclick*="editItem("],
+body.no-edit [data-perm="edit"] {
+  display: none !important;
+}
+body.no-delete [title="Eliminar"],
+body.no-delete [onclick*="deleteItem("],
+body.no-delete [data-perm="delete"] {
+  display: none !important;
+}
+
 /* ============== TYPOGRAPHY ============== */
 
 h1, h2, h3, h4 { font-family: var(--font-display); font-weight: 500; letter-spacing: -0.025em; color: var(--ink); }
