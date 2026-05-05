@@ -222,6 +222,77 @@ function openForm(item) {
             <div class="field-hint" style="margin-top:6px;">📌 = módulo del rol predeterminado · Sin marcar = oculto del sidebar y bloqueado por URL</div>
           </div>
 
+          <!-- PERMISOS AVANZADOS: editar / eliminar -->
+          <div class="field" style="grid-column:1/-1;margin-top:8px;padding:14px;background:#fef2f2;border:1px solid #fecaca;border-radius:8px;">
+            <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;">
+              <strong style="font-size:13px;color:#7f1d1d;">🛡️ Permisos avanzados (editar / eliminar)</strong>
+            </div>
+            <div class="text-muted" style="font-size:11.5px;margin-bottom:10px;line-height:1.5;">
+              Por defecto solo el administrador puede usar los botones de <strong>Editar</strong> y <strong>Eliminar</strong> en cualquier módulo.
+              Marcá acá los módulos donde este usuario también tendrá esos permisos.
+              ${item.role === 'admin' ? '<br><strong style="color:#7f1d1d;">⚠️ Los administradores ya tienen todos estos permisos automáticamente.</strong>' : ''}
+            </div>
+            ${(() => {
+              // Módulos donde tiene sentido tener "editar/eliminar" registros (no incluye dashboard, reportes, etc.)
+              const PERMISSIONABLE = [
+                { key: 'clientes', label: 'Clientes' },
+                { key: 'proveedores', label: 'Proveedores' },
+                { key: 'materias-primas', label: 'Materias Primas' },
+                { key: 'producto-terminado', label: 'Producto Terminado' },
+                { key: 'almacenes', label: 'Almacenes' },
+                { key: 'formulas', label: 'Fórmulas' },
+                { key: 'produccion', label: 'Producción' },
+                { key: 'ventas', label: 'Ventas' },
+                { key: 'compras', label: 'Compras' },
+                { key: 'pagos', label: 'Pagos' },
+                { key: 'cuentas-bancarias', label: 'Cuentas Bancarias' },
+                { key: 'metodos-pago', label: 'Métodos de Pago' },
+                { key: 'notificaciones', label: 'Notificaciones' }
+              ];
+              const editList = item.canEditModules || [];
+              const deleteList = item.canDeleteModules || [];
+              const adminLocked = item.role === 'admin';
+
+              return `
+                <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;">
+                  <div>
+                    <div style="font-size:11px;font-weight:700;color:#7f1d1d;text-transform:uppercase;letter-spacing:0.1em;margin-bottom:8px;">✏️ Puede editar en</div>
+                    <div style="display:grid;grid-template-columns:1fr;gap:4px;max-height:240px;overflow-y:auto;padding:8px;background:white;border-radius:6px;border:1px solid var(--border);">
+                      <label style="display:flex;align-items:center;gap:6px;padding:6px 8px;background:var(--surface-2);border-radius:4px;font-size:12px;font-weight:600;border:1px dashed var(--border-strong);">
+                        <input type="checkbox" name="canEdit_all" ${editList.includes('all')?'checked':''} ${adminLocked?'disabled':''}>
+                        <span>Todos los módulos</span>
+                      </label>
+                      ${PERMISSIONABLE.map(m => `
+                        <label style="display:flex;align-items:center;gap:6px;padding:5px 8px;font-size:12px;border-radius:4px;${editList.includes(m.key)?'background:#fef3c7;':''}">
+                          <input type="checkbox" name="canEdit_${m.key}" ${editList.includes(m.key)?'checked':''} ${adminLocked?'disabled':''}>
+                          <span>${m.label}</span>
+                        </label>
+                      `).join('')}
+                    </div>
+                  </div>
+                  <div>
+                    <div style="font-size:11px;font-weight:700;color:#7f1d1d;text-transform:uppercase;letter-spacing:0.1em;margin-bottom:8px;">🗑️ Puede eliminar en</div>
+                    <div style="display:grid;grid-template-columns:1fr;gap:4px;max-height:240px;overflow-y:auto;padding:8px;background:white;border-radius:6px;border:1px solid var(--border);">
+                      <label style="display:flex;align-items:center;gap:6px;padding:6px 8px;background:var(--surface-2);border-radius:4px;font-size:12px;font-weight:600;border:1px dashed var(--border-strong);">
+                        <input type="checkbox" name="canDelete_all" ${deleteList.includes('all')?'checked':''} ${adminLocked?'disabled':''}>
+                        <span>Todos los módulos</span>
+                      </label>
+                      ${PERMISSIONABLE.map(m => `
+                        <label style="display:flex;align-items:center;gap:6px;padding:5px 8px;font-size:12px;border-radius:4px;${deleteList.includes(m.key)?'background:#fee2e2;':''}">
+                          <input type="checkbox" name="canDelete_${m.key}" ${deleteList.includes(m.key)?'checked':''} ${adminLocked?'disabled':''}>
+                          <span>${m.label}</span>
+                        </label>
+                      `).join('')}
+                    </div>
+                  </div>
+                </div>
+                <div class="field-hint" style="margin-top:8px;color:#7f1d1d;">
+                  Si marcás "Todos los módulos" se ignoran las marcas individuales. El módulo Usuarios siempre requiere ser administrador.
+                </div>
+              `;
+            })()}
+          </div>
+
           <!-- COMISIONES -->
           <div class="field" style="grid-column:1/-1;margin-top:8px;padding:14px;background:#f0f9ff;border:1px solid #bae6fd;border-radius:8px;">
             <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;">
@@ -385,6 +456,28 @@ async function saveItem(e, id) {
   data.commissionRateCollection = data.commissionRateCollection != null && data.commissionRateCollection !== '' ? parseFloat(data.commissionRateCollection) : null;
   data.commissionBase = data.commissionBase || null;
 
+  // Permisos avanzados (editar/eliminar)
+  // Procesar checkboxes canEdit_* y canDelete_*
+  const canEditModules = [];
+  const canDeleteModules = [];
+  for (const [key] of fd.entries()) {
+    if (key.startsWith('canEdit_')) {
+      canEditModules.push(key.replace('canEdit_', ''));
+      delete data[key];
+    } else if (key.startsWith('canDelete_')) {
+      canDeleteModules.push(key.replace('canDelete_', ''));
+      delete data[key];
+    }
+  }
+  // Si "all" está marcado, dejamos solo "all" para evitar redundancia
+  data.canEditModules = canEditModules.includes('all') ? ['all'] : canEditModules;
+  data.canDeleteModules = canDeleteModules.includes('all') ? ['all'] : canDeleteModules;
+  // Admin no necesita esto (siempre tiene todo)
+  if (data.role === 'admin') {
+    data.canEditModules = [];
+    data.canDeleteModules = [];
+  }
+
   // Visibilidad y supervisión
   data.clientAccess = data.clientAccess || 'own';
   data.managerId = data.managerId || null;
@@ -423,7 +516,9 @@ async function saveItem(e, id) {
       commissionRateCollection: data.commissionRateCollection,
       commissionBase: data.commissionBase,
       clientAccess: data.clientAccess,
-      managerId: data.managerId
+      managerId: data.managerId,
+      canEditModules: data.canEditModules || [],
+      canDeleteModules: data.canDeleteModules || []
     });
 
     if (!result.ok) {
