@@ -489,16 +489,103 @@ function saveMove(e, id) {
   render();
 }
 
+/**
+ * Recalcular saldos: PRIMERO muestra un preview (dry-run) de qué va a cambiar
+ * y deja al usuario confirmar. Las cuentas sin movimientos NO se tocan
+ * (preservan el saldo manual). Las cuentas con diferencias se muestran con
+ * sus valores antes/después.
+ */
 function recalcBalances() {
-  ui.confirm(
-    '¿Recalcular los saldos de todas las cuentas desde sus movimientos? Esto corrige diferencias por bugs anteriores. No elimina movimientos.',
-    () => {
-      const fixed = payments.recalcAllBalances();
-      ui.toast(fixed > 0 ? `${fixed} cuenta(s) corregida(s)` : 'Todos los saldos están correctos', 'success');
-      render();
-    },
-    { confirmLabel: 'Recalcular' }
-  );
+  // Paso 1: dry-run para calcular qué cambiaría
+  const preview = payments.recalcAllBalances({ dryRun: true });
+  const totalAccounts = preview.changes.length;
+
+  // Separar cambios reales (con diff) de cuentas preservadas y sin cambio
+  const realChanges = preview.changes.filter(c => !c.preserved && c.diff > 0.01);
+  const preserved   = preview.changes.filter(c => c.preserved);
+  const unchanged   = preview.changes.filter(c => !c.preserved && c.diff <= 0.01);
+
+  if (realChanges.length === 0 && preserved.length === 0) {
+    ui.toast(`Todos los saldos están correctos (${unchanged.length} cuentas)`, 'success');
+    return;
+  }
+
+  // Paso 2: armar el modal de preview
+  const realChangesHtml = realChanges.length ? `
+    <div style="margin-top:14px;">
+      <div style="font-size:11px;font-weight:700;color:var(--ink-2);text-transform:uppercase;letter-spacing:0.1em;margin-bottom:8px;">
+        ⚠️ ${realChanges.length} cuenta(s) cambiarán de saldo
+      </div>
+      <div class="table-wrap" style="margin:0;">
+        <table>
+          <thead><tr>
+            <th>Cuenta</th>
+            <th style="text-align:right;">Saldo actual</th>
+            <th style="text-align:right;">Nuevo saldo</th>
+            <th style="text-align:right;">Diferencia</th>
+          </tr></thead>
+          <tbody>${realChanges.map(c => {
+            const goingToZero = Math.abs(c.newBalance) < 0.01 && Math.abs(c.oldBalance) > 0.01;
+            const diffSign = c.newBalance > c.oldBalance ? '+' : '';
+            return `<tr ${goingToZero ? 'style="background:#fef2f2;"' : ''}>
+              <td><strong>${ui.escape(c.name)}</strong></td>
+              <td style="text-align:right;font-family:var(--font-mono);">${currency.format(c.oldBalance, c.currency)}</td>
+              <td style="text-align:right;font-family:var(--font-mono);${goingToZero?'color:var(--danger);font-weight:700;':''}">${currency.format(c.newBalance, c.currency)}${goingToZero?' ⚠️':''}</td>
+              <td style="text-align:right;font-family:var(--font-mono);color:${c.newBalance>=c.oldBalance?'var(--success)':'var(--danger)'};">${diffSign}${currency.format(c.newBalance - c.oldBalance, c.currency)}</td>
+            </tr>`;
+          }).join('')}</tbody>
+        </table>
+      </div>
+    </div>
+  ` : '';
+
+  const preservedHtml = preserved.length ? `
+    <div style="margin-top:14px;padding:12px;background:#f0f9ff;border:1px solid #bae6fd;border-radius:6px;font-size:12px;color:#0369a1;">
+      <strong>ℹ️ ${preserved.length} cuenta(s) sin movimientos</strong> — Su saldo se preservará intacto:
+      <div style="margin-top:6px;font-size:11px;">${preserved.map(c => `${ui.escape(c.name)}: ${currency.format(c.oldBalance, c.currency)}`).join(' · ')}</div>
+    </div>
+  ` : '';
+
+  const unchangedHtml = unchanged.length ? `
+    <div style="margin-top:10px;font-size:11px;color:var(--ink-3);">
+      ${unchanged.length} cuenta(s) ya tienen el saldo correcto (sin cambios).
+    </div>
+  ` : '';
+
+  const hasGoingToZero = realChanges.some(c => Math.abs(c.newBalance) < 0.01 && Math.abs(c.oldBalance) > 0.01);
+
+  ui.openModal({
+    size: 'lg',
+    title: 'Vista previa: Recalcular saldos',
+    subtitle: `${totalAccounts} cuenta(s) analizadas — Revisá los cambios antes de aplicar`,
+    body: `
+      <div style="font-size:13px;line-height:1.6;color:var(--ink-2);margin-bottom:8px;">
+        El sistema recalculó los saldos sumando todos los movimientos bancarios.
+        Revisá los cambios propuestos abajo y confirmá solo si querés aplicarlos.
+      </div>
+
+      ${hasGoingToZero ? `<div style="padding:12px 14px;background:#fef2f2;border:1px solid #fca5a5;border-radius:6px;font-size:12px;color:#991b1b;margin-top:10px;">
+        <strong>⚠️ Atención:</strong> Hay cuentas con saldo actual que pasarían a 0 (resaltadas en rojo). Esto pasa cuando una cuenta no tiene movimientos registrados en el kardex pero sí tiene saldo. Si confirmás, vas a perder ese saldo. Si no estás seguro, cancelá y usá "Ajustar saldo" en cada cuenta para registrar el saldo real con un movimiento de apertura.
+      </div>` : ''}
+
+      ${realChangesHtml}
+      ${preservedHtml}
+      ${unchangedHtml}
+    `,
+    footer: `
+      <button class="btn btn-secondary" onclick="ui.closeModal()">Cancelar (no aplicar)</button>
+      ${realChanges.length > 0 ? `<button class="btn ${hasGoingToZero?'btn-danger':'btn-primary'}" onclick="confirmRecalc()">${hasGoingToZero?'⚠️ ':''}Aplicar cambios (${realChanges.length})</button>` : ''}
+    `
+  });
+}
+
+function confirmRecalc() {
+  const result = payments.recalcAllBalances({ dryRun: false });
+  ui.closeModal();
+  let msg = `${result.fixed} cuenta(s) corregida(s)`;
+  if (result.skipped > 0) msg += ` · ${result.skipped} preservada(s) sin movimientos`;
+  ui.toast(msg, 'success', 4000);
+  render();
 }
 
 // ====== ACCIONES RÁPIDAS DESDE LAS CARDS ======
@@ -880,6 +967,7 @@ Object.assign(window, {
   newManualMove: typeof newManualMove !== 'undefined' ? newManualMove : undefined,
   saveMove: typeof saveMove !== 'undefined' ? saveMove : undefined,
   recalcBalances: typeof recalcBalances !== 'undefined' ? recalcBalances : undefined,
+  confirmRecalc: typeof confirmRecalc !== 'undefined' ? confirmRecalc : undefined,
   quickDeposit: typeof quickDeposit !== 'undefined' ? quickDeposit : undefined,
   quickWithdraw: typeof quickWithdraw !== 'undefined' ? quickWithdraw : undefined,
   confirmQuickMove: typeof confirmQuickMove !== 'undefined' ? confirmQuickMove : undefined,

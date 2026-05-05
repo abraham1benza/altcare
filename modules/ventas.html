@@ -364,6 +364,9 @@ function renderCreate() {
   const customers = db.getAll(db.COLLECTIONS.customers);
   const formulas = db.getAll(db.COLLECTIONS.formulas);
 
+  // Helper local: label legible del tipo de documento
+  const labelByType = (t) => ({ PEDIDO: 'Nuevo Pedido', NOTA_ENTREGA: 'Nueva Nota de Entrega', COTIZACION: 'Nueva Cotización', FACTURA: 'Nueva Factura' }[t] || 'Nuevo documento');
+
   // Cálculos
   const cfg = db.getById(db.COLLECTIONS.config, 'main') || {};
   const ivaRate = cfg.ivaRate || 16;
@@ -441,6 +444,17 @@ function renderCreate() {
   ui.renderLayout({
     activeModule: 'ventas', pageEyebrow: 'Nuevo pedido', pageTitle: c.code,
     contentHtml: `
+      <div class="action-bar" style="margin-bottom:18px;">
+        <div class="action-bar-left">
+          <h2 class="action-bar-title">${labelByType(c.type)}</h2>
+          <span class="action-bar-count">${c.items.length} ítem(s) · Total: ${currency.format(total, c.currency)}</span>
+        </div>
+        <div class="action-bar-right" style="display:flex;gap:8px;">
+          <button class="btn btn-secondary" onclick="cancelCreate()">← Cancelar</button>
+          <button class="btn btn-primary" onclick="saveDoc()">${ui.icon('check')} Crear ${labelByType(c.type).toLowerCase()}</button>
+        </div>
+      </div>
+
       <div class="card mb-24">
         <div class="card-header"><div class="card-title">Información</div></div>
         <div class="form-grid form-grid-2">
@@ -504,7 +518,7 @@ function renderCreate() {
 
       <div style="display:flex;justify-content:space-between;gap:8px;padding:24px 0;border-top:1px solid var(--border);margin-top:24px;">
         <button class="btn btn-secondary" onclick="cancelCreate()">← Cancelar</button>
-        <button class="btn btn-primary" onclick="saveDoc()">${ui.icon('check')} Crear pedido</button>
+        <button class="btn btn-primary" onclick="saveDoc()">${ui.icon('check')} Crear ${labelByType(c.type).toLowerCase()}</button>
       </div>
       <div style="height:40px;"></div>
     `
@@ -1636,6 +1650,11 @@ function renderDebitNoteForm() {
   const ivaChanged = f.applyIva !== ivaIsDefaultFor;
 
   document.getElementById('nd-form-host').innerHTML = `
+    <div style="position:sticky;top:0;background:white;padding:10px 0 14px;margin:-4px 0 12px;border-bottom:1px solid var(--border);z-index:10;display:flex;justify-content:flex-end;gap:8px;">
+      <button class="btn btn-secondary btn-sm" onclick="ui.closeModal();_ndForm=null;">Cancelar</button>
+      <button class="btn btn-primary btn-sm" onclick="confirmDebitNote()">${ui.icon('check')||'✓'} Emitir ND</button>
+    </div>
+
     <div style="font-size:13px;background:#fff7ed;padding:10px 14px;border-radius:6px;margin-bottom:14px;color:#7c2d12;border:1px solid #fdba74;">
       <strong>📈 Factura origen:</strong> ${ui.escape(inv.code)}${inv.invoiceNumber?` · N° ${inv.invoiceNumber}`:''} ·
       Cliente: ${ui.escape(inv.customerName)} · Saldo pendiente: ${currency.format((inv.total||0) - (inv.paidAmount||0), inv.currency)}
@@ -2155,6 +2174,11 @@ function renderCreditNoteForm() {
   const isPaid = (inv.paidAmount || 0) > 0;
 
   const html = `
+    <div style="position:sticky;top:0;background:white;padding:10px 0 14px;margin:-4px 0 12px;border-bottom:1px solid var(--border);z-index:10;display:flex;justify-content:flex-end;gap:8px;">
+      <button class="btn btn-secondary btn-sm" onclick="ui.closeModal();_ncForm=null;">Cancelar</button>
+      <button class="btn btn-primary btn-sm" onclick="confirmCreditNote()">${ui.icon('check')} Emitir NC</button>
+    </div>
+
     <div class="form-grid form-grid-2" style="margin-bottom:16px;">
       <div class="field">
         <label class="field-label">Motivo *</label>
