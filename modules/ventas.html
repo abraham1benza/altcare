@@ -29,6 +29,7 @@ let selectedId = null;
 let creating = null;
 let assigning = null;
 let typeFilter = '';
+let deliveryFilter = ''; // '' | 'PENDIENTE' | 'DESPACHADO' | 'ENTREGADO'
 let searchTerm = '';
 
 // Aplicar filtro inicial desde URL (?filter=PEDIDO viene del dashboard)
@@ -72,6 +73,14 @@ function renderList() {
 
   const all = docs;
   if (typeFilter) docs = docs.filter(d => d.type === typeFilter || d.status === typeFilter);
+  if (deliveryFilter) {
+    docs = docs.filter(d => {
+      // Excluir cotizaciones del filtro de entrega
+      if (d.type === 'COTIZACION') return false;
+      const status = d.deliveryStatus || 'PENDIENTE';
+      return status === deliveryFilter;
+    });
+  }
   if (searchTerm) {
     const q = searchTerm.toLowerCase();
     docs = docs.filter(d => (d.code||'').toLowerCase().includes(q) || (d.invoiceNumber||'').toLowerCase().includes(q) || (d.customerName||'').toLowerCase().includes(q));
@@ -111,6 +120,7 @@ function renderList() {
       <th style="text-align:right;">Total ${isGerencial ? 'USD' : 'Bs'}</th>
       ${isGerencial ? `<th style="text-align:right;">Total Bs</th>` : ''}
       <th>Tipo</th>
+      <th>Entrega</th>
       <th>Estado</th>
       <th style="text-align:right;width:100px;">Acciones</th>
     </tr></thead>
@@ -146,6 +156,15 @@ function renderList() {
         </td>
         ${isGerencial ? `<td style="text-align:right;"><span class="td-mono text-muted" style="font-size:12px;">${currency.format(vesValue, 'VES')}</span></td>` : ''}
         <td><span class="badge ${tBadge}">${d.type}</span></td>
+        <td>${(() => {
+          if (d.type === 'COTIZACION') return '<span class="text-muted" style="font-size:11px;">N/A</span>';
+          const ds = d.deliveryStatus || (d.cancelled ? null : null);
+          if (!ds) return '<span class="td-muted">—</span>';
+          if (ds === 'PENDIENTE')  return '<span class="badge badge-warning" style="font-size:10px;">📦 Pendiente</span>';
+          if (ds === 'DESPACHADO') return '<span class="badge badge-accent" style="font-size:10px;">🚚 Despachado</span>';
+          if (ds === 'ENTREGADO')  return '<span class="badge badge-success" style="font-size:10px;">✅ Entregado</span>';
+          return '<span class="td-muted">—</span>';
+        })()}</td>
         <td>${d.cancelled ? '<span class="badge badge-cancelled">Anulada</span>' : `<span class="badge ${sBadge}">${sales.STATUS[d.status]?.label || d.status}</span>`}</td>
         <td class="td-actions" onclick="event.stopPropagation()">
           <button class="btn-icon" onclick="openDetail('${d.id}')">${ui.icon('edit')}</button>
@@ -189,6 +208,12 @@ function renderList() {
             <option value="PAID" ${typeFilter==='PAID'?'selected':''}>Pagadas</option>
             <option value="PARTIAL" ${typeFilter==='PARTIAL'?'selected':''}>Pago parcial</option>
             <option value="CANCELLED" ${typeFilter==='CANCELLED'?'selected':''}>Anuladas</option>
+          </select>
+          <select class="select" style="max-width:190px;" onchange="onDeliveryFilter(this.value)">
+            <option value="">Todas las entregas</option>
+            <option value="PENDIENTE" ${deliveryFilter==='PENDIENTE'?'selected':''}>📦 Pendientes de despacho</option>
+            <option value="DESPACHADO" ${deliveryFilter==='DESPACHADO'?'selected':''}>🚚 Despachadas (sin entregar)</option>
+            <option value="ENTREGADO" ${deliveryFilter==='ENTREGADO'?'selected':''}>✅ Entregadas</option>
           </select>
         </div>
         ${tableHtml}
@@ -293,6 +318,7 @@ function renderCuentasPorCobrar(allDocs) {
 const _doSearchRender = ui.debounce(() => ui.preserveFocus(() => render()), 250);
 function onSearch(v) { searchTerm = v; _doSearchRender(); }
 function onTypeFilter(v) { typeFilter = v; render(); }
+function onDeliveryFilter(v) { deliveryFilter = v; render(); }
 
 // ====== CREAR ======
 
@@ -786,6 +812,326 @@ function saveDoc() {
 function openDetail(id) { selectedId = id; view = 'detail'; render(); }
 function backToList() { view = 'list'; selectedId = null; render(); }
 
+// ====== ESTADO DE ENTREGA / LOGÍSTICA ======
+
+/**
+ * Renderiza el card de "Estado de entrega" en la pantalla de detalle.
+ * Muestra el flujo PENDIENTE → DESPACHADO → ENTREGADO con datos asociados
+ * y los botones para avanzar el estado.
+ */
+function renderDeliveryCard(d) {
+  // Cotizaciones no se entregan
+  if (!d || d.type === 'COTIZACION' || d.deliveryStatus === 'NO_APLICA') return '';
+  // Documentos viejos sin estado de entrega: mostrar opción de iniciar el seguimiento
+  // pero de forma más sutil (el dato no se perdió, simplemente no se cargó).
+  const hasNoStatus = !d.deliveryStatus;
+  const status = d.deliveryStatus || 'PENDIENTE';
+  const cancelled = d.cancelled;
+
+  // Cálculo del aviso de vencimiento recalculado
+  const daysCredit = parsePaymentTermsDays(d.paymentTerms);
+  let dueHint = '';
+  if (daysCredit > 0 && d.dueDateAuto !== false) {
+    if (status === 'ENTREGADO' && d.deliveredDate) {
+      dueHint = `Vence el <strong>${ui.formatDate(d.dueDate)}</strong> (${daysCredit} días desde la entrega)`;
+    } else if (status === 'DESPACHADO' && d.shippedDate) {
+      dueHint = `Vence el <strong>${ui.formatDate(d.dueDate)}</strong> (${daysCredit} días desde el despacho — se recalculará al confirmar entrega)`;
+    } else {
+      dueHint = `Vence el <strong>${ui.formatDate(d.dueDate)}</strong> (${daysCredit} días desde la emisión — se recalculará al despachar/entregar)`;
+    }
+  } else if (daysCredit === 0) {
+    dueHint = `Pago al contado — el estado de entrega no afecta el vencimiento`;
+  } else if (d.dueDateAuto === false) {
+    dueHint = `Vencimiento manual: <strong>${d.dueDate ? ui.formatDate(d.dueDate) : '—'}</strong> (no se recalcula automáticamente)`;
+  }
+
+  // Resumen del despacho (cuando ya se despachó)
+  const shipmentInfo = (status === 'DESPACHADO' || status === 'ENTREGADO') ? `
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:14px;font-size:12px;margin-top:8px;">
+      <div>
+        <div class="kpi-label">Despachado el</div>
+        <div class="td-mono td-strong" style="font-size:13px;margin-top:2px;">${ui.formatDate(d.shippedDate||'')}</div>
+      </div>
+      <div>
+        <div class="kpi-label">Transportista</div>
+        <div style="font-weight:600;font-size:13px;margin-top:2px;">${ui.escape(d.carrierName||'—')}</div>
+        ${d.carrierType ? `<div class="text-muted" style="font-size:11px;">${ui.escape(d.carrierType)}</div>` : ''}
+      </div>
+      ${d.trackingNumber ? `<div>
+        <div class="kpi-label">Guía / Tracking</div>
+        <div class="td-mono td-strong" style="font-size:13px;margin-top:2px;">${ui.escape(d.trackingNumber)}</div>
+      </div>` : ''}
+      ${status === 'ENTREGADO' ? `<div>
+        <div class="kpi-label">Entregado el</div>
+        <div class="td-mono td-strong" style="font-size:13px;color:var(--success);margin-top:2px;">${ui.formatDate(d.deliveredDate||'')}</div>
+      </div>` : ''}
+    </div>
+    ${d.deliveryNotes ? `<div style="margin-top:10px;font-size:12px;padding:8px 10px;background:var(--surface-2);border-radius:6px;color:var(--ink-2);white-space:pre-wrap;">${ui.escape(d.deliveryNotes)}</div>` : ''}
+  ` : '';
+
+  // Estilos del header según estado
+  const statusStyles = {
+    PENDIENTE: { bg: '#fef3c7', border: '#fcd34d', icon: '📦', color: '#78350f', label: 'Pendiente de despacho' },
+    DESPACHADO: { bg: '#dbeafe', border: '#93c5fd', icon: '🚚', color: '#1e40af', label: 'Despachado · en tránsito' },
+    ENTREGADO: { bg: '#dcfce7', border: '#86efac', icon: '✅', color: '#14532d', label: 'Entregado al cliente' }
+  };
+  const s = statusStyles[status] || statusStyles.PENDIENTE;
+
+  // Botones según el estado y si está cancelado
+  let actions = '';
+  if (!cancelled && !hasNoStatus) {
+    if (status === 'PENDIENTE') {
+      actions = `<button class="btn btn-primary" onclick="openShipModal('${d.id}')">${ui.icon('check')||'✓'} Marcar despachado</button>`;
+    } else if (status === 'DESPACHADO') {
+      actions = `
+        <button class="btn btn-primary" onclick="openDeliveredModal('${d.id}')">${ui.icon('check')||'✓'} Marcar entregado</button>
+        <button class="btn btn-ghost btn-sm" onclick="openEditDeliveryModal('${d.id}')">Editar datos</button>
+        <button class="btn btn-ghost btn-sm" onclick="confirmRevertDelivery('${d.id}')" style="color:var(--danger);">Revertir</button>
+      `;
+    } else if (status === 'ENTREGADO') {
+      actions = `
+        <button class="btn btn-ghost btn-sm" onclick="openEditDeliveryModal('${d.id}')">Editar datos</button>
+        <button class="btn btn-ghost btn-sm" onclick="confirmRevertDelivery('${d.id}')" style="color:var(--danger);">Revertir</button>
+      `;
+    }
+  } else if (hasNoStatus && !cancelled) {
+    actions = `<button class="btn btn-secondary btn-sm" onclick="openShipModal('${d.id}')">Iniciar seguimiento de entrega</button>`;
+  }
+
+  if (hasNoStatus) {
+    return `
+      <div class="card mb-24" style="padding:14px 18px;background:var(--surface-2);border:1px dashed var(--border-strong);">
+        <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px;">
+          <div style="font-size:13px;color:var(--ink-2);">
+            <strong>Estado de entrega no registrado</strong>
+            <div class="text-muted" style="font-size:11px;margin-top:2px;">Pedido anterior al sistema de entregas. Podés iniciar el seguimiento ahora si necesitás.</div>
+          </div>
+          <div>${actions}</div>
+        </div>
+      </div>
+    `;
+  }
+
+  return `
+    <div class="card mb-24" style="padding:16px 18px;background:${s.bg};border-color:${s.border};">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:12px;margin-bottom:8px;">
+        <div>
+          <div style="display:flex;align-items:center;gap:8px;">
+            <span style="font-size:18px;">${s.icon}</span>
+            <strong style="color:${s.color};font-size:14px;">${s.label}</strong>
+          </div>
+          ${dueHint ? `<div style="font-size:12px;margin-top:6px;color:${s.color};">${dueHint}</div>` : ''}
+        </div>
+        <div style="display:flex;gap:6px;flex-wrap:wrap;">${actions}</div>
+      </div>
+      ${shipmentInfo}
+    </div>
+  `;
+}
+
+/** Modal: marcar despachado */
+function openShipModal(docId) {
+  const d = db.getById(db.COLLECTIONS.salesOrders, docId);
+  if (!d) return;
+  const today = new Date().toISOString().slice(0,10);
+  const carriers = db.getAll(db.COLLECTIONS.carriers).filter(c => c.active !== false).sort((a,b)=>(a.name||'').localeCompare(b.name||''));
+
+  if (carriers.length === 0) {
+    if (confirm('No hay transportistas configurados. ¿Querés ir al módulo de Transportistas para crear uno?')) {
+      window.location.href = 'transportistas.html';
+    }
+    return;
+  }
+
+  ui.openModal({
+    size: 'md',
+    title: `Marcar como despachado · ${d.code}`,
+    body: `
+      <form id="ship-form" onsubmit="confirmShip(event, '${docId}')">
+        <div class="form-grid form-grid-2">
+          <div class="field">
+            <label class="field-label">Fecha de despacho *</label>
+            <input class="input" type="date" name="shippedDate" value="${today}" required>
+            <div class="field-hint">Cuándo salió la mercancía de tu almacén</div>
+          </div>
+          <div class="field">
+            <label class="field-label">Transportista *</label>
+            <select class="select" name="carrierId" required>
+              <option value="">— Seleccionar —</option>
+              ${carriers.map(c => `<option value="${c.id}">${ui.escape(c.name)}${c.carrierType?` (${ui.escape(c.carrierType)})`:''}</option>`).join('')}
+            </select>
+          </div>
+          <div class="field" style="grid-column:1/-1;">
+            <label class="field-label">Número de guía / tracking</label>
+            <input class="input" name="trackingNumber" placeholder="Opcional" style="font-family:var(--font-mono);">
+          </div>
+          <div class="field" style="grid-column:1/-1;">
+            <label class="field-label">Notas</label>
+            <textarea class="textarea" name="notes" placeholder="Observaciones del despacho..."></textarea>
+          </div>
+        </div>
+      </form>
+    `,
+    footer: `
+      <button class="btn btn-secondary" onclick="ui.closeModal()">Cancelar</button>
+      <button class="btn btn-primary" onclick="document.getElementById('ship-form').requestSubmit()">${ui.icon('check')||'✓'} Confirmar despacho</button>
+    `
+  });
+}
+
+function confirmShip(e, docId) {
+  e.preventDefault();
+  const data = ui.formData(e.target);
+  if (!data.carrierId) { ui.toast('Seleccioná un transportista', 'error'); return; }
+  if (!data.shippedDate) { ui.toast('La fecha de despacho es obligatoria', 'error'); return; }
+  try {
+    sales.markShipped(docId, {
+      shippedDate: data.shippedDate,
+      carrierId: data.carrierId,
+      trackingNumber: data.trackingNumber,
+      notes: data.notes
+    });
+    ui.closeModal();
+    ui.toast('Pedido marcado como despachado', 'success');
+    render();
+  } catch (err) {
+    ui.toast(err.message, 'error');
+  }
+}
+
+/** Modal: marcar entregado */
+function openDeliveredModal(docId) {
+  const d = db.getById(db.COLLECTIONS.salesOrders, docId);
+  if (!d) return;
+  const today = new Date().toISOString().slice(0,10);
+
+  ui.openModal({
+    size: 'md',
+    title: `Marcar como entregado · ${d.code}`,
+    subtitle: 'A partir de la fecha de entrega arrancan los días de crédito',
+    body: `
+      <form id="deliver-form" onsubmit="confirmDelivered(event, '${docId}')">
+        <div class="form-grid form-grid-2">
+          <div class="field" style="grid-column:1/-1;">
+            <label class="field-label">Fecha de entrega *</label>
+            <input class="input" type="date" name="deliveredDate" value="${today}" min="${d.shippedDate||''}" required>
+            <div class="field-hint">Cuándo el cliente recibió la mercancía. Se usará para recalcular el vencimiento.</div>
+          </div>
+          <div class="field" style="grid-column:1/-1;">
+            <label class="field-label">Notas de la entrega</label>
+            <textarea class="textarea" name="notes" placeholder="Recibió: nombre y cédula, observaciones..."></textarea>
+          </div>
+        </div>
+      </form>
+    `,
+    footer: `
+      <button class="btn btn-secondary" onclick="ui.closeModal()">Cancelar</button>
+      <button class="btn btn-primary" onclick="document.getElementById('deliver-form').requestSubmit()">${ui.icon('check')||'✓'} Confirmar entrega</button>
+    `
+  });
+}
+
+function confirmDelivered(e, docId) {
+  e.preventDefault();
+  const data = ui.formData(e.target);
+  if (!data.deliveredDate) { ui.toast('La fecha es obligatoria', 'error'); return; }
+  try {
+    sales.markDelivered(docId, {
+      deliveredDate: data.deliveredDate,
+      notes: data.notes
+    });
+    ui.closeModal();
+    ui.toast('Pedido marcado como entregado. Vencimiento recalculado.', 'success');
+    render();
+  } catch (err) {
+    ui.toast(err.message, 'error');
+  }
+}
+
+/** Modal: editar datos del despacho/entrega */
+function openEditDeliveryModal(docId) {
+  const d = db.getById(db.COLLECTIONS.salesOrders, docId);
+  if (!d) return;
+  const carriers = db.getAll(db.COLLECTIONS.carriers).filter(c => c.active !== false).sort((a,b)=>(a.name||'').localeCompare(b.name||''));
+  const isDelivered = d.deliveryStatus === 'ENTREGADO';
+
+  ui.openModal({
+    size: 'md',
+    title: `Editar entrega · ${d.code}`,
+    body: `
+      <form id="edit-deliv-form" onsubmit="confirmEditDelivery(event, '${docId}')">
+        <div class="form-grid form-grid-2">
+          <div class="field">
+            <label class="field-label">Fecha de despacho</label>
+            <input class="input" type="date" name="shippedDate" value="${d.shippedDate||''}">
+          </div>
+          <div class="field">
+            <label class="field-label">Transportista</label>
+            <select class="select" name="carrierId">
+              <option value="">— Sin transportista —</option>
+              ${carriers.map(c => `<option value="${c.id}" ${c.id===d.carrierId?'selected':''}>${ui.escape(c.name)}${c.carrierType?` (${ui.escape(c.carrierType)})`:''}</option>`).join('')}
+            </select>
+          </div>
+          <div class="field" style="grid-column:1/-1;">
+            <label class="field-label">Número de guía / tracking</label>
+            <input class="input" name="trackingNumber" value="${ui.escape(d.trackingNumber||'')}" style="font-family:var(--font-mono);">
+          </div>
+          ${isDelivered ? `
+            <div class="field" style="grid-column:1/-1;">
+              <label class="field-label">Fecha de entrega</label>
+              <input class="input" type="date" name="deliveredDate" value="${d.deliveredDate||''}">
+              <div class="field-hint">Si la cambiás, se recalcula el vencimiento.</div>
+            </div>
+          ` : ''}
+          <div class="field" style="grid-column:1/-1;">
+            <label class="field-label">Notas</label>
+            <textarea class="textarea" name="notes">${ui.escape(d.deliveryNotes||'')}</textarea>
+          </div>
+        </div>
+      </form>
+    `,
+    footer: `
+      <button class="btn btn-secondary" onclick="ui.closeModal()">Cancelar</button>
+      <button class="btn btn-primary" onclick="document.getElementById('edit-deliv-form').requestSubmit()">${ui.icon('check')||'✓'} Guardar</button>
+    `
+  });
+}
+
+function confirmEditDelivery(e, docId) {
+  e.preventDefault();
+  const data = ui.formData(e.target);
+  try {
+    sales.editDelivery(docId, {
+      shippedDate: data.shippedDate,
+      deliveredDate: data.deliveredDate,
+      carrierId: data.carrierId || null,
+      trackingNumber: data.trackingNumber,
+      notes: data.notes
+    });
+    ui.closeModal();
+    ui.toast('Datos de entrega actualizados', 'success');
+    render();
+  } catch (err) {
+    ui.toast(err.message, 'error');
+  }
+}
+
+function confirmRevertDelivery(docId) {
+  ui.confirm(
+    'Esto borra los datos de despacho y entrega y vuelve el estado a "Pendiente". ¿Continuar?',
+    () => {
+      try {
+        sales.revertDelivery(docId);
+        ui.toast('Estado de entrega revertido', 'success');
+        render();
+      } catch (err) {
+        ui.toast(err.message, 'error');
+      }
+    },
+    { danger: true, confirmLabel: 'Revertir' }
+  );
+}
+
 function renderDetail() {
   const d = db.getById(db.COLLECTIONS.salesOrders, selectedId);
   if (!d) { backToList(); return; }
@@ -923,6 +1269,8 @@ function renderDetail() {
           <div><span class="kpi-label">Total en Bs (libro ventas)</span><div class="td-mono td-strong" style="font-size:18px;margin-top:2px;">${currency.format(d.totalVES, 'VES')}</div></div>
         </div>
       </div>` : ''}
+
+      ${renderDeliveryCard(d)}
 
       <div class="grid grid-2 mb-24">
         <div class="card">
@@ -1960,7 +2308,13 @@ ${d.invoiceNumber ? `
 <div class="totals-section">
   <div class="footer-info">
     <div class="row"><strong>Términos de pago:</strong> ${escapeHtml(d.paymentTerms||'—')}</div>
-    ${d.dueDate ? `<div class="row"><strong>Fecha de vencimiento:</strong> ${formatDate(d.dueDate)}</div>` : ''}
+    ${d.dueDate ? `<div class="row"><strong>Fecha de vencimiento:</strong> ${formatDate(d.dueDate)}${
+      d.deliveryStatus === 'ENTREGADO' && d.deliveredDate
+        ? ' <span style="font-size:8pt;color:#7a7a72;">(desde la entrega)</span>'
+        : d.deliveryStatus === 'DESPACHADO' && d.shippedDate
+          ? ' <span style="font-size:8pt;color:#7a7a72;">(provisional · se ajusta al entregar)</span>'
+          : ''
+    }</div>` : ''}
     ${d.notes ? `<div class="row" style="margin-top:12px;"><strong>Observaciones:</strong><br>${escapeHtml(d.notes)}</div>` : ''}
     ${d.currency !== 'VES' ? `<div class="currency-note"><strong>Moneda de la factura:</strong> ${d.currency} · Tasa de referencia: ${d.rateValue?.toFixed(4)} Bs/${d.currency} · Total en bolívares: <strong>${formatMoney(d.totalVES, 'VES')}</strong></div>` : ''}
   </div>
@@ -1972,6 +2326,19 @@ ${d.invoiceNumber ? `
     <div class="totals-row grand"><span>TOTAL</span><span class="num">${formatMoney(d.total, d.currency)}</span></div>
   </div>
 </div>
+
+${(d.deliveryStatus === 'DESPACHADO' || d.deliveryStatus === 'ENTREGADO') ? `
+<div style="margin-top:24px;padding:14px 16px;background:#f4f3ef;border:1px solid #d8d4c5;border-radius:6px;page-break-inside:avoid;">
+  <div style="font-size:10pt;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:#4a4a45;margin-bottom:10px;">Información de despacho y entrega</div>
+  <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:8px 24px;font-size:9.5pt;color:#3a3a35;">
+    ${d.shippedDate ? `<div><strong>Fecha de despacho:</strong> ${formatDate(d.shippedDate)}</div>` : ''}
+    ${d.carrierName ? `<div><strong>Transportista:</strong> ${escapeHtml(d.carrierName)}${d.carrierType ? ` (${escapeHtml(d.carrierType)})` : ''}</div>` : ''}
+    ${d.trackingNumber ? `<div><strong>Guía / Tracking:</strong> <span style="font-family:'Courier New',monospace;">${escapeHtml(d.trackingNumber)}</span></div>` : ''}
+    ${d.deliveredDate ? `<div><strong>Fecha de entrega:</strong> ${formatDate(d.deliveredDate)}</div>` : ''}
+  </div>
+  ${d.deliveryNotes ? `<div style="margin-top:10px;font-size:9pt;color:#5a5a55;border-top:1px dashed #d8d4c5;padding-top:8px;white-space:pre-wrap;"><strong>Notas:</strong> ${escapeHtml(d.deliveryNotes)}</div>` : ''}
+</div>
+` : ''}
 
 ${d.type === 'FACTURA' && isFiscal ? `
 <div style="margin-top:32px;padding:12px 16px;background:#f4f3ef;border-radius:6px;font-size:9pt;color:#4a4a45;">
@@ -2034,6 +2401,7 @@ Object.assign(window, {
   renderCuentasPorCobrar: typeof renderCuentasPorCobrar !== 'undefined' ? renderCuentasPorCobrar : undefined,
   onSearch: typeof onSearch !== 'undefined' ? onSearch : undefined,
   onTypeFilter: typeof onTypeFilter !== 'undefined' ? onTypeFilter : undefined,
+  onDeliveryFilter: typeof onDeliveryFilter !== 'undefined' ? onDeliveryFilter : undefined,
   newDoc: typeof newDoc !== 'undefined' ? newDoc : undefined,
   renderCreate: typeof renderCreate !== 'undefined' ? renderCreate : undefined,
   renderVenSummary: typeof renderVenSummary !== 'undefined' ? renderVenSummary : undefined,
@@ -2054,6 +2422,15 @@ Object.assign(window, {
   backToList: typeof backToList !== 'undefined' ? backToList : undefined,
   renderDetail: typeof renderDetail !== 'undefined' ? renderDetail : undefined,
   convertTo: typeof convertTo !== 'undefined' ? convertTo : undefined,
+  // Estado de entrega
+  renderDeliveryCard: typeof renderDeliveryCard !== 'undefined' ? renderDeliveryCard : undefined,
+  openShipModal: typeof openShipModal !== 'undefined' ? openShipModal : undefined,
+  confirmShip: typeof confirmShip !== 'undefined' ? confirmShip : undefined,
+  openDeliveredModal: typeof openDeliveredModal !== 'undefined' ? openDeliveredModal : undefined,
+  confirmDelivered: typeof confirmDelivered !== 'undefined' ? confirmDelivered : undefined,
+  openEditDeliveryModal: typeof openEditDeliveryModal !== 'undefined' ? openEditDeliveryModal : undefined,
+  confirmEditDelivery: typeof confirmEditDelivery !== 'undefined' ? confirmEditDelivery : undefined,
+  confirmRevertDelivery: typeof confirmRevertDelivery !== 'undefined' ? confirmRevertDelivery : undefined,
   cancelDoc: typeof cancelDoc !== 'undefined' ? cancelDoc : undefined,
   confirmCancel: typeof confirmCancel !== 'undefined' ? confirmCancel : undefined,
   // Notas de Crédito
