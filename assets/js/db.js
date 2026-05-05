@@ -51,6 +51,7 @@ const COLLECTIONS = {
   bankAccounts: 'bankAccounts',
   payments: 'payments',
   bankMoves: 'bankMoves',
+  carriers: 'carriers',                              // transportistas para entregas
   notificationTemplates: 'notificationTemplates',
   notificationLog: 'notificationLog',
   auditLog: 'auditLog'

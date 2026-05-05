@@ -7,7 +7,7 @@
 
 const ROLES = {
   admin:       { label: 'Administrador',     modules: '*' },
-  gerente:     { label: 'Gerente',           modules: ['dashboard','tasas-cambio','configuracion','proveedores','clientes','almacenes','materias-primas','formulas','produccion','calidad','producto-terminado','almacen','trazabilidad','compras','cuentas-bancarias','metodos-pago','pagos','ventas','comisiones','reportes','notificaciones','importar'] },
+  gerente:     { label: 'Gerente',           modules: ['dashboard','tasas-cambio','configuracion','proveedores','clientes','almacenes','materias-primas','formulas','produccion','calidad','producto-terminado','almacen','trazabilidad','compras','cuentas-bancarias','metodos-pago','transportistas','pagos','ventas','comisiones','reportes','notificaciones','importar'] },
   contador:    { label: 'Contador',          modules: ['dashboard','reportes','compras','ventas','pagos','cuentas-bancarias','tasas-cambio'] },
   ventas:      { label: 'Ventas',            modules: ['dashboard','clientes','ventas','pagos','notificaciones'] },
   compras:     { label: 'Compras',           modules: ['dashboard','proveedores','compras','pagos','notificaciones'] },
@@ -19,7 +19,7 @@ const ROLES = {
 // PERMISSIONS: estructura inversa { moduleName: [roles que tienen acceso] }
 // Compatibilidad con código que la usa así
 const PERMISSIONS = (() => {
-  const ALL_MODULES = ['dashboard','tasas-cambio','configuracion','proveedores','clientes','usuarios','almacenes','materias-primas','formulas','produccion','calidad','producto-terminado','almacen','trazabilidad','compras','cuentas-bancarias','metodos-pago','pagos','ventas','comisiones','reportes','notificaciones','importar'];
+  const ALL_MODULES = ['dashboard','tasas-cambio','configuracion','proveedores','clientes','usuarios','almacenes','materias-primas','formulas','produccion','calidad','producto-terminado','almacen','trazabilidad','compras','cuentas-bancarias','metodos-pago','transportistas','pagos','ventas','comisiones','reportes','notificaciones','importar'];
   const out = {};
   ALL_MODULES.forEach(m => {
     out[m] = [];

@@ -387,6 +387,22 @@ const sales = {
       // Vendedor asignado (para comisiones)
       salespersonId: salespersonId || null,
       salespersonName: salespersonName || '',
+      // Estado de entrega / logística
+      // PENDIENTE: aún no se despachó · DESPACHADO: salió del almacén · ENTREGADO: recibido por el cliente
+      // NO_APLICA: para cotizaciones (no se entrega mercancía)
+      deliveryStatus: docType === 'COTIZACION' ? 'NO_APLICA' : 'PENDIENTE',
+      shippedAt: null,                // ISO datetime al marcar despachado
+      shippedDate: null,              // YYYY-MM-DD (para mostrar/calcular)
+      deliveredAt: null,              // ISO datetime al marcar entregado
+      deliveredDate: null,            // YYYY-MM-DD
+      carrierId: null,
+      carrierName: null,
+      carrierType: null,
+      trackingNumber: null,
+      deliveryNotes: null,
+      // Si dueDate fue puesto manualmente por el usuario, no recalcular automáticamente
+      // al avanzar el estado de entrega. Por defecto sí recalcula.
+      dueDateAuto: true,
       // Cancelación
       cancelled: false,
       cancellationReason: null,
@@ -411,6 +427,166 @@ const sales = {
     }
 
     return db.getById(db.COLLECTIONS.salesOrders, saved.id);
+  },
+
+  // ====== ENTREGA / LOGÍSTICA ======
+
+  /**
+   * Helper local para sumar días a una fecha YYYY-MM-DD.
+   * Usa parsing local para evitar corrimientos por TZ.
+   */
+  _addDaysToDateStr(dateStr, days) {
+    if (!dateStr) return '';
+    const [y, m, d] = dateStr.split('-').map(n => parseInt(n, 10));
+    const dt = new Date(y, (m||1) - 1, d||1);
+    dt.setDate(dt.getDate() + (parseInt(days, 10) || 0));
+    const yy = dt.getFullYear();
+    const mm = String(dt.getMonth() + 1).padStart(2, '0');
+    const dd = String(dt.getDate()).padStart(2, '0');
+    return `${yy}-${mm}-${dd}`;
+  },
+
+  /** Extrae los días de un string de términos de pago. "30 días" → 30, "Contado" → 0. */
+  _parsePaymentTermsDays(terms) {
+    if (!terms) return 0;
+    if (typeof terms === 'number') return terms;
+    const s = String(terms).trim().toLowerCase();
+    if (s === 'contado' || s === '') return 0;
+    const m = s.match(/(\d+)/);
+    return m ? parseInt(m[1], 10) : 0;
+  },
+
+  /**
+   * Recalcula el dueDate del documento según la regla de negocio:
+   *   fecha_base = deliveredDate || shippedDate || issueDate
+   *   dueDate = fecha_base + días_de_crédito
+   *
+   * Casos donde NO recalcula (preserva el dueDate actual):
+   *   - El usuario lo editó manualmente (dueDateAuto = false)
+   *   - El doc está pago al contado (paymentTerms = "Contado") porque no aplica
+   *   - El doc ya está totalmente pagado (cobrado) — proteger casos contado-anticipado
+   */
+  _recalcDueDate(doc) {
+    if (!doc) return;
+    if (doc.dueDateAuto === false) return; // usuario lo cambió manualmente
+    const days = this._parsePaymentTermsDays(doc.paymentTerms);
+    if (days === 0) return; // contado: no aplica vencimiento
+    // Si ya está totalmente pagado, no movemos la fecha
+    if ((doc.paidAmount || 0) > 0 && (doc.total - (doc.paidAmount || 0)) < 0.01) return;
+    const base = doc.deliveredDate || doc.shippedDate || doc.issueDate;
+    if (!base) return;
+    doc.dueDate = this._addDaysToDateStr(base, days);
+  },
+
+  /**
+   * Marca un pedido/factura/NE como despachado.
+   * @param {string} docId
+   * @param {object} data - { shippedDate, carrierId, trackingNumber, notes }
+   */
+  markShipped(docId, data = {}) {
+    const doc = db.getById(db.COLLECTIONS.salesOrders, docId);
+    if (!doc) throw new Error('Documento no encontrado');
+    if (doc.cancelled) throw new Error('Documento anulado');
+    if (doc.type === 'COTIZACION') throw new Error('Las cotizaciones no se despachan');
+
+    // Datos del transportista (snapshot)
+    let carrierName = data.carrierName || '';
+    let carrierType = data.carrierType || '';
+    if (data.carrierId) {
+      const c = db.getById(db.COLLECTIONS.carriers, data.carrierId);
+      if (c) {
+        carrierName = c.name;
+        carrierType = c.carrierType || '';
+      }
+    }
+
+    doc.deliveryStatus = 'DESPACHADO';
+    doc.shippedDate = data.shippedDate || new Date().toISOString().slice(0, 10);
+    doc.shippedAt = new Date().toISOString();
+    doc.carrierId = data.carrierId || null;
+    doc.carrierName = carrierName || null;
+    doc.carrierType = carrierType || null;
+    doc.trackingNumber = (data.trackingNumber || '').trim() || null;
+    doc.deliveryNotes = (data.notes || '').trim() || null;
+
+    this._recalcDueDate(doc);
+    return db.save(db.COLLECTIONS.salesOrders, doc);
+  },
+
+  /**
+   * Marca un pedido como entregado al cliente. Recalcula vencimiento.
+   * @param {string} docId
+   * @param {object} data - { deliveredDate, notes }
+   */
+  markDelivered(docId, data = {}) {
+    const doc = db.getById(db.COLLECTIONS.salesOrders, docId);
+    if (!doc) throw new Error('Documento no encontrado');
+    if (doc.cancelled) throw new Error('Documento anulado');
+    if (doc.type === 'COTIZACION') throw new Error('Las cotizaciones no se entregan');
+
+    doc.deliveryStatus = 'ENTREGADO';
+    doc.deliveredDate = data.deliveredDate || new Date().toISOString().slice(0, 10);
+    doc.deliveredAt = new Date().toISOString();
+    if (data.notes) {
+      doc.deliveryNotes = doc.deliveryNotes
+        ? `${doc.deliveryNotes}\n[Entrega] ${data.notes}`
+        : data.notes;
+    }
+
+    this._recalcDueDate(doc);
+    return db.save(db.COLLECTIONS.salesOrders, doc);
+  },
+
+  /**
+   * Revierte el estado de entrega a PENDIENTE (limpia todo).
+   * Útil si se marcó por error.
+   */
+  revertDelivery(docId) {
+    const doc = db.getById(db.COLLECTIONS.salesOrders, docId);
+    if (!doc) throw new Error('Documento no encontrado');
+    doc.deliveryStatus = 'PENDIENTE';
+    doc.shippedDate = null;
+    doc.shippedAt = null;
+    doc.deliveredDate = null;
+    doc.deliveredAt = null;
+    doc.carrierId = null;
+    doc.carrierName = null;
+    doc.carrierType = null;
+    doc.trackingNumber = null;
+    // Re-calcular dueDate desde issueDate
+    this._recalcDueDate(doc);
+    return db.save(db.COLLECTIONS.salesOrders, doc);
+  },
+
+  /**
+   * Edita los datos de un despacho ya hecho (transportista, guía, notas, fechas).
+   * No cambia el estado.
+   */
+  editDelivery(docId, data = {}) {
+    const doc = db.getById(db.COLLECTIONS.salesOrders, docId);
+    if (!doc) throw new Error('Documento no encontrado');
+    if (doc.deliveryStatus === 'PENDIENTE') throw new Error('No hay despacho que editar');
+
+    if (data.shippedDate != null) doc.shippedDate = data.shippedDate || null;
+    if (data.deliveredDate != null) doc.deliveredDate = data.deliveredDate || null;
+    if (data.carrierId !== undefined) {
+      doc.carrierId = data.carrierId || null;
+      if (data.carrierId) {
+        const c = db.getById(db.COLLECTIONS.carriers, data.carrierId);
+        if (c) {
+          doc.carrierName = c.name;
+          doc.carrierType = c.carrierType || null;
+        }
+      } else {
+        doc.carrierName = null;
+        doc.carrierType = null;
+      }
+    }
+    if (data.trackingNumber !== undefined) doc.trackingNumber = (data.trackingNumber || '').trim() || null;
+    if (data.notes !== undefined) doc.deliveryNotes = (data.notes || '').trim() || null;
+
+    this._recalcDueDate(doc);
+    return db.save(db.COLLECTIONS.salesOrders, doc);
   },
 
   /**
