@@ -36,14 +36,35 @@ const sales = {
   checkStockAvailability(items) {
     const warnings = [];
     items.forEach((it, idx) => {
-      if (!it.formulaId) return; // ítem libre sin fórmula → no controlamos stock
+      const qty = parseFloat(it.quantity) || 0;
+
+      // Caso 1: ítem con lote específico (sin fórmula o lote forzado) → validar contra ese lote
+      if (it.fgLotId) {
+        const lot = db.getById(db.COLLECTIONS.finishedGoods, it.fgLotId);
+        const totalAvailable = (lot && lot.status === 'LIBERADO') ? (lot.balance || 0) : 0;
+        if (qty > totalAvailable) {
+          warnings.push({
+            itemIdx: idx,
+            formulaId: it.formulaId || null,
+            formulaName: it.formulaName || it.description || (lot ? lot.code : ''),
+            requested: qty,
+            available: totalAvailable,
+            missing: qty - totalAvailable
+          });
+        }
+        return;
+      }
+
+      // Caso 2: ítem libre sin fórmula y sin lote → no controlamos stock
+      if (!it.formulaId) return;
+
+      // Caso 3: ítem con fórmula → sumar todos los lotes liberados de la fórmula
       const lots = db.query(db.COLLECTIONS.finishedGoods, l =>
         l.formulaId === it.formulaId &&
         l.status === 'LIBERADO' &&
         l.balance > 0
       );
       const totalAvailable = lots.reduce((s, l) => s + (l.balance || 0), 0);
-      const qty = parseFloat(it.quantity) || 0;
       if (qty > totalAvailable) {
         warnings.push({
           itemIdx: idx,
