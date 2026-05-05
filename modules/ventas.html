@@ -29,6 +29,7 @@ let selectedId = null;
 let creating = null;
 let assigning = null;
 let typeFilter = '';
+let deliveryFilter = ''; // '' | 'PENDIENTE' | 'DESPACHADO' | 'ENTREGADO'
 let searchTerm = '';
 
 // Aplicar filtro inicial desde URL (?filter=PEDIDO viene del dashboard)
@@ -72,6 +73,14 @@ function renderList() {
 
   const all = docs;
   if (typeFilter) docs = docs.filter(d => d.type === typeFilter || d.status === typeFilter);
+  if (deliveryFilter) {
+    docs = docs.filter(d => {
+      // Excluir cotizaciones del filtro de entrega
+      if (d.type === 'COTIZACION') return false;
+      const status = d.deliveryStatus || 'PENDIENTE';
+      return status === deliveryFilter;
+    });
+  }
   if (searchTerm) {
     const q = searchTerm.toLowerCase();
     docs = docs.filter(d => (d.code||'').toLowerCase().includes(q) || (d.invoiceNumber||'').toLowerCase().includes(q) || (d.customerName||'').toLowerCase().includes(q));
@@ -111,6 +120,7 @@ function renderList() {
       <th style="text-align:right;">Total ${isGerencial ? 'USD' : 'Bs'}</th>
       ${isGerencial ? `<th style="text-align:right;">Total Bs</th>` : ''}
       <th>Tipo</th>
+      <th>Entrega</th>
       <th>Estado</th>
       <th style="text-align:right;width:100px;">Acciones</th>
     </tr></thead>
@@ -146,6 +156,15 @@ function renderList() {
         </td>
         ${isGerencial ? `<td style="text-align:right;"><span class="td-mono text-muted" style="font-size:12px;">${currency.format(vesValue, 'VES')}</span></td>` : ''}
         <td><span class="badge ${tBadge}">${d.type}</span></td>
+        <td>${(() => {
+          if (d.type === 'COTIZACION') return '<span class="text-muted" style="font-size:11px;">N/A</span>';
+          const ds = d.deliveryStatus || (d.cancelled ? null : null);
+          if (!ds) return '<span class="td-muted">—</span>';
+          if (ds === 'PENDIENTE')  return '<span class="badge badge-warning" style="font-size:10px;">📦 Pendiente</span>';
+          if (ds === 'DESPACHADO') return '<span class="badge badge-accent" style="font-size:10px;">🚚 Despachado</span>';
+          if (ds === 'ENTREGADO')  return '<span class="badge badge-success" style="font-size:10px;">✅ Entregado</span>';
+          return '<span class="td-muted">—</span>';
+        })()}</td>
         <td>${d.cancelled ? '<span class="badge badge-cancelled">Anulada</span>' : `<span class="badge ${sBadge}">${sales.STATUS[d.status]?.label || d.status}</span>`}</td>
         <td class="td-actions" onclick="event.stopPropagation()">
           <button class="btn-icon" onclick="openDetail('${d.id}')">${ui.icon('edit')}</button>
@@ -162,10 +181,6 @@ function renderList() {
         <div class="action-bar-left">
           <h2 class="action-bar-title">Ventas</h2>
           <span class="action-bar-count">${all.length} documentos · ${counts.pedidos} pedidos · ${counts.cotizaciones} cotizaciones · ${counts.facturas} facturas</span>
-        </div>
-        <div class="action-bar-right" style="display:flex;gap:8px;">
-          <button class="btn btn-secondary" onclick="newDoc('NOTA_ENTREGA')" title="Sin IVA, no entra en libros fiscales">${ui.icon('file')} Nueva Nota de Entrega</button>
-          <button class="btn btn-primary" onclick="newDoc('PEDIDO')">${ui.icon('plus')} Nuevo Pedido</button>
         </div>
       </div>
 
@@ -194,12 +209,23 @@ function renderList() {
             <option value="PARTIAL" ${typeFilter==='PARTIAL'?'selected':''}>Pago parcial</option>
             <option value="CANCELLED" ${typeFilter==='CANCELLED'?'selected':''}>Anuladas</option>
           </select>
+          <select class="select" style="max-width:190px;" onchange="onDeliveryFilter(this.value)">
+            <option value="">Todas las entregas</option>
+            <option value="PENDIENTE" ${deliveryFilter==='PENDIENTE'?'selected':''}>📦 Pendientes de despacho</option>
+            <option value="DESPACHADO" ${deliveryFilter==='DESPACHADO'?'selected':''}>🚚 Despachadas (sin entregar)</option>
+            <option value="ENTREGADO" ${deliveryFilter==='ENTREGADO'?'selected':''}>✅ Entregadas</option>
+          </select>
         </div>
         ${tableHtml}
       </div>
 
       <!-- Cuadro: Cuentas por cobrar -->
       ${renderCuentasPorCobrar(all)}
+
+      <div style="display:flex;justify-content:flex-end;gap:8px;padding:24px 0;border-top:1px solid var(--border);margin-top:24px;">
+        <button class="btn btn-secondary" onclick="newDoc('NOTA_ENTREGA')" title="Sin IVA, no entra en libros fiscales">${ui.icon('file')} Nueva Nota de Entrega</button>
+        <button class="btn btn-primary" onclick="newDoc('PEDIDO')">${ui.icon('plus')} Nuevo Pedido</button>
+      </div>
     `
   });
 }
@@ -289,40 +315,10 @@ function renderCuentasPorCobrar(allDocs) {
   </div>`;
 }
 
-
-// Helper local: preserva el foco del input activo a través de un render
-function _preserveFocusRender() {
-  const active = document.activeElement;
-  let snapshot = null;
-  if (active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA' || active.tagName === 'SELECT')) {
-    snapshot = {
-      id: active.id || null,
-      name: active.name || null,
-      tagName: active.tagName,
-      selectionStart: active.selectionStart,
-      selectionEnd: active.selectionEnd
-    };
-  }
-  render();
-  if (!snapshot) return;
-  let target = null;
-  if (snapshot.id) target = document.getElementById(snapshot.id);
-  if (!target && snapshot.name) {
-    target = document.querySelector(snapshot.tagName.toLowerCase() + '[name="' + snapshot.name + '"]');
-  }
-  if (target) {
-    target.focus();
-    try {
-      if (snapshot.selectionStart != null && target.setSelectionRange) {
-        target.setSelectionRange(snapshot.selectionStart, snapshot.selectionEnd);
-      }
-    } catch(e) {}
-  }
-}
-
-const _doSearchRender = ui.debounce(() => _preserveFocusRender(), 250);
+const _doSearchRender = ui.debounce(() => ui.preserveFocus(() => render()), 250);
 function onSearch(v) { searchTerm = v; _doSearchRender(); }
 function onTypeFilter(v) { typeFilter = v; render(); }
+function onDeliveryFilter(v) { deliveryFilter = v; render(); }
 
 // ====== CREAR ======
 
@@ -343,22 +339,23 @@ function newDoc(initialType) {
   const me = auth.currentUser();
   const meUser = me ? db.query(db.COLLECTIONS.users, u => u.email === me.email)[0] : null;
   const autoVendor = (meUser && meUser.commissionEnabled) ? meUser : null;
+  const issueDate = new Date().toISOString().slice(0,10);
+  const defaultTerms = cfg.invoicePaymentTermsDefault || 'Contado';
+  const defaultDays = parsePaymentTermsDays(defaultTerms);
   creating = {
     type: docType,
     code: db.nextCode(db.COLLECTIONS.salesOrders, codePrefix),
-    customerId: '', customerName: '',
+    customerId: '', customerName: '', customerAddress: '',
     currency: 'VES',
     rateType: cfg.defaultRateType || 'BCV_USD',
-    issueDate: new Date().toISOString().slice(0,10),
-    dueDate: '',
-    paymentTerms: cfg.invoicePaymentTermsDefault || 'Contado',
+    issueDate: issueDate,
+    dueDate: defaultDays > 0 ? addDaysToDateStr(issueDate, defaultDays) : '',
+    paymentTerms: defaultTerms,
     items: [],
     notes: '',
     salespersonId: autoVendor ? autoVendor.id : '',
     salespersonName: autoVendor ? (autoVendor.fullName || autoVendor.username) : ''
   };
-  // Calcular fecha de vencimiento inicial basada en los términos por defecto
-  recalcDueDate();
   view = 'create'; render();
 }
 
@@ -403,7 +400,7 @@ function renderCreate() {
               <optgroup label="Fórmulas">
                 ${formulas.map(f => `<option value="formula:${f.id}" ${`formula:${f.id}`===(it._productKey||(it.formulaId?'formula:'+it.formulaId:''))?'selected':''}>${ui.escape(f.code)} · ${ui.escape(f.name)}</option>`).join('')}
               </optgroup>
-              ${lotsWithoutFormula.length ? `<optgroup label="Lotes sin fórmula (carga inicial)">
+              ${lotsWithoutFormula.length ? `<optgroup label="Productos sin fabricación (compra/regalo/accesorios)">
                 ${lotsWithoutFormula.map(l => `<option value="lot:${l.id}" ${`lot:${l.id}`===(it._productKey||(it.fgLotId?'lot:'+it.fgLotId:''))?'selected':''}>${ui.escape(l.code)} · ${ui.escape(l.productName||l.formulaName)} (${l.balance} ${l.unit})</option>`).join('')}
               </optgroup>` : ''}
             </select>
@@ -452,24 +449,19 @@ function renderCreate() {
             <option value="">— Selecciona —</option>
             ${customers.map(cu => `<option value="${cu.id}" ${cu.id===c.customerId?'selected':''}>${ui.escape(cu.name)} · ${ui.escape(cu.rif||'')}</option>`).join('')}
           </select></div>
-          <div class="field"><label class="field-label">Fecha emisión</label><input class="input" type="date" value="${c.issueDate}" onchange="onIssueDateChange(this.value)"></div>
-          <div class="field"><label class="field-label">Términos de pago</label>
-            <div style="display:flex;gap:6px;">
-              <input class="input" type="number" min="0" max="365" step="1" placeholder="Días" value="${getPaymentDays(c.paymentTerms)}" oninput="onPaymentDaysChange(this.value)" style="width:90px;text-align:right;font-family:var(--font-mono);">
-              <select class="select" onchange="onPaymentTermsPreset(this.value)" style="flex:1;">
-                <option value="">Personalizado</option>
-                <option value="0" ${c.paymentTerms==='Contado'?'selected':''}>Contado (0 días)</option>
-                <option value="7" ${c.paymentTerms==='7 días'?'selected':''}>7 días</option>
-                <option value="15" ${c.paymentTerms==='15 días'?'selected':''}>15 días</option>
-                <option value="30" ${c.paymentTerms==='30 días'?'selected':''}>30 días</option>
-                <option value="45" ${c.paymentTerms==='45 días'?'selected':''}>45 días</option>
-                <option value="60" ${c.paymentTerms==='60 días'?'selected':''}>60 días</option>
-                <option value="90" ${c.paymentTerms==='90 días'?'selected':''}>90 días</option>
-              </select>
-            </div>
-            <div class="field-hint" style="font-size:11px;color:var(--ink-3);margin-top:4px;">Escribe los días que quieras o elige un preset. La fecha de vencimiento se calcula automáticamente.</div>
+          <div class="field" style="grid-column:1/-1;"><label class="field-label">Dirección</label>
+            <input class="input" value="${ui.escape(c.customerAddress||'')}" placeholder="${c.customerId ? 'Sin dirección registrada — podés escribirla acá' : 'Selecciona un cliente para autocompletar'}" oninput="creating.customerAddress=this.value">
+            <div class="field-hint">Se autocompleta al elegir el cliente. Podés editarla solo para este pedido sin afectar la ficha del cliente.</div>
           </div>
-          <div class="field"><label class="field-label">Vencimiento</label><input class="input" type="date" value="${c.dueDate||''}" onchange="creating.dueDate=this.value"><div class="field-hint" style="font-size:11px;color:var(--ink-3);margin-top:4px;">Se calcula automáticamente. Puedes editarla manualmente.</div></div>
+          <div class="field"><label class="field-label">Fecha emisión</label><input class="input" type="date" value="${c.issueDate}" onchange="onIssueDateChange(this.value)"></div>
+          <div class="field"><label class="field-label">Vencimiento</label><input id="ven-due-date" class="input" type="date" value="${c.dueDate||''}" onchange="onDueDateChange(this.value)"></div>
+          <div class="field"><label class="field-label">Términos de pago (días)</label>
+            <div style="display:flex;gap:8px;align-items:center;">
+              <input id="ven-terms-days" class="input" type="number" min="0" step="1" value="${parsePaymentTermsDays(c.paymentTerms)}" placeholder="0 = Contado" style="flex:1;font-family:var(--font-mono);text-align:right;" oninput="onPaymentTermsDaysChange(this.value)">
+              <span style="color:var(--ink-3);font-size:12px;white-space:nowrap;">días</span>
+            </div>
+            <div style="font-size:11px;color:var(--ink-3);margin-top:4px;">Actual: <strong id="ven-terms-label">${ui.escape(c.paymentTerms||'Contado')}</strong> · El vencimiento se recalcula automáticamente</div>
+          </div>
           <div class="field"><label class="field-label">Moneda</label><select class="select" onchange="creating.currency=this.value;render()">
             <option value="VES" ${c.currency==='VES'?'selected':''}>Bolívares (VES)</option>
             <option value="USD" ${c.currency==='USD'?'selected':''}>Dólares (USD)</option>
@@ -539,71 +531,92 @@ function onCustomerChange(cid) {
   const cu = db.getById(db.COLLECTIONS.customers, cid);
   if (cu) {
     creating.customerName = cu.name;
+    creating.customerAddress = cu.address || '';
     if (cu.preferredCurrency) creating.currency = cu.preferredCurrency;
     if (cu.paymentTerms) {
       creating.paymentTerms = cu.paymentTerms;
-      recalcDueDate();
+      // Recalcular vencimiento según los días que vengan del cliente
+      const days = parsePaymentTermsDays(cu.paymentTerms);
+      creating.dueDate = addDaysToDateStr(creating.issueDate, days);
     }
+  } else {
+    creating.customerAddress = '';
   }
   render();
 }
 
-/** Extrae el número de días de un string de paymentTerms. Devuelve número o '' si no aplica. */
-function getPaymentDays(terms) {
-  if (!terms) return '';
-  if (terms === 'Contado' || terms === 'contado') return 0;
-  const m = String(terms).match(/(\d+)/);
-  return m ? parseInt(m[1], 10) : '';
+/**
+ * Extrae los días de un string de términos de pago.
+ * "30 días" → 30, "Contado" → 0, "" → 0, "15" → 15
+ */
+function parsePaymentTermsDays(terms) {
+  if (!terms) return 0;
+  if (typeof terms === 'number') return terms;
+  const s = String(terms).trim().toLowerCase();
+  if (s === 'contado' || s === '') return 0;
+  const m = s.match(/(\d+)/);
+  return m ? parseInt(m[1], 10) : 0;
 }
 
-/** Recalcula creating.dueDate basado en issueDate + días de paymentTerms */
-function recalcDueDate() {
-  const days = getPaymentDays(creating.paymentTerms);
-  if (days === '' || !creating.issueDate) return;
-  const d = new Date(creating.issueDate);
-  if (isNaN(d.getTime())) return;
-  d.setDate(d.getDate() + Number(days));
-  creating.dueDate = d.toISOString().slice(0, 10);
+/**
+ * Suma días a una fecha en formato 'YYYY-MM-DD' y devuelve string en el mismo formato.
+ * Usa parsing local para evitar corrimientos de zona horaria.
+ */
+function addDaysToDateStr(dateStr, days) {
+  if (!dateStr) return '';
+  const [y, m, d] = dateStr.split('-').map(n => parseInt(n, 10));
+  const dt = new Date(y, (m||1) - 1, d||1);
+  dt.setDate(dt.getDate() + (parseInt(days, 10) || 0));
+  const yy = dt.getFullYear();
+  const mm = String(dt.getMonth() + 1).padStart(2, '0');
+  const dd = String(dt.getDate()).padStart(2, '0');
+  return `${yy}-${mm}-${dd}`;
 }
 
-/** Cambio de la fecha de emisión: actualiza y recalcula el vencimiento */
+/**
+ * Calcula la diferencia en días entre dos fechas 'YYYY-MM-DD' (b - a).
+ */
+function daysBetweenDateStr(a, b) {
+  if (!a || !b) return 0;
+  const [ya, ma, da] = a.split('-').map(n => parseInt(n, 10));
+  const [yb, mb, db_] = b.split('-').map(n => parseInt(n, 10));
+  const dA = new Date(ya, (ma||1) - 1, da||1);
+  const dB = new Date(yb, (mb||1) - 1, db_||1);
+  const ms = dB.getTime() - dA.getTime();
+  return Math.round(ms / (1000 * 60 * 60 * 24));
+}
+
+/** El usuario escribe la cantidad de días → recalcula vencimiento y paymentTerms */
+function onPaymentTermsDaysChange(val) {
+  const days = Math.max(0, parseInt(val, 10) || 0);
+  creating.paymentTerms = days === 0 ? 'Contado' : `${days} días`;
+  creating.dueDate = days === 0 ? '' : addDaysToDateStr(creating.issueDate, days);
+  // Update parcial sin re-render (para no perder el foco mientras se escribe)
+  const dueEl = document.getElementById('ven-due-date');
+  if (dueEl) dueEl.value = creating.dueDate || '';
+  const labelEl = document.getElementById('ven-terms-label');
+  if (labelEl) labelEl.textContent = creating.paymentTerms || 'Contado';
+}
+
+/** El usuario cambia la fecha de emisión → recalcula vencimiento manteniendo los días */
 function onIssueDateChange(val) {
   creating.issueDate = val;
-  recalcDueDate();
+  const days = parsePaymentTermsDays(creating.paymentTerms);
+  if (days > 0) {
+    creating.dueDate = addDaysToDateStr(val, days);
+  }
   render();
 }
 
-/** El usuario escribió un número de días libre */
-function onPaymentDaysChange(val) {
-  const n = parseInt(val, 10);
-  if (isNaN(n) || n < 0) {
-    creating.paymentTerms = '';
-  } else if (n === 0) {
+/** El usuario cambia el vencimiento manualmente → recalcula los días y paymentTerms */
+function onDueDateChange(val) {
+  creating.dueDate = val;
+  if (!val) {
     creating.paymentTerms = 'Contado';
   } else {
-    creating.paymentTerms = `${n} días`;
+    const days = Math.max(0, daysBetweenDateStr(creating.issueDate, val));
+    creating.paymentTerms = days === 0 ? 'Contado' : `${days} días`;
   }
-  recalcDueDate();
-  // Sin render() para no perder el foco del input mientras escribe
-  // Solo actualizar el campo de fecha
-  const dateInput = document.querySelector('input[type="date"][value="' + (creating.dueDate||'') + '"]');
-  // Más simple: forzar update del input de vencimiento por placeholder inteligente
-  const allDateInputs = document.querySelectorAll('input[type="date"]');
-  allDateInputs.forEach(inp => {
-    // El segundo date input del modal es el vencimiento
-    if (inp.getAttribute('onchange') && inp.getAttribute('onchange').includes('dueDate')) {
-      inp.value = creating.dueDate || '';
-    }
-  });
-}
-
-/** El usuario eligió un preset del dropdown */
-function onPaymentTermsPreset(val) {
-  if (val === '') return; // "Personalizado", no hacer nada
-  const days = parseInt(val, 10);
-  if (days === 0) creating.paymentTerms = 'Contado';
-  else creating.paymentTerms = `${days} días`;
-  recalcDueDate();
   render();
 }
 
@@ -744,7 +757,7 @@ function saveDoc() {
   if (!c.customerId) { ui.toast('Selecciona un cliente', 'error'); return; }
   if (!c.items.length) { ui.toast('Agrega al menos un ítem', 'error'); return; }
   for (const it of c.items) {
-    // Aceptar item con fórmula O con lote PT directo (sin fórmula)
+    // Acepta items con fórmula tradicional O con lote sin fórmula (carga inicial vía ingreso)
     if (!it.formulaId && !it.fgLotId) { ui.toast('Cada ítem debe tener producto seleccionado', 'error'); return; }
     if (!it.quantity || it.quantity <= 0) { ui.toast('Cada ítem debe tener cantidad', 'error'); return; }
     if (!it.unitPrice || it.unitPrice <= 0) { ui.toast('Cada ítem debe tener precio', 'error'); return; }
@@ -779,7 +792,8 @@ function saveDoc() {
       paymentTerms: c.paymentTerms,
       dueDate: c.dueDate,
       salespersonId: c.salespersonId || null,
-      salespersonName: c.salespersonName || ''
+      salespersonName: c.salespersonName || '',
+      customerAddress: c.customerAddress || ''
     });
     const labels = { PEDIDO: 'Pedido', NOTA_ENTREGA: 'Nota de Entrega', COTIZACION: 'Cotización', FACTURA: 'Factura' };
     ui.toast(`${labels[c.type] || 'Pedido'} creada`, 'success');
@@ -797,6 +811,326 @@ function saveDoc() {
 
 function openDetail(id) { selectedId = id; view = 'detail'; render(); }
 function backToList() { view = 'list'; selectedId = null; render(); }
+
+// ====== ESTADO DE ENTREGA / LOGÍSTICA ======
+
+/**
+ * Renderiza el card de "Estado de entrega" en la pantalla de detalle.
+ * Muestra el flujo PENDIENTE → DESPACHADO → ENTREGADO con datos asociados
+ * y los botones para avanzar el estado.
+ */
+function renderDeliveryCard(d) {
+  // Cotizaciones no se entregan
+  if (!d || d.type === 'COTIZACION' || d.deliveryStatus === 'NO_APLICA') return '';
+  // Documentos viejos sin estado de entrega: mostrar opción de iniciar el seguimiento
+  // pero de forma más sutil (el dato no se perdió, simplemente no se cargó).
+  const hasNoStatus = !d.deliveryStatus;
+  const status = d.deliveryStatus || 'PENDIENTE';
+  const cancelled = d.cancelled;
+
+  // Cálculo del aviso de vencimiento recalculado
+  const daysCredit = parsePaymentTermsDays(d.paymentTerms);
+  let dueHint = '';
+  if (daysCredit > 0 && d.dueDateAuto !== false) {
+    if (status === 'ENTREGADO' && d.deliveredDate) {
+      dueHint = `Vence el <strong>${ui.formatDate(d.dueDate)}</strong> (${daysCredit} días desde la entrega)`;
+    } else if (status === 'DESPACHADO' && d.shippedDate) {
+      dueHint = `Vence el <strong>${ui.formatDate(d.dueDate)}</strong> (${daysCredit} días desde el despacho — se recalculará al confirmar entrega)`;
+    } else {
+      dueHint = `Vence el <strong>${ui.formatDate(d.dueDate)}</strong> (${daysCredit} días desde la emisión — se recalculará al despachar/entregar)`;
+    }
+  } else if (daysCredit === 0) {
+    dueHint = `Pago al contado — el estado de entrega no afecta el vencimiento`;
+  } else if (d.dueDateAuto === false) {
+    dueHint = `Vencimiento manual: <strong>${d.dueDate ? ui.formatDate(d.dueDate) : '—'}</strong> (no se recalcula automáticamente)`;
+  }
+
+  // Resumen del despacho (cuando ya se despachó)
+  const shipmentInfo = (status === 'DESPACHADO' || status === 'ENTREGADO') ? `
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:14px;font-size:12px;margin-top:8px;">
+      <div>
+        <div class="kpi-label">Despachado el</div>
+        <div class="td-mono td-strong" style="font-size:13px;margin-top:2px;">${ui.formatDate(d.shippedDate||'')}</div>
+      </div>
+      <div>
+        <div class="kpi-label">Transportista</div>
+        <div style="font-weight:600;font-size:13px;margin-top:2px;">${ui.escape(d.carrierName||'—')}</div>
+        ${d.carrierType ? `<div class="text-muted" style="font-size:11px;">${ui.escape(d.carrierType)}</div>` : ''}
+      </div>
+      ${d.trackingNumber ? `<div>
+        <div class="kpi-label">Guía / Tracking</div>
+        <div class="td-mono td-strong" style="font-size:13px;margin-top:2px;">${ui.escape(d.trackingNumber)}</div>
+      </div>` : ''}
+      ${status === 'ENTREGADO' ? `<div>
+        <div class="kpi-label">Entregado el</div>
+        <div class="td-mono td-strong" style="font-size:13px;color:var(--success);margin-top:2px;">${ui.formatDate(d.deliveredDate||'')}</div>
+      </div>` : ''}
+    </div>
+    ${d.deliveryNotes ? `<div style="margin-top:10px;font-size:12px;padding:8px 10px;background:var(--surface-2);border-radius:6px;color:var(--ink-2);white-space:pre-wrap;">${ui.escape(d.deliveryNotes)}</div>` : ''}
+  ` : '';
+
+  // Estilos del header según estado
+  const statusStyles = {
+    PENDIENTE: { bg: '#fef3c7', border: '#fcd34d', icon: '📦', color: '#78350f', label: 'Pendiente de despacho' },
+    DESPACHADO: { bg: '#dbeafe', border: '#93c5fd', icon: '🚚', color: '#1e40af', label: 'Despachado · en tránsito' },
+    ENTREGADO: { bg: '#dcfce7', border: '#86efac', icon: '✅', color: '#14532d', label: 'Entregado al cliente' }
+  };
+  const s = statusStyles[status] || statusStyles.PENDIENTE;
+
+  // Botones según el estado y si está cancelado
+  let actions = '';
+  if (!cancelled && !hasNoStatus) {
+    if (status === 'PENDIENTE') {
+      actions = `<button class="btn btn-primary" onclick="openShipModal('${d.id}')">${ui.icon('check')||'✓'} Marcar despachado</button>`;
+    } else if (status === 'DESPACHADO') {
+      actions = `
+        <button class="btn btn-primary" onclick="openDeliveredModal('${d.id}')">${ui.icon('check')||'✓'} Marcar entregado</button>
+        <button class="btn btn-ghost btn-sm" onclick="openEditDeliveryModal('${d.id}')">Editar datos</button>
+        <button class="btn btn-ghost btn-sm" onclick="confirmRevertDelivery('${d.id}')" style="color:var(--danger);">Revertir</button>
+      `;
+    } else if (status === 'ENTREGADO') {
+      actions = `
+        <button class="btn btn-ghost btn-sm" onclick="openEditDeliveryModal('${d.id}')">Editar datos</button>
+        <button class="btn btn-ghost btn-sm" onclick="confirmRevertDelivery('${d.id}')" style="color:var(--danger);">Revertir</button>
+      `;
+    }
+  } else if (hasNoStatus && !cancelled) {
+    actions = `<button class="btn btn-secondary btn-sm" onclick="openShipModal('${d.id}')">Iniciar seguimiento de entrega</button>`;
+  }
+
+  if (hasNoStatus) {
+    return `
+      <div class="card mb-24" style="padding:14px 18px;background:var(--surface-2);border:1px dashed var(--border-strong);">
+        <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px;">
+          <div style="font-size:13px;color:var(--ink-2);">
+            <strong>Estado de entrega no registrado</strong>
+            <div class="text-muted" style="font-size:11px;margin-top:2px;">Pedido anterior al sistema de entregas. Podés iniciar el seguimiento ahora si necesitás.</div>
+          </div>
+          <div>${actions}</div>
+        </div>
+      </div>
+    `;
+  }
+
+  return `
+    <div class="card mb-24" style="padding:16px 18px;background:${s.bg};border-color:${s.border};">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:12px;margin-bottom:8px;">
+        <div>
+          <div style="display:flex;align-items:center;gap:8px;">
+            <span style="font-size:18px;">${s.icon}</span>
+            <strong style="color:${s.color};font-size:14px;">${s.label}</strong>
+          </div>
+          ${dueHint ? `<div style="font-size:12px;margin-top:6px;color:${s.color};">${dueHint}</div>` : ''}
+        </div>
+        <div style="display:flex;gap:6px;flex-wrap:wrap;">${actions}</div>
+      </div>
+      ${shipmentInfo}
+    </div>
+  `;
+}
+
+/** Modal: marcar despachado */
+function openShipModal(docId) {
+  const d = db.getById(db.COLLECTIONS.salesOrders, docId);
+  if (!d) return;
+  const today = new Date().toISOString().slice(0,10);
+  const carriers = db.getAll(db.COLLECTIONS.carriers).filter(c => c.active !== false).sort((a,b)=>(a.name||'').localeCompare(b.name||''));
+
+  if (carriers.length === 0) {
+    if (confirm('No hay transportistas configurados. ¿Querés ir al módulo de Transportistas para crear uno?')) {
+      window.location.href = 'transportistas.html';
+    }
+    return;
+  }
+
+  ui.openModal({
+    size: 'md',
+    title: `Marcar como despachado · ${d.code}`,
+    body: `
+      <form id="ship-form" onsubmit="confirmShip(event, '${docId}')">
+        <div class="form-grid form-grid-2">
+          <div class="field">
+            <label class="field-label">Fecha de despacho *</label>
+            <input class="input" type="date" name="shippedDate" value="${today}" required>
+            <div class="field-hint">Cuándo salió la mercancía de tu almacén</div>
+          </div>
+          <div class="field">
+            <label class="field-label">Transportista *</label>
+            <select class="select" name="carrierId" required>
+              <option value="">— Seleccionar —</option>
+              ${carriers.map(c => `<option value="${c.id}">${ui.escape(c.name)}${c.carrierType?` (${ui.escape(c.carrierType)})`:''}</option>`).join('')}
+            </select>
+          </div>
+          <div class="field" style="grid-column:1/-1;">
+            <label class="field-label">Número de guía / tracking</label>
+            <input class="input" name="trackingNumber" placeholder="Opcional" style="font-family:var(--font-mono);">
+          </div>
+          <div class="field" style="grid-column:1/-1;">
+            <label class="field-label">Notas</label>
+            <textarea class="textarea" name="notes" placeholder="Observaciones del despacho..."></textarea>
+          </div>
+        </div>
+      </form>
+    `,
+    footer: `
+      <button class="btn btn-secondary" onclick="ui.closeModal()">Cancelar</button>
+      <button class="btn btn-primary" onclick="document.getElementById('ship-form').requestSubmit()">${ui.icon('check')||'✓'} Confirmar despacho</button>
+    `
+  });
+}
+
+function confirmShip(e, docId) {
+  e.preventDefault();
+  const data = ui.formData(e.target);
+  if (!data.carrierId) { ui.toast('Seleccioná un transportista', 'error'); return; }
+  if (!data.shippedDate) { ui.toast('La fecha de despacho es obligatoria', 'error'); return; }
+  try {
+    sales.markShipped(docId, {
+      shippedDate: data.shippedDate,
+      carrierId: data.carrierId,
+      trackingNumber: data.trackingNumber,
+      notes: data.notes
+    });
+    ui.closeModal();
+    ui.toast('Pedido marcado como despachado', 'success');
+    render();
+  } catch (err) {
+    ui.toast(err.message, 'error');
+  }
+}
+
+/** Modal: marcar entregado */
+function openDeliveredModal(docId) {
+  const d = db.getById(db.COLLECTIONS.salesOrders, docId);
+  if (!d) return;
+  const today = new Date().toISOString().slice(0,10);
+
+  ui.openModal({
+    size: 'md',
+    title: `Marcar como entregado · ${d.code}`,
+    subtitle: 'A partir de la fecha de entrega arrancan los días de crédito',
+    body: `
+      <form id="deliver-form" onsubmit="confirmDelivered(event, '${docId}')">
+        <div class="form-grid form-grid-2">
+          <div class="field" style="grid-column:1/-1;">
+            <label class="field-label">Fecha de entrega *</label>
+            <input class="input" type="date" name="deliveredDate" value="${today}" min="${d.shippedDate||''}" required>
+            <div class="field-hint">Cuándo el cliente recibió la mercancía. Se usará para recalcular el vencimiento.</div>
+          </div>
+          <div class="field" style="grid-column:1/-1;">
+            <label class="field-label">Notas de la entrega</label>
+            <textarea class="textarea" name="notes" placeholder="Recibió: nombre y cédula, observaciones..."></textarea>
+          </div>
+        </div>
+      </form>
+    `,
+    footer: `
+      <button class="btn btn-secondary" onclick="ui.closeModal()">Cancelar</button>
+      <button class="btn btn-primary" onclick="document.getElementById('deliver-form').requestSubmit()">${ui.icon('check')||'✓'} Confirmar entrega</button>
+    `
+  });
+}
+
+function confirmDelivered(e, docId) {
+  e.preventDefault();
+  const data = ui.formData(e.target);
+  if (!data.deliveredDate) { ui.toast('La fecha es obligatoria', 'error'); return; }
+  try {
+    sales.markDelivered(docId, {
+      deliveredDate: data.deliveredDate,
+      notes: data.notes
+    });
+    ui.closeModal();
+    ui.toast('Pedido marcado como entregado. Vencimiento recalculado.', 'success');
+    render();
+  } catch (err) {
+    ui.toast(err.message, 'error');
+  }
+}
+
+/** Modal: editar datos del despacho/entrega */
+function openEditDeliveryModal(docId) {
+  const d = db.getById(db.COLLECTIONS.salesOrders, docId);
+  if (!d) return;
+  const carriers = db.getAll(db.COLLECTIONS.carriers).filter(c => c.active !== false).sort((a,b)=>(a.name||'').localeCompare(b.name||''));
+  const isDelivered = d.deliveryStatus === 'ENTREGADO';
+
+  ui.openModal({
+    size: 'md',
+    title: `Editar entrega · ${d.code}`,
+    body: `
+      <form id="edit-deliv-form" onsubmit="confirmEditDelivery(event, '${docId}')">
+        <div class="form-grid form-grid-2">
+          <div class="field">
+            <label class="field-label">Fecha de despacho</label>
+            <input class="input" type="date" name="shippedDate" value="${d.shippedDate||''}">
+          </div>
+          <div class="field">
+            <label class="field-label">Transportista</label>
+            <select class="select" name="carrierId">
+              <option value="">— Sin transportista —</option>
+              ${carriers.map(c => `<option value="${c.id}" ${c.id===d.carrierId?'selected':''}>${ui.escape(c.name)}${c.carrierType?` (${ui.escape(c.carrierType)})`:''}</option>`).join('')}
+            </select>
+          </div>
+          <div class="field" style="grid-column:1/-1;">
+            <label class="field-label">Número de guía / tracking</label>
+            <input class="input" name="trackingNumber" value="${ui.escape(d.trackingNumber||'')}" style="font-family:var(--font-mono);">
+          </div>
+          ${isDelivered ? `
+            <div class="field" style="grid-column:1/-1;">
+              <label class="field-label">Fecha de entrega</label>
+              <input class="input" type="date" name="deliveredDate" value="${d.deliveredDate||''}">
+              <div class="field-hint">Si la cambiás, se recalcula el vencimiento.</div>
+            </div>
+          ` : ''}
+          <div class="field" style="grid-column:1/-1;">
+            <label class="field-label">Notas</label>
+            <textarea class="textarea" name="notes">${ui.escape(d.deliveryNotes||'')}</textarea>
+          </div>
+        </div>
+      </form>
+    `,
+    footer: `
+      <button class="btn btn-secondary" onclick="ui.closeModal()">Cancelar</button>
+      <button class="btn btn-primary" onclick="document.getElementById('edit-deliv-form').requestSubmit()">${ui.icon('check')||'✓'} Guardar</button>
+    `
+  });
+}
+
+function confirmEditDelivery(e, docId) {
+  e.preventDefault();
+  const data = ui.formData(e.target);
+  try {
+    sales.editDelivery(docId, {
+      shippedDate: data.shippedDate,
+      deliveredDate: data.deliveredDate,
+      carrierId: data.carrierId || null,
+      trackingNumber: data.trackingNumber,
+      notes: data.notes
+    });
+    ui.closeModal();
+    ui.toast('Datos de entrega actualizados', 'success');
+    render();
+  } catch (err) {
+    ui.toast(err.message, 'error');
+  }
+}
+
+function confirmRevertDelivery(docId) {
+  ui.confirm(
+    'Esto borra los datos de despacho y entrega y vuelve el estado a "Pendiente". ¿Continuar?',
+    () => {
+      try {
+        sales.revertDelivery(docId);
+        ui.toast('Estado de entrega revertido', 'success');
+        render();
+      } catch (err) {
+        ui.toast(err.message, 'error');
+      }
+    },
+    { danger: true, confirmLabel: 'Revertir' }
+  );
+}
 
 function renderDetail() {
   const d = db.getById(db.COLLECTIONS.salesOrders, selectedId);
@@ -864,6 +1198,8 @@ function renderDetail() {
       if (!d.fullyCredited) {
         actions += `<button class="btn btn-secondary" onclick="openCreditNoteForm('${d.id}')" title="Emitir nota de crédito">📝 Emitir NC</button>`;
       }
+      // Botón de Nota de Débito (siempre disponible para facturas activas)
+      actions += `<button class="btn btn-secondary" onclick="openDebitNoteForm('${d.id}')" title="Emitir nota de débito (mora, recargo, ajuste, gastos extras)">📈 Emitir ND</button>`;
     }
     actions += `<button class="btn btn-danger" onclick="cancelDoc('${d.id}')">${ui.icon('x')} Anular</button>`;
   }
@@ -936,6 +1272,8 @@ function renderDetail() {
         </div>
       </div>` : ''}
 
+      ${renderDeliveryCard(d)}
+
       <div class="grid grid-2 mb-24">
         <div class="card">
           <div class="card-header"><div class="card-title">Detalle fiscal</div></div>
@@ -982,6 +1320,7 @@ function renderDetail() {
       ${d.notes ? `<div class="card mb-24" style="padding:16px;"><div class="kpi-label">Notas</div><div style="margin-top:6px;">${ui.escape(d.notes)}</div></div>` : ''}
 
       ${d.type === 'FACTURA' ? renderCreditNotesSection(d) : ''}
+      ${d.type === 'FACTURA' ? renderDebitNotesSection(d) : ''}
 
       ${d.cancelled ? `<div class="card mb-24" style="padding:14px 18px;background:var(--danger-soft);border-color:#e0b8b8;"><div style="font-size:13px;color:var(--danger);"><strong>Anulada el ${ui.formatDate(d.cancelledAt)}.</strong> ${d.cancellationReason ? 'Motivo: '+ui.escape(d.cancellationReason) : ''}</div></div>` : ''}
 
@@ -1081,6 +1420,7 @@ function renderCreditNotesSection(invoice) {
             <td style="text-align:right;">
               <div style="display:flex;gap:4px;justify-content:flex-end;">
                 <button class="btn btn-ghost btn-sm" onclick="viewCreditNote('${n.id}')" style="font-size:11px;padding:4px 8px;">${ui.icon('eye')||'👁'} Ver</button>
+                <button class="btn btn-ghost btn-sm" onclick="printCreditNote('${n.id}')" style="font-size:11px;padding:4px 8px;" title="Imprimir / PDF">${ui.icon('download')||'⬇'} Imprimir</button>
                 ${n.status !== 'CANCELLED' ? `<button class="btn btn-ghost btn-sm" onclick="cancelCreditNote('${n.id}')" style="font-size:11px;padding:4px 8px;color:var(--danger);">Anular</button>` : ''}
               </div>
             </td>
@@ -1089,6 +1429,653 @@ function renderCreditNotesSection(invoice) {
       </table>
     </div>
   </div>`;
+}
+
+    </div>
+  </div>`;
+}
+
+// ==========================================================================
+// ====== NOTAS DE DÉBITO ======
+// ==========================================================================
+
+/** Renderiza la sección de NDs emitidas dentro del detalle de factura */
+function renderDebitNotesSection(invoice) {
+  const reasonsMap = sales.DEBIT_NOTE_REASONS;
+  const statusMap = sales.DEBIT_NOTE_STATUS;
+
+  const allNotes = db.query(db.COLLECTIONS.debitNotes, n => n.invoiceId === invoice.id);
+  const activeNotes = allNotes.filter(n => n.status !== 'CANCELLED');
+  const totalDebited = activeNotes.reduce((s, n) => s + (n.total || 0), 0);
+
+  if (!allNotes.length) {
+    return `<div class="card mb-24" style="padding:0;">
+      <div style="padding:14px 20px;border-bottom:1px solid var(--border);"><div class="card-title" style="font-size:15px;">📈 Notas de Débito</div></div>
+      <div class="text-muted" style="padding:20px;font-size:13px;">Sin ND emitidas. Si necesitás cobrar intereses de mora, recargos, ajustes de precio o gastos extras al cliente, podés emitir una ND desde el botón "📈 Emitir ND".</div>
+    </div>`;
+  }
+
+  return `<div class="card mb-24" style="padding:0;">
+    <div style="padding:14px 20px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
+      <div class="card-title" style="font-size:15px;">📈 Notas de Débito (${allNotes.length})</div>
+      <div style="font-size:12px;color:var(--ink-3);">
+        Adicional facturado: <strong>${currency.format(totalDebited, invoice.currency)}</strong>
+      </div>
+    </div>
+    <div class="table-wrap" style="border-radius:0;">
+      <table>
+        <thead><tr><th>Código</th><th>Fecha</th><th>Motivo</th><th>Modo</th><th>IVA</th><th style="text-align:right;">Total</th><th>Estado</th><th style="text-align:right;width:140px;">Acciones</th></tr></thead>
+        <tbody>${allNotes.map(n => {
+          const reason = reasonsMap[n.reason] || { label: n.reason, icon: '📈' };
+          const status = statusMap[n.status] || { label: n.status, color: 'badge-plain' };
+          return `<tr style="${n.status==='CANCELLED'?'opacity:0.5;':''}">
+            <td><span class="td-mono td-strong">${n.code}</span></td>
+            <td><span class="text-muted">${ui.formatDate(n.issueDate)}</span></td>
+            <td>${reason.icon} ${reason.label}</td>
+            <td><span class="text-muted" style="font-size:11px;">${n.mode === 'BY_ITEMS' ? 'Por items' : 'Monto libre'}</span></td>
+            <td><span class="text-muted" style="font-size:11px;">${n.applyIva ? `Sí (${n.ivaRate}%)` : 'Exento'}</span></td>
+            <td style="text-align:right;"><span class="td-mono td-strong">${currency.format(n.total, n.currency)}</span></td>
+            <td><span class="badge ${status.color}" style="font-size:10px;">${status.label}</span></td>
+            <td style="text-align:right;">
+              <div style="display:flex;gap:4px;justify-content:flex-end;">
+                <button class="btn btn-ghost btn-sm" onclick="viewDebitNote('${n.id}')" style="font-size:11px;padding:4px 8px;">${ui.icon('eye')||'👁'} Ver</button>
+                <button class="btn btn-ghost btn-sm" onclick="printDebitNote('${n.id}')" style="font-size:11px;padding:4px 8px;" title="Imprimir / PDF">${ui.icon('download')||'⬇'} Imprimir</button>
+                ${n.status !== 'CANCELLED' && (n.paidAmount||0) === 0 ? `<button class="btn btn-ghost btn-sm" onclick="cancelDebitNote('${n.id}')" style="font-size:11px;padding:4px 8px;color:var(--danger);">Anular</button>` : ''}
+              </div>
+            </td>
+          </tr>`;
+        }).join('')}</tbody>
+      </table>
+    </div>
+  </div>`;
+}
+
+/** Variable global para el formulario de ND */
+let _ndForm = null;
+
+/** Abre el modal para crear ND sobre una factura */
+function openDebitNoteForm(invoiceId) {
+  const inv = db.getById(db.COLLECTIONS.salesOrders, invoiceId);
+  if (!inv) return;
+
+  // Días de mora si la factura está vencida (para sugerir el cálculo de interés)
+  const today = new Date().toISOString().slice(0,10);
+  let daysOverdue = 0;
+  if (inv.dueDate && inv.dueDate < today) {
+    const [y1,m1,d1] = inv.dueDate.split('-').map(n=>parseInt(n,10));
+    const [y2,m2,d2] = today.split('-').map(n=>parseInt(n,10));
+    const a = new Date(y1, m1-1, d1).getTime();
+    const b = new Date(y2, m2-1, d2).getTime();
+    daysOverdue = Math.max(0, Math.round((b-a)/(1000*60*60*24)));
+  }
+
+  _ndForm = {
+    invoiceId: inv.id,
+    reason: 'SURCHARGE',
+    mode: 'FREE_AMOUNT',
+    applyIva: true,
+    items: [],
+    freeAmount: 0,
+    freeAmountIsGross: false,
+    notes: '',
+    invoiceNumber: '',
+    controlNumber: '',
+    // Para mora
+    interestRate: 12, // % anual default
+    interestDays: daysOverdue,
+    interestData: null,
+    daysOverdueAvailable: daysOverdue
+  };
+
+  ui.openModal({
+    size: 'lg',
+    title: `Emitir Nota de Débito sobre ${inv.code}`,
+    body: `<div id="nd-form-host"></div>`,
+    footer: `<button class="btn btn-secondary" onclick="ui.closeModal();_ndForm=null;">Cancelar</button><button class="btn btn-primary" onclick="confirmDebitNote()">${ui.icon('check')||'✓'} Emitir ND</button>`
+  });
+  renderDebitNoteForm();
+}
+
+function renderDebitNoteForm() {
+  if (!_ndForm) return;
+  const f = _ndForm;
+  const inv = db.getById(db.COLLECTIONS.salesOrders, f.invoiceId);
+  const reasons = sales.DEBIT_NOTE_REASONS;
+  const cfg = db.getById(db.COLLECTIONS.config, 'main') || {};
+  const ivaRate = cfg.defaultIvaRate || 16;
+
+  // Cálculo en vivo de totales
+  let subtotal = 0, taxableBase = 0, exemptBase = 0;
+  if (f.mode === 'BY_ITEMS') {
+    f.items.forEach(it => {
+      const sub = (parseFloat(it.quantity)||0) * (parseFloat(it.unitPrice)||0);
+      subtotal += sub;
+      const isExempt = !f.applyIva || !!it.exempt;
+      if (isExempt) exemptBase += sub; else taxableBase += sub;
+    });
+  } else {
+    const amt = parseFloat(f.freeAmount) || 0;
+    if (f.applyIva && f.freeAmountIsGross) {
+      const base = amt / (1 + ivaRate/100);
+      subtotal = base; taxableBase = base;
+    } else if (f.applyIva) {
+      subtotal = amt; taxableBase = amt;
+    } else {
+      subtotal = amt; exemptBase = amt;
+    }
+  }
+  const ivaAmount = taxableBase * (ivaRate/100);
+  const total = subtotal + ivaAmount;
+  const round2 = n => Math.round(n*100)/100;
+
+  // Bloque especial para "Intereses de mora"
+  const interestBlock = f.reason === 'INTEREST' ? `
+    <div style="margin-top:12px;padding:12px;background:#fef3c7;border:1px solid #fcd34d;border-radius:8px;">
+      <div style="font-size:11px;font-weight:700;color:#78350f;text-transform:uppercase;letter-spacing:0.1em;margin-bottom:8px;">⏱️ Calculadora de interés por mora</div>
+      <div class="form-grid form-grid-3" style="gap:8px;">
+        <div class="field">
+          <label class="field-label">Tasa anual (%)</label>
+          <input class="input" type="number" min="0" step="0.01" value="${f.interestRate}" onchange="setNDInterestRate(this.value)" style="font-family:var(--font-mono);text-align:right;">
+        </div>
+        <div class="field">
+          <label class="field-label">Días de mora</label>
+          <input class="input" type="number" min="0" step="1" value="${f.interestDays}" onchange="setNDInterestDays(this.value)" style="font-family:var(--font-mono);text-align:right;">
+          ${f.daysOverdueAvailable > 0 ? `<div class="field-hint" style="color:#78350f;">Vencida hace ${f.daysOverdueAvailable} días</div>` : ''}
+        </div>
+        <div class="field" style="display:flex;flex-direction:column;justify-content:flex-end;">
+          <button type="button" class="btn btn-secondary btn-sm" onclick="applyNDInterestCalc()" style="font-size:11px;">📊 Calcular y aplicar</button>
+        </div>
+      </div>
+      <div style="margin-top:8px;font-size:11px;color:#78350f;">
+        <strong>Saldo pendiente factura:</strong> ${currency.format((inv.total||0) - (inv.paidAmount||0), inv.currency)} · Fórmula: saldo × (tasa/365) × días
+      </div>
+    </div>
+  ` : '';
+
+  // Items o monto libre
+  const itemsOrAmount = f.mode === 'BY_ITEMS' ? `
+    <div class="table-wrap" style="margin-top:8px;">
+      <table>
+        <thead><tr>
+          <th>Descripción</th>
+          <th style="width:80px;text-align:right;">Cantidad</th>
+          <th style="width:80px;">Unidad</th>
+          <th style="width:120px;text-align:right;">Precio unit.</th>
+          <th style="width:80px;text-align:center;">Exento</th>
+          <th style="width:120px;text-align:right;">Subtotal</th>
+          <th style="width:40px;"></th>
+        </tr></thead>
+        <tbody>${f.items.map((it, idx) => `<tr>
+          <td><input class="input" value="${ui.escape(it.description||'')}" oninput="updateNDItem(${idx},'description',this.value)" placeholder="Ej: Recargo por flete urgente"></td>
+          <td><input class="input" type="number" min="0" step="0.001" value="${it.quantity||0}" oninput="updateNDItem(${idx},'quantity',this.value)" style="text-align:right;font-family:var(--font-mono);"></td>
+          <td><input class="input" value="${ui.escape(it.unit||'unidad')}" oninput="updateNDItem(${idx},'unit',this.value)"></td>
+          <td><input class="input" type="number" min="0" step="0.0001" value="${it.unitPrice||0}" oninput="updateNDItem(${idx},'unitPrice',this.value)" style="text-align:right;font-family:var(--font-mono);"></td>
+          <td style="text-align:center;"><input type="checkbox" ${it.exempt?'checked':''} onchange="updateNDItem(${idx},'exempt',this.checked)" ${!f.applyIva?'disabled':''}></td>
+          <td style="text-align:right;"><span class="td-mono">${round2((it.quantity||0)*(it.unitPrice||0)).toFixed(2)}</span></td>
+          <td><button type="button" class="btn-icon" onclick="removeNDItem(${idx})" title="Quitar">${ui.icon('trash')||'×'}</button></td>
+        </tr>`).join('')}</tbody>
+      </table>
+    </div>
+    <button type="button" class="btn btn-ghost btn-sm" onclick="addNDItem()" style="margin-top:8px;">${ui.icon('plus')||'+'} Agregar ítem</button>
+  ` : `
+    <div class="form-grid form-grid-2" style="margin-top:8px;">
+      <div class="field">
+        <label class="field-label">Monto ${f.applyIva && f.freeAmountIsGross ? '(con IVA)' : f.applyIva ? '(sin IVA — base)' : ''}</label>
+        <input class="input" type="number" min="0" step="0.01" value="${f.freeAmount}" oninput="setNDFreeAmount(this.value)" style="font-family:var(--font-mono);text-align:right;font-size:14px;">
+      </div>
+      ${f.applyIva ? `
+        <div class="field" style="display:flex;flex-direction:column;justify-content:flex-end;">
+          <div class="checkbox-row">
+            <input type="checkbox" id="nd-gross" ${f.freeAmountIsGross?'checked':''} onchange="setNDIsGross(this.checked)">
+            <label for="nd-gross" style="font-size:12px;">El monto ya incluye IVA</label>
+          </div>
+          <div class="field-hint">Si lo marcás, descompongo IVA hacia atrás.</div>
+        </div>
+      ` : ''}
+    </div>
+  `;
+
+  const reasonInfo = reasons[f.reason] || { defaultIva: true };
+  const ivaIsDefaultFor = reasonInfo.defaultIva;
+  const ivaChanged = f.applyIva !== ivaIsDefaultFor;
+
+  document.getElementById('nd-form-host').innerHTML = `
+    <div style="font-size:13px;background:#fff7ed;padding:10px 14px;border-radius:6px;margin-bottom:14px;color:#7c2d12;border:1px solid #fdba74;">
+      <strong>📈 Factura origen:</strong> ${ui.escape(inv.code)}${inv.invoiceNumber?` · N° ${inv.invoiceNumber}`:''} ·
+      Cliente: ${ui.escape(inv.customerName)} · Saldo pendiente: ${currency.format((inv.total||0) - (inv.paidAmount||0), inv.currency)}
+    </div>
+
+    <div class="section-title">Motivo</div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:8px;margin-bottom:14px;">
+      ${Object.entries(reasons).map(([k,r]) => `
+        <label style="display:flex;align-items:center;gap:8px;padding:10px 12px;border:1px solid ${k===f.reason?'var(--accent)':'var(--border)'};border-radius:6px;cursor:pointer;background:${k===f.reason?'var(--accent-soft)':'white'};">
+          <input type="radio" name="nd-reason" value="${k}" ${k===f.reason?'checked':''} onchange="setNDReason('${k}')">
+          <div style="flex:1;">
+            <div style="font-size:13px;font-weight:600;">${r.icon} ${r.label}</div>
+            <div style="font-size:10.5px;color:var(--ink-3);">IVA por defecto: ${r.defaultIva?'Sí':'Exento'}</div>
+          </div>
+        </label>
+      `).join('')}
+    </div>
+
+    ${interestBlock}
+
+    <div class="section-title" style="margin-top:14px;">Modalidad y IVA</div>
+    <div class="form-grid form-grid-2" style="margin-bottom:8px;">
+      <div class="field">
+        <label class="field-label">Modo</label>
+        <select class="select" onchange="setNDMode(this.value)">
+          <option value="FREE_AMOUNT" ${f.mode==='FREE_AMOUNT'?'selected':''}>Monto libre</option>
+          <option value="BY_ITEMS" ${f.mode==='BY_ITEMS'?'selected':''}>Por items</option>
+        </select>
+      </div>
+      <div class="field">
+        <label class="field-label">IVA</label>
+        <div style="display:flex;gap:6px;align-items:center;padding:7px 0;">
+          <input type="checkbox" id="nd-iva" ${f.applyIva?'checked':''} onchange="setNDApplyIva(this.checked)">
+          <label for="nd-iva" style="font-size:13px;">Aplica IVA ${ivaRate}%</label>
+          ${ivaChanged ? `<span class="text-muted" style="font-size:10.5px;">(modificado del default del motivo)</span>` : ''}
+        </div>
+      </div>
+    </div>
+
+    ${itemsOrAmount}
+
+    <div class="section-title" style="margin-top:18px;">Datos fiscales (forma libre)</div>
+    <div class="form-grid form-grid-2 mb-24">
+      <div class="field">
+        <label class="field-label">N° Nota de Débito</label>
+        <input class="input" value="${ui.escape(f.invoiceNumber)}" oninput="_ndForm.invoiceNumber=this.value" placeholder="Opcional al emitir" style="font-family:var(--font-mono);">
+        <div class="field-hint">Lo podés cargar después al imprimir contra el talonario</div>
+      </div>
+      <div class="field">
+        <label class="field-label">N° Control SENIAT</label>
+        <input class="input" value="${ui.escape(f.controlNumber)}" oninput="_ndForm.controlNumber=this.value" placeholder="00-XXXXXXXX" style="font-family:var(--font-mono);">
+      </div>
+      <div class="field" style="grid-column:1/-1;">
+        <label class="field-label">Observaciones</label>
+        <textarea class="textarea" oninput="_ndForm.notes=this.value" placeholder="Detalle del motivo, referencias, etc.">${ui.escape(f.notes)}</textarea>
+      </div>
+    </div>
+
+    <div style="padding:14px 18px;background:#1a1a18;color:white;border-radius:8px;">
+      <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:4px;opacity:0.7;"><span>Subtotal</span><span class="td-mono">${currency.format(round2(subtotal), inv.currency)}</span></div>
+      ${exemptBase > 0 ? `<div style="display:flex;justify-content:space-between;font-size:12px;opacity:0.7;"><span>Exento</span><span class="td-mono">${currency.format(round2(exemptBase), inv.currency)}</span></div>` : ''}
+      ${taxableBase > 0 ? `<div style="display:flex;justify-content:space-between;font-size:12px;opacity:0.7;"><span>Base imponible</span><span class="td-mono">${currency.format(round2(taxableBase), inv.currency)}</span></div>` : ''}
+      ${ivaAmount > 0 ? `<div style="display:flex;justify-content:space-between;font-size:12px;opacity:0.7;"><span>IVA ${ivaRate}%</span><span class="td-mono">${currency.format(round2(ivaAmount), inv.currency)}</span></div>` : ''}
+      <div style="display:flex;justify-content:space-between;padding-top:8px;border-top:1px solid rgba(255,255,255,0.2);margin-top:8px;font-size:16px;"><span><strong>Total ND</strong></span><span class="td-mono"><strong>${currency.format(round2(total), inv.currency)}</strong></span></div>
+    </div>
+  `;
+}
+
+// Setters del form ND
+function setNDReason(reason) {
+  _ndForm.reason = reason;
+  // Aplicar default IVA del nuevo motivo
+  const r = sales.DEBIT_NOTE_REASONS[reason];
+  if (r) _ndForm.applyIva = r.defaultIva;
+  // Si elige INTEREST y hay días de mora, sugerir cálculo
+  if (reason === 'INTEREST' && _ndForm.daysOverdueAvailable > 0) {
+    _ndForm.interestDays = _ndForm.daysOverdueAvailable;
+    _ndForm.mode = 'FREE_AMOUNT';
+  }
+  renderDebitNoteForm();
+}
+function setNDMode(mode) {
+  _ndForm.mode = mode;
+  if (mode === 'BY_ITEMS' && (!_ndForm.items || _ndForm.items.length === 0)) {
+    _ndForm.items = [{ description: '', quantity: 1, unit: 'unidad', unitPrice: 0, exempt: false }];
+  }
+  renderDebitNoteForm();
+}
+function setNDApplyIva(v) { _ndForm.applyIva = !!v; renderDebitNoteForm(); }
+function setNDFreeAmount(v) { _ndForm.freeAmount = parseFloat(v)||0; renderDebitNoteForm(); }
+function setNDIsGross(v) { _ndForm.freeAmountIsGross = !!v; renderDebitNoteForm(); }
+function setNDInterestRate(v) { _ndForm.interestRate = parseFloat(v)||0; }
+function setNDInterestDays(v) { _ndForm.interestDays = parseInt(v,10)||0; }
+function applyNDInterestCalc() {
+  const result = sales.calculateInterest(_ndForm.invoiceId, _ndForm.interestRate, _ndForm.interestDays);
+  _ndForm.freeAmount = result.interest;
+  _ndForm.applyIva = false; // mora siempre exento
+  _ndForm.mode = 'FREE_AMOUNT';
+  _ndForm.freeAmountIsGross = false;
+  _ndForm.interestData = result.data;
+  ui.toast(`Interés calculado: ${result.interest.toFixed(2)} (${result.data.days} días × ${result.data.ratePercent}% anual)`, 'success', 3500);
+  renderDebitNoteForm();
+}
+function addNDItem() {
+  _ndForm.items.push({ description: '', quantity: 1, unit: 'unidad', unitPrice: 0, exempt: false });
+  renderDebitNoteForm();
+}
+function removeNDItem(idx) {
+  _ndForm.items.splice(idx, 1);
+  renderDebitNoteForm();
+}
+function updateNDItem(idx, field, value) {
+  if (!_ndForm.items[idx]) return;
+  if (field === 'quantity' || field === 'unitPrice') value = parseFloat(value)||0;
+  if (field === 'exempt') value = !!value;
+  _ndForm.items[idx][field] = value;
+  renderDebitNoteForm();
+}
+
+function confirmDebitNote() {
+  if (!_ndForm) return;
+  try {
+    const note = sales.createDebitNote({
+      invoiceId: _ndForm.invoiceId,
+      reason: _ndForm.reason,
+      mode: _ndForm.mode,
+      applyIva: _ndForm.applyIva,
+      items: _ndForm.items,
+      freeAmount: _ndForm.freeAmount,
+      freeAmountIsGross: _ndForm.freeAmountIsGross,
+      notes: _ndForm.notes,
+      invoiceNumber: _ndForm.invoiceNumber,
+      controlNumber: _ndForm.controlNumber,
+      interestData: _ndForm.interestData
+    });
+    ui.toast(`Nota de Débito ${note.code} emitida`, 'success');
+    _ndForm = null;
+    ui.closeModal();
+    render();
+  } catch (err) {
+    ui.toast(err.message, 'error', 4500);
+  }
+}
+
+function viewDebitNote(noteId) {
+  const n = db.getById(db.COLLECTIONS.debitNotes, noteId);
+  if (!n) return;
+  const reason = sales.DEBIT_NOTE_REASONS[n.reason] || { label: n.reason, icon: '📈' };
+  const status = sales.DEBIT_NOTE_STATUS[n.status] || { label: n.status, color: 'badge-plain' };
+
+  const itemsHtml = n.mode === 'BY_ITEMS' && n.items && n.items.length ? `
+    <table style="width:100%;font-size:12px;margin-top:8px;">
+      <thead><tr><th>Descripción</th><th style="text-align:right;">Cant.</th><th>Unidad</th><th style="text-align:right;">Precio</th><th style="text-align:right;">Subtotal</th></tr></thead>
+      <tbody>${n.items.map(it => `<tr>
+        <td>${ui.escape(it.description||'')}</td>
+        <td style="text-align:right;"><span class="td-mono">${(it.quantity||0).toFixed(2)}</span></td>
+        <td>${ui.escape(it.unit||'')}</td>
+        <td style="text-align:right;"><span class="td-mono">${currency.format(it.unitPrice, n.currency)}</span></td>
+        <td style="text-align:right;"><span class="td-mono td-strong">${currency.format(it.subtotal, n.currency)}</span></td>
+      </tr>`).join('')}</tbody>
+    </table>
+  ` : `<div class="text-muted" style="padding:12px 0;font-size:13px;">Monto libre · sin detalle de productos</div>`;
+
+  ui.openModal({
+    title: `Nota de Débito ${n.code}`,
+    body: `
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px;">
+        <span class="badge ${status.color}">${status.label}</span>
+        <span class="badge badge-plain">${reason.icon} ${reason.label}</span>
+        <span class="badge badge-plain">${n.mode === 'BY_ITEMS' ? 'Por items' : 'Monto libre'}</span>
+        <span class="badge ${n.applyIva?'badge-warning':'badge-plain'}">${n.applyIva ? `IVA ${n.ivaRate}%` : 'Exento de IVA'}</span>
+      </div>
+      <div style="font-size:13px;line-height:1.7;">
+        <div><strong>Factura origen:</strong> ${n.invoiceCode}${n.invoiceNumber?` (N° ${n.invoiceNumber})`:''}</div>
+        <div><strong>Cliente:</strong> ${ui.escape(n.customerName)}</div>
+        <div><strong>Fecha emisión:</strong> ${ui.formatDate(n.issueDate)}</div>
+        ${n.ndInvoiceNumber ? `<div><strong>N° Factura ND:</strong> ${n.ndInvoiceNumber}</div>`:''}
+        ${n.ndControlNumber ? `<div><strong>N° Control:</strong> ${n.ndControlNumber}</div>`:''}
+      </div>
+      ${n.interestData ? `
+        <div style="margin-top:10px;padding:10px;background:#fef3c7;border:1px solid #fcd34d;border-radius:6px;font-size:12px;color:#78350f;">
+          <strong>⏱️ Detalle de cálculo de interés:</strong> ${n.interestData.days} días × ${n.interestData.ratePercent}% anual sobre ${currency.format(n.interestData.baseAmount, n.currency)}
+        </div>
+      ` : ''}
+      ${itemsHtml}
+      <div style="padding:12px;background:var(--surface-2);border-radius:6px;margin-top:14px;">
+        <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:4px;"><span>Subtotal</span><span class="td-mono">${currency.format(n.subtotal, n.currency)}</span></div>
+        ${n.exemptBase>0 ? `<div style="display:flex;justify-content:space-between;font-size:12px;"><span>Exento</span><span class="td-mono">${currency.format(n.exemptBase, n.currency)}</span></div>` : ''}
+        ${n.taxableBase>0 ? `<div style="display:flex;justify-content:space-between;font-size:12px;"><span>IVA ${n.ivaRate}%</span><span class="td-mono">${currency.format(n.ivaAmount, n.currency)}</span></div>` : ''}
+        <div style="display:flex;justify-content:space-between;padding-top:8px;border-top:1px solid var(--border);margin-top:6px;"><span class="td-strong">Total ND</span><span class="td-mono td-strong" style="font-size:15px;">${currency.format(n.total, n.currency)}</span></div>
+      </div>
+      ${n.notes ? `<div style="margin-top:12px;padding:10px;background:var(--surface-2);border-radius:6px;font-size:12px;"><strong>Observaciones:</strong> ${ui.escape(n.notes)}</div>` : ''}
+      ${n.status === 'CANCELLED' ? `<div style="margin-top:12px;padding:10px;background:var(--danger-soft);border-radius:6px;font-size:12px;color:var(--danger);"><strong>Anulada:</strong> ${ui.escape(n.cancellationReason || '')}</div>` : ''}
+    `,
+    footer: `
+      <button class="btn btn-secondary" onclick="ui.closeModal()">Cerrar</button>
+      <button class="btn btn-primary" onclick="printDebitNote('${n.id}')">${ui.icon('download')||'⬇'} Imprimir / PDF</button>
+    `
+  });
+}
+
+function cancelDebitNote(noteId) {
+  const n = db.getById(db.COLLECTIONS.debitNotes, noteId);
+  if (!n) return;
+  ui.confirm(
+    `¿Anular la Nota de Débito ${n.code}? Esta acción no se puede deshacer.`,
+    () => {
+      const reason = prompt('Motivo de anulación (opcional):') || '';
+      try {
+        sales.cancelDebitNote(noteId, reason);
+        ui.toast(`Nota de Débito ${n.code} anulada`, 'success');
+        render();
+      } catch (err) {
+        ui.toast(err.message, 'error', 5000);
+      }
+    },
+    { danger: true, confirmLabel: 'Anular ND' }
+  );
+}
+
+/**
+ * Imprime/genera PDF de una Nota de Débito.
+ * Mismo formato que la NC pero con acentos en ámbar/dorado para diferenciarla.
+ */
+function printDebitNote(noteId) {
+  const n = db.getById(db.COLLECTIONS.debitNotes, noteId);
+  if (!n) { ui.toast('Nota de débito no encontrada', 'error'); return; }
+  const cfg = db.getById(db.COLLECTIONS.config, 'main') || {};
+  const customer = db.getById(db.COLLECTIONS.customers, n.customerId);
+  const reasonInfo = sales.DEBIT_NOTE_REASONS[n.reason] || { label: n.reason, icon: '📈' };
+  const invoice = n.invoiceId ? db.getById(db.COLLECTIONS.salesOrders, n.invoiceId) : null;
+  const rateValue = n.rateValue || (invoice && invoice.rateValue) || (currency.getRate(cfg.defaultRateType||'BCV_USD')?.value || 0);
+  const rateType = (n.rateType || (invoice && invoice.rateType) || cfg.defaultRateType || 'BCV_USD').replace('_USD','');
+  const rateDate = n.rateDate || (invoice && invoice.issueDate) || n.issueDate;
+
+  const itemsHtml = n.mode === 'BY_ITEMS' && n.items && n.items.length ? `
+    <table>
+      <thead><tr>
+        <th>Descripción</th>
+        <th class="num" style="width:90px;">Cantidad</th>
+        <th style="width:80px;">Unidad</th>
+        <th class="num" style="width:120px;">Precio</th>
+        <th class="num" style="width:120px;">Subtotal</th>
+      </tr></thead>
+      <tbody>
+        ${n.items.map(it => `<tr>
+          <td>${escapeHtml(it.description || '—')}</td>
+          <td class="num">${(it.quantity||0).toFixed(2)}</td>
+          <td>${escapeHtml(it.unit||'')}</td>
+          <td class="num">${formatMoney(it.unitPrice, n.currency)}</td>
+          <td class="num"><strong>${formatMoney(it.subtotal, n.currency)}</strong></td>
+        </tr>`).join('')}
+      </tbody>
+    </table>
+  ` : `
+    <div style="padding:24px;background:#f4f3ef;border-radius:8px;text-align:center;font-size:11pt;color:#4a4a45;margin:16px 0;">
+      <strong>Nota de débito por monto libre</strong>
+      <div style="font-size:9.5pt;color:#8a8a82;margin-top:4px;">Concepto: ${escapeHtml(reasonInfo.label)}${n.notes ? ' · ' + escapeHtml(n.notes) : ''}</div>
+    </div>
+  `;
+
+  const invoiceOriginBox = invoice ? `
+    <div style="margin:24px 0;padding:18px 22px;background:#f4f3ef;border:2px solid #1a1a18;border-radius:8px;page-break-inside:avoid;">
+      <div style="font-size:9.5pt;letter-spacing:0.14em;text-transform:uppercase;color:#8a8a82;font-weight:600;margin-bottom:12px;text-align:center;">Información de la Factura Origen</div>
+      <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:8px 32px;font-size:11pt;">
+        <div><strong>Número:</strong> ${escapeHtml(invoice.invoiceNumber || invoice.code || '—')}</div>
+        <div><strong>F. Emisión:</strong> ${formatDate(invoice.issueDate)}</div>
+        <div><strong>Sub-Total:</strong> <span style="font-family:monospace;">${formatMoney(invoice.subtotal, invoice.currency)}</span></div>
+        <div><strong>I.V.A.:</strong> <span style="font-family:monospace;">${formatMoney(invoice.ivaAmount, invoice.currency)}</span></div>
+        <div><strong>Neto:</strong> <span style="font-family:monospace;font-weight:600;">${formatMoney(invoice.total, invoice.currency)}</span></div>
+        ${invoice.controlNumber ? `<div><strong>N° Control:</strong> ${escapeHtml(invoice.controlNumber)}</div>` : ''}
+      </div>
+    </div>
+  ` : '';
+
+  // Detalle de interés (solo si aplica)
+  const interestBox = n.interestData ? `
+    <div style="margin:18px 0;padding:14px 18px;background:#fef3c7;border:1px solid #fcd34d;border-radius:8px;page-break-inside:avoid;">
+      <div style="font-size:10pt;font-weight:700;color:#78350f;letter-spacing:0.06em;text-transform:uppercase;margin-bottom:8px;">⏱️ Detalle del cálculo de interés por mora</div>
+      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;font-size:10.5pt;color:#3a3a35;">
+        <div><strong>Saldo base:</strong> ${formatMoney(n.interestData.baseAmount, n.currency)}</div>
+        <div><strong>Tasa anual:</strong> ${n.interestData.ratePercent}%</div>
+        <div><strong>Días en mora:</strong> ${n.interestData.days}</div>
+      </div>
+      <div style="margin-top:8px;font-size:9.5pt;color:#7c2d12;">Cálculo: ${formatMoney(n.interestData.baseAmount, n.currency)} × (${n.interestData.ratePercent}% / 365) × ${n.interestData.days} días = ${formatMoney(n.total, n.currency)}</div>
+    </div>
+  ` : '';
+
+  const legalNote = (n.currency !== 'VES') ? `
+    <div style="margin-top:16px;font-size:9pt;color:#4a4a45;line-height:1.6;border-top:1px solid #d8d4c5;padding-top:12px;">
+      A los solos efectos de lo previsto en el Art. 25 de la Ley de Impuesto al Valor Agregado se expresan los montos
+      de la nota de débito en ${n.currency === 'USD' ? 'Dólares ($)' : n.currency} considerando la tasa de cambio
+      corriente establecida el ${rateType} de Bs / ${n.currency} <strong>${(rateValue||0).toFixed(2)} ${rateType}</strong>.
+      Fuente ${formatDate(rateDate)}.
+    </div>
+    <div style="margin-top:10px;font-size:9.5pt;color:#3a3a35;">
+      ${n.taxableBase > 0 ? `Sub-total neto gravado alícuota general <span style="font-family:monospace;">${(n.taxableBase * (rateValue||0)).toLocaleString('es-VE',{minimumFractionDigits:2,maximumFractionDigits:2})}</span><br>` : ''}
+      ${n.exemptBase > 0 ? `Sub-total exento <span style="font-family:monospace;">${(n.exemptBase * (rateValue||0)).toLocaleString('es-VE',{minimumFractionDigits:2,maximumFractionDigits:2})}</span><br>` : ''}
+      ${n.ivaAmount > 0 ? `Impuesto al Valor agregado ${n.ivaRate}% <span style="font-family:monospace;">${(n.ivaAmount * (rateValue||0)).toLocaleString('es-VE',{minimumFractionDigits:2,maximumFractionDigits:2})}</span><br>` : ''}
+      Nota de Débito <span style="font-family:monospace;font-weight:600;">${(n.total * (rateValue||0)).toLocaleString('es-VE',{minimumFractionDigits:2,maximumFractionDigits:2})}</span>
+    </div>
+  ` : '';
+
+  const html = `<!DOCTYPE html>
+<html><head><meta charset="UTF-8"><title>ND ${escapeHtml(n.code || n.id)}</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500&family=Inter+Tight:wght@400;500;600&display=swap');
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'Inter Tight', sans-serif; font-size: 11pt; color: #1a1a18; padding: 40px 50px; line-height: 1.5; }
+  .header { display: flex; justify-content: space-between; align-items: flex-start; padding-bottom: 24px; border-bottom: 2px solid #1a1a18; margin-bottom: 24px; }
+  .brand { font-family: 'Fraunces', serif; font-size: 28pt; font-style: italic; letter-spacing: -1px; line-height: 1; }
+  .brand span { color: #5b7a5a; }
+  .company-info { text-align: right; font-size: 10pt; color: #4a4a45; line-height: 1.6; }
+  .doc-title { font-family: 'Fraunces', serif; font-size: 26pt; font-style: italic; margin-bottom: 4px; color: #b45309; }
+  .doc-sub { font-size: 10pt; letter-spacing: 0.16em; text-transform: uppercase; color: #8a8a82; font-weight: 600; }
+  .doc-numbers { display: flex; gap: 32px; margin-top: 16px; padding: 12px 16px; background: #1a1a18; color: white; border-radius: 6px; }
+  .doc-num-block { font-size: 10pt; }
+  .doc-num-block .label { letter-spacing: 0.12em; text-transform: uppercase; opacity: 0.6; font-size: 8pt; }
+  .doc-num-block .value { font-family: monospace; font-size: 14pt; font-weight: 600; margin-top: 2px; }
+  .info-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; margin: 24px 0; padding: 20px; background: #f4f3ef; border-radius: 8px; }
+  .info-box h3 { font-size: 9pt; letter-spacing: 0.12em; text-transform: uppercase; color: #8a8a82; font-weight: 600; margin-bottom: 8px; }
+  .info-line { font-size: 11pt; margin-bottom: 4px; }
+  .info-line strong { font-weight: 600; }
+  table { width: 100%; border-collapse: collapse; margin: 16px 0; }
+  th { text-align: left; font-size: 9pt; letter-spacing: 0.12em; text-transform: uppercase; color: #8a8a82; font-weight: 600; padding: 10px 12px; border-bottom: 2px solid #1a1a18; }
+  td { padding: 12px; border-bottom: 1px solid #e7e5df; font-size: 10.5pt; }
+  .num { text-align: right; font-family: monospace; }
+  .totals-section { margin-top: 24px; display: grid; grid-template-columns: 1fr 380px; gap: 24px; }
+  .totals { padding: 16px 20px; background: #fffbeb; border: 1px solid #fcd34d; border-radius: 8px; }
+  .totals-row { display: flex; justify-content: space-between; padding: 6px 0; font-size: 10.5pt; }
+  .totals-row.grand { border-top: 2px solid #b45309; margin-top: 8px; padding-top: 12px; font-size: 14pt; font-weight: 600; color: #b45309; }
+  .footer-info { padding-top: 24px; font-size: 9.5pt; color: #4a4a45; }
+  .footer-info .row { margin-bottom: 6px; }
+  .toolbar { background: #1a1a18; color: white; padding: 12px 20px; margin: -40px -50px 32px -50px; display: flex; justify-content: space-between; align-items: center; }
+  .btn-print { background: #5b7a5a; color: white; padding: 8px 16px; border: none; border-radius: 4px; cursor: pointer; font-family: inherit; font-size: 11pt; font-weight: 500; }
+  .reason-tag { display: inline-block; padding: 6px 14px; background: #fef3c7; border: 1px solid #fcd34d; color: #78350f; border-radius: 6px; font-size: 10pt; font-weight: 600; margin-top: 8px; }
+  .nd-stamp { position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%) rotate(-15deg); font-size: 60pt; font-family: 'Fraunces', serif; font-style: italic; color: rgba(180, 83, 9, 0.08); border: 6px solid rgba(180, 83, 9, 0.08); padding: 20px 60px; pointer-events: none; }
+  .cancelled-stamp { position: fixed; top: 40%; left: 50%; transform: translate(-50%, -50%) rotate(-15deg); font-size: 80pt; font-family: 'Fraunces', serif; font-style: italic; color: rgba(168, 50, 50, 0.2); border: 6px solid rgba(168, 50, 50, 0.2); padding: 20px 60px; pointer-events: none; }
+  @media print { body { padding: 20mm; } .no-print { display: none; } @page { margin: 0; size: A4; } }
+</style></head><body>
+
+<div class="toolbar no-print">
+  <span>${escapeHtml(n.code)} · Vista previa</span>
+  <button class="btn-print" onclick="window.print()">Imprimir / Guardar como PDF</button>
+</div>
+
+${n.status === 'CANCELLED' ? '<div class="cancelled-stamp">ANULADA</div>' : '<div class="nd-stamp">NOTA DE DÉBITO</div>'}
+
+<div class="header">
+  <div>
+    <div class="brand"><span>alt</span>care</div>
+    <div style="font-size: 9pt; letter-spacing: 0.16em; text-transform: uppercase; color: #8a8a82; font-weight: 600; margin-top: 4px;">${escapeHtml(cfg.companyName || '')}</div>
+  </div>
+  <div class="company-info">
+    ${cfg.companyRif ? `<div><strong>RIF:</strong> ${escapeHtml(cfg.companyRif)}</div>` : ''}
+    ${cfg.companyAddress ? `<div>${escapeHtml(cfg.companyAddress)}</div>` : ''}
+    ${cfg.companyPhone ? `<div><strong>Tel:</strong> ${escapeHtml(cfg.companyPhone)}</div>` : ''}
+    ${cfg.companyEmail ? `<div>${escapeHtml(cfg.companyEmail)}</div>` : ''}
+    ${cfg.companyWeb ? `<div>${escapeHtml(cfg.companyWeb)}</div>` : ''}
+  </div>
+</div>
+
+<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:24px;margin-bottom:8px;">
+  <div>
+    <div class="doc-title">Nota de Débito</div>
+    <div class="doc-sub">${escapeHtml(n.code)}</div>
+    <div class="reason-tag">${reasonInfo.icon} ${escapeHtml(reasonInfo.label)}</div>
+  </div>
+  <div style="text-align:right;font-size:10.5pt;color:#3a3a35;">
+    <div style="margin-bottom:4px;"><span style="color:#8a8a82;letter-spacing:0.1em;text-transform:uppercase;font-size:8.5pt;">Fecha emisión</span><br><strong style="font-size:12pt;">${formatDate(n.issueDate)}</strong></div>
+    ${n.ndInvoiceNumber ? `<div style="margin-top:8px;"><span style="color:#8a8a82;letter-spacing:0.1em;text-transform:uppercase;font-size:8.5pt;">N° Control</span><br><strong style="font-family:monospace;">${escapeHtml(n.ndControlNumber||'—')}</strong></div>` : ''}
+  </div>
+</div>
+
+${n.ndInvoiceNumber ? `
+<div class="doc-numbers">
+  <div class="doc-num-block">
+    <div class="label">N° Nota de Débito</div>
+    <div class="value">${escapeHtml(n.ndInvoiceNumber)}</div>
+  </div>
+  <div class="doc-num-block">
+    <div class="label">N° Control</div>
+    <div class="value">${escapeHtml(n.ndControlNumber||'—')}</div>
+  </div>
+</div>` : ''}
+
+<div class="info-grid">
+  <div class="info-box">
+    <h3>Cliente</h3>
+    <div class="info-line"><strong>${escapeHtml(n.customerName||'')}</strong></div>
+    ${n.customerRif ? `<div class="info-line">RIF: ${escapeHtml(n.customerRif)}</div>` : ''}
+    ${n.customerAddress ? `<div class="info-line">${escapeHtml(n.customerAddress)}</div>` : (customer && customer.address ? `<div class="info-line">${escapeHtml(customer.address)}</div>` : '')}
+    ${n.customerPhone ? `<div class="info-line">Tel: ${escapeHtml(n.customerPhone)}</div>` : (customer && customer.phone ? `<div class="info-line">Tel: ${escapeHtml(customer.phone)}</div>` : '')}
+  </div>
+  <div class="info-box">
+    <h3>Detalles</h3>
+    <div class="info-line"><strong>Modalidad:</strong> ${n.mode === 'BY_ITEMS' ? 'Por items' : 'Monto libre'}</div>
+    <div class="info-line"><strong>IVA:</strong> ${n.applyIva ? `Aplica ${n.ivaRate}%` : 'Exento'}</div>
+    ${n.salespersonName || (invoice && invoice.salespersonName) ? `<div class="info-line"><strong>Vendedor:</strong> ${escapeHtml(n.salespersonName || invoice.salespersonName)}</div>` : ''}
+    ${n.notes ? `<div class="info-line" style="margin-top:6px;"><strong>Observación:</strong> ${escapeHtml(n.notes)}</div>` : ''}
+  </div>
+</div>
+
+${invoiceOriginBox}
+
+${interestBox}
+
+${itemsHtml}
+
+<div class="totals-section">
+  <div class="footer-info">
+    <div class="row" style="font-size:9pt;color:#78350f;background:#fef3c7;padding:8px 12px;border-radius:6px;border:1px solid #fcd34d;">
+      📈 Esta nota de débito incrementa el monto adeudado por el cliente y constituye un documento independiente con su propio saldo a cobrar. Aparece en el libro de ventas sumando al débito fiscal cuando aplica IVA.
+    </div>
+    ${legalNote}
+  </div>
+  <div class="totals">
+    <div class="totals-row"><span>Sub-Total</span><span class="num">${formatMoney(n.subtotal, n.currency)}</span></div>
+    ${n.exemptBase > 0 ? `<div class="totals-row"><span>Exento de IVA</span><span class="num">${formatMoney(n.exemptBase, n.currency)}</span></div>` : ''}
+    ${n.taxableBase > 0 ? `<div class="totals-row"><span>Base imponible</span><span class="num">${formatMoney(n.taxableBase, n.currency)}</span></div>` : ''}
+    ${n.taxableBase > 0 ? `<div class="totals-row"><span>I.V.A. ${n.ivaRate}%</span><span class="num">${formatMoney(n.ivaAmount, n.currency)}</span></div>` : ''}
+    <div class="totals-row grand"><span>NETO N/D</span><span class="num">${formatMoney(n.total, n.currency)}</span></div>
+  </div>
+</div>
+
+<div style="margin-top:48px;padding-top:24px;border-top:1px solid #d8d4c5;font-size:9pt;color:#8a8a82;text-align:center;">
+  Este documento es una nota de débito que constituye un cargo adicional sobre la factura origen.<br>
+  Generado el ${formatDate(new Date().toISOString().slice(0,10))} · altcare Manufacturing OS
+</div>
+
+</body></html>`;
+
+  const w = window.open('', '_blank');
+  if (!w) { ui.toast('Permitir ventanas emergentes para imprimir', 'error'); return; }
+  w.document.write(html);
+  w.document.close();
 }
 
 /** Variable global para el formulario de NC */
@@ -1534,7 +2521,10 @@ function viewCreditNote(noteId) {
 
       ${n.status === 'CANCELLED' ? `<div style="margin-top:12px;padding:10px;background:var(--danger-soft);border-radius:6px;font-size:12px;color:var(--danger);"><strong>Anulada:</strong> ${ui.escape(n.cancellationReason || '')}</div>` : ''}
     `,
-    footer: `<button class="btn btn-secondary" onclick="ui.closeModal()">Cerrar</button>`
+    footer: `
+      <button class="btn btn-secondary" onclick="ui.closeModal()">Cerrar</button>
+      <button class="btn btn-primary" onclick="printCreditNote('${n.id}')">${ui.icon('download')} Imprimir / PDF</button>
+    `
   });
 }
 
@@ -1972,7 +2962,13 @@ ${d.invoiceNumber ? `
 <div class="totals-section">
   <div class="footer-info">
     <div class="row"><strong>Términos de pago:</strong> ${escapeHtml(d.paymentTerms||'—')}</div>
-    ${d.dueDate ? `<div class="row"><strong>Fecha de vencimiento:</strong> ${formatDate(d.dueDate)}</div>` : ''}
+    ${d.dueDate ? `<div class="row"><strong>Fecha de vencimiento:</strong> ${formatDate(d.dueDate)}${
+      d.deliveryStatus === 'ENTREGADO' && d.deliveredDate
+        ? ' <span style="font-size:8pt;color:#7a7a72;">(desde la entrega)</span>'
+        : d.deliveryStatus === 'DESPACHADO' && d.shippedDate
+          ? ' <span style="font-size:8pt;color:#7a7a72;">(provisional · se ajusta al entregar)</span>'
+          : ''
+    }</div>` : ''}
     ${d.notes ? `<div class="row" style="margin-top:12px;"><strong>Observaciones:</strong><br>${escapeHtml(d.notes)}</div>` : ''}
     ${d.currency !== 'VES' ? `<div class="currency-note"><strong>Moneda de la factura:</strong> ${d.currency} · Tasa de referencia: ${d.rateValue?.toFixed(4)} Bs/${d.currency} · Total en bolívares: <strong>${formatMoney(d.totalVES, 'VES')}</strong></div>` : ''}
   </div>
@@ -1984,6 +2980,19 @@ ${d.invoiceNumber ? `
     <div class="totals-row grand"><span>TOTAL</span><span class="num">${formatMoney(d.total, d.currency)}</span></div>
   </div>
 </div>
+
+${(d.deliveryStatus === 'DESPACHADO' || d.deliveryStatus === 'ENTREGADO') ? `
+<div style="margin-top:24px;padding:14px 16px;background:#f4f3ef;border:1px solid #d8d4c5;border-radius:6px;page-break-inside:avoid;">
+  <div style="font-size:10pt;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:#4a4a45;margin-bottom:10px;">Información de despacho y entrega</div>
+  <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:8px 24px;font-size:9.5pt;color:#3a3a35;">
+    ${d.shippedDate ? `<div><strong>Fecha de despacho:</strong> ${formatDate(d.shippedDate)}</div>` : ''}
+    ${d.carrierName ? `<div><strong>Transportista:</strong> ${escapeHtml(d.carrierName)}${d.carrierType ? ` (${escapeHtml(d.carrierType)})` : ''}</div>` : ''}
+    ${d.trackingNumber ? `<div><strong>Guía / Tracking:</strong> <span style="font-family:'Courier New',monospace;">${escapeHtml(d.trackingNumber)}</span></div>` : ''}
+    ${d.deliveredDate ? `<div><strong>Fecha de entrega:</strong> ${formatDate(d.deliveredDate)}</div>` : ''}
+  </div>
+  ${d.deliveryNotes ? `<div style="margin-top:10px;font-size:9pt;color:#5a5a55;border-top:1px dashed #d8d4c5;padding-top:8px;white-space:pre-wrap;"><strong>Notas:</strong> ${escapeHtml(d.deliveryNotes)}</div>` : ''}
+</div>
+` : ''}
 
 ${d.type === 'FACTURA' && isFiscal ? `
 <div style="margin-top:32px;padding:12px 16px;background:#f4f3ef;border-radius:6px;font-size:9pt;color:#4a4a45;">
@@ -2019,6 +3028,227 @@ ${d.currency !== 'VES' ? `
   w.document.close();
 }
 
+/**
+ * Imprime/genera PDF de una Nota de Crédito.
+ * Mantiene la identidad visual de altcare (fuentes, colores, layout) pero
+ * reemplaza los bloques específicos: aparece "Nota de Crédito", se muestra
+ * el cuadro destacado de "Información de la Factura Origen", y el motivo
+ * de la nota como observación.
+ */
+function printCreditNote(noteId) {
+  const n = db.getById(db.COLLECTIONS.creditNotes, noteId);
+  if (!n) { ui.toast('Nota de crédito no encontrada', 'error'); return; }
+  const cfg = db.getById(db.COLLECTIONS.config, 'main') || {};
+  const customer = db.getById(db.COLLECTIONS.customers, n.customerId);
+  const reasonInfo = sales.CREDIT_NOTE_REASONS[n.reason] || { label: n.reason, icon: '📝' };
+  // Factura origen (para mostrar el cuadro destacado tipo la imagen de referencia)
+  const invoice = n.invoiceId ? db.getById(db.COLLECTIONS.salesOrders, n.invoiceId) : null;
+  // Tasa para nota legal Art. 25 LIVA
+  const rateValue = n.rateValue || (invoice && invoice.rateValue) || (currency.getRate(cfg.defaultRateType||'BCV_USD')?.value || 0);
+  const rateType = (n.rateType || (invoice && invoice.rateType) || cfg.defaultRateType || 'BCV_USD').replace('_USD','');
+  const rateDate = n.rateDate || (invoice && invoice.issueDate) || n.issueDate;
+
+  const itemsHtml = n.mode === 'BY_ITEMS' && n.items && n.items.length ? `
+    <table>
+      <thead><tr>
+        <th>Producto</th>
+        <th class="num" style="width:90px;">Cantidad</th>
+        <th style="width:80px;">Unidad</th>
+        <th class="num" style="width:120px;">Precio</th>
+        <th class="num" style="width:120px;">Subtotal</th>
+      </tr></thead>
+      <tbody>
+        ${n.items.map(it => `<tr>
+          <td>${escapeHtml(it.formulaName || '—')}${it.notes?`<div style="font-size:9pt;color:#8a8a82;margin-top:2px;">${escapeHtml(it.notes)}</div>`:''}</td>
+          <td class="num">${(it.quantity||0).toFixed(2)}</td>
+          <td>${escapeHtml(it.unit||'')}</td>
+          <td class="num">${formatMoney(it.unitPrice, n.currency)}</td>
+          <td class="num"><strong>${formatMoney(it.subtotal, n.currency)}</strong></td>
+        </tr>`).join('')}
+      </tbody>
+    </table>
+  ` : `
+    <div style="padding:24px;background:#f4f3ef;border-radius:8px;text-align:center;font-size:11pt;color:#4a4a45;margin:16px 0;">
+      <strong>Nota de crédito por monto libre</strong>
+      <div style="font-size:9.5pt;color:#8a8a82;margin-top:4px;">Sin desglose de productos. Aplica al saldo de la factura origen.</div>
+    </div>
+  `;
+
+  // Bloque destacado de factura origen (similar al de la imagen de referencia)
+  const invoiceOriginBox = invoice ? `
+    <div style="margin:24px 0;padding:18px 22px;background:#f4f3ef;border:2px solid #1a1a18;border-radius:8px;page-break-inside:avoid;">
+      <div style="font-size:9.5pt;letter-spacing:0.14em;text-transform:uppercase;color:#8a8a82;font-weight:600;margin-bottom:12px;text-align:center;">Información de la Factura Origen</div>
+      <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:8px 32px;font-size:11pt;">
+        <div><strong>Número:</strong> ${escapeHtml(invoice.invoiceNumber || invoice.code || '—')}</div>
+        <div><strong>F. Emisión:</strong> ${formatDate(invoice.issueDate)}</div>
+        <div><strong>Sub-Total:</strong> <span style="font-family:monospace;">${formatMoney(invoice.subtotal, invoice.currency)}</span></div>
+        <div><strong>I.V.A.:</strong> <span style="font-family:monospace;">${formatMoney(invoice.ivaAmount, invoice.currency)}</span></div>
+        <div><strong>Neto:</strong> <span style="font-family:monospace;font-weight:600;">${formatMoney(invoice.total, invoice.currency)}</span></div>
+        ${invoice.controlNumber ? `<div><strong>N° Control:</strong> ${escapeHtml(invoice.controlNumber)}</div>` : ''}
+      </div>
+    </div>
+  ` : '';
+
+  // Nota legal Art. 25 LIVA cuando la moneda no es VES
+  const legalNote = (n.currency !== 'VES') ? `
+    <div style="margin-top:16px;font-size:9pt;color:#4a4a45;line-height:1.6;border-top:1px solid #d8d4c5;padding-top:12px;">
+      A los solos efectos de lo previsto en el Art. 25 de la Ley de Impuesto al Valor Agregado se expresan los montos
+      de la nota de crédito en ${n.currency === 'USD' ? 'Dólares ($)' : n.currency} considerando la tasa de cambio
+      corriente establecida el ${rateType} de Bs / ${n.currency} <strong>${(rateValue||0).toFixed(2)} ${rateType}</strong>.
+      Fuente ${formatDate(rateDate)}.
+    </div>
+    <div style="margin-top:10px;font-size:9.5pt;color:#3a3a35;">
+      Sub-total neto gravado alícuota general <span style="font-family:monospace;">${(n.taxableBase * (rateValue||0)).toLocaleString('es-VE',{minimumFractionDigits:2,maximumFractionDigits:2})}</span><br>
+      Impuesto al Valor agregado ${n.ivaRate||16}% <span style="font-family:monospace;">${(n.ivaAmount * (rateValue||0)).toLocaleString('es-VE',{minimumFractionDigits:2,maximumFractionDigits:2})}</span><br>
+      Nota de Crédito <span style="font-family:monospace;font-weight:600;">${(n.total * (rateValue||0)).toLocaleString('es-VE',{minimumFractionDigits:2,maximumFractionDigits:2})}</span>
+    </div>
+  ` : '';
+
+  // Acción del dinero (para que el cliente entienda qué pasa)
+  const moneyActionLabels = {
+    'REFUND': 'Reembolso al cliente',
+    'CREDIT_BALANCE': 'Saldo a favor del cliente',
+    'REDUCE_DEBT': 'Reduce el saldo pendiente de la factura'
+  };
+
+  const html = `<!DOCTYPE html>
+<html><head><meta charset="UTF-8"><title>NC ${escapeHtml(n.code || n.id)}</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500&family=Inter+Tight:wght@400;500;600&display=swap');
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'Inter Tight', sans-serif; font-size: 11pt; color: #1a1a18; padding: 40px 50px; line-height: 1.5; }
+  .header { display: flex; justify-content: space-between; align-items: flex-start; padding-bottom: 24px; border-bottom: 2px solid #1a1a18; margin-bottom: 24px; }
+  .brand { font-family: 'Fraunces', serif; font-size: 28pt; font-style: italic; letter-spacing: -1px; line-height: 1; }
+  .brand span { color: #5b7a5a; }
+  .company-info { text-align: right; font-size: 10pt; color: #4a4a45; line-height: 1.6; }
+  .doc-title { font-family: 'Fraunces', serif; font-size: 26pt; font-style: italic; margin-bottom: 4px; color: #a83232; }
+  .doc-sub { font-size: 10pt; letter-spacing: 0.16em; text-transform: uppercase; color: #8a8a82; font-weight: 600; }
+  .doc-numbers { display: flex; gap: 32px; margin-top: 16px; padding: 12px 16px; background: #1a1a18; color: white; border-radius: 6px; }
+  .doc-num-block { font-size: 10pt; }
+  .doc-num-block .label { letter-spacing: 0.12em; text-transform: uppercase; opacity: 0.6; font-size: 8pt; }
+  .doc-num-block .value { font-family: monospace; font-size: 14pt; font-weight: 600; margin-top: 2px; }
+  .info-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; margin: 24px 0; padding: 20px; background: #f4f3ef; border-radius: 8px; }
+  .info-box h3 { font-size: 9pt; letter-spacing: 0.12em; text-transform: uppercase; color: #8a8a82; font-weight: 600; margin-bottom: 8px; }
+  .info-line { font-size: 11pt; margin-bottom: 4px; }
+  .info-line strong { font-weight: 600; }
+  table { width: 100%; border-collapse: collapse; margin: 16px 0; }
+  th { text-align: left; font-size: 9pt; letter-spacing: 0.12em; text-transform: uppercase; color: #8a8a82; font-weight: 600; padding: 10px 12px; border-bottom: 2px solid #1a1a18; }
+  td { padding: 12px; border-bottom: 1px solid #e7e5df; font-size: 10.5pt; }
+  .num { text-align: right; font-family: monospace; }
+  .totals-section { margin-top: 24px; display: grid; grid-template-columns: 1fr 380px; gap: 24px; }
+  .totals { padding: 16px 20px; background: #fdf2f2; border: 1px solid #e8c8c8; border-radius: 8px; }
+  .totals-row { display: flex; justify-content: space-between; padding: 6px 0; font-size: 10.5pt; }
+  .totals-row.grand { border-top: 2px solid #a83232; margin-top: 8px; padding-top: 12px; font-size: 14pt; font-weight: 600; color: #a83232; }
+  .footer-info { padding-top: 24px; font-size: 9.5pt; color: #4a4a45; }
+  .footer-info .row { margin-bottom: 6px; }
+  .toolbar { background: #1a1a18; color: white; padding: 12px 20px; margin: -40px -50px 32px -50px; display: flex; justify-content: space-between; align-items: center; }
+  .btn-print { background: #5b7a5a; color: white; padding: 8px 16px; border: none; border-radius: 4px; cursor: pointer; font-family: inherit; font-size: 11pt; font-weight: 500; }
+  .reason-tag { display: inline-block; padding: 6px 14px; background: #fff7ed; border: 1px solid #fdba74; color: #7c2d12; border-radius: 6px; font-size: 10pt; font-weight: 600; margin-top: 8px; }
+  .nc-stamp { position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%) rotate(-15deg); font-size: 60pt; font-family: 'Fraunces', serif; font-style: italic; color: rgba(168, 50, 50, 0.08); border: 6px solid rgba(168, 50, 50, 0.08); padding: 20px 60px; pointer-events: none; }
+  .cancelled-stamp { position: fixed; top: 40%; left: 50%; transform: translate(-50%, -50%) rotate(-15deg); font-size: 80pt; font-family: 'Fraunces', serif; font-style: italic; color: rgba(168, 50, 50, 0.2); border: 6px solid rgba(168, 50, 50, 0.2); padding: 20px 60px; pointer-events: none; }
+  @media print { body { padding: 20mm; } .no-print { display: none; } @page { margin: 0; size: A4; } }
+</style></head><body>
+
+<div class="toolbar no-print">
+  <span>${escapeHtml(n.code)} · Vista previa</span>
+  <button class="btn-print" onclick="window.print()">Imprimir / Guardar como PDF</button>
+</div>
+
+${n.status === 'CANCELLED' ? '<div class="cancelled-stamp">ANULADA</div>' : '<div class="nc-stamp">NOTA DE CRÉDITO</div>'}
+
+<div class="header">
+  <div>
+    <div class="brand"><span>alt</span>care</div>
+    <div style="font-size: 9pt; letter-spacing: 0.16em; text-transform: uppercase; color: #8a8a82; font-weight: 600; margin-top: 4px;">${escapeHtml(cfg.companyName || '')}</div>
+  </div>
+  <div class="company-info">
+    ${cfg.companyRif ? `<div><strong>RIF:</strong> ${escapeHtml(cfg.companyRif)}</div>` : ''}
+    ${cfg.companyAddress ? `<div>${escapeHtml(cfg.companyAddress)}</div>` : ''}
+    ${cfg.companyPhone ? `<div><strong>Tel:</strong> ${escapeHtml(cfg.companyPhone)}</div>` : ''}
+    ${cfg.companyEmail ? `<div>${escapeHtml(cfg.companyEmail)}</div>` : ''}
+    ${cfg.companyWeb ? `<div>${escapeHtml(cfg.companyWeb)}</div>` : ''}
+  </div>
+</div>
+
+<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:24px;margin-bottom:8px;">
+  <div>
+    <div class="doc-title">Nota de Crédito</div>
+    <div class="doc-sub">${escapeHtml(n.code)}</div>
+    <div class="reason-tag">${reasonInfo.icon} ${escapeHtml(reasonInfo.label)}</div>
+  </div>
+  <div style="text-align:right;font-size:10.5pt;color:#3a3a35;">
+    <div style="margin-bottom:4px;"><span style="color:#8a8a82;letter-spacing:0.1em;text-transform:uppercase;font-size:8.5pt;">Fecha emisión</span><br><strong style="font-size:12pt;">${formatDate(n.issueDate)}</strong></div>
+    ${n.ncInvoiceNumber ? `<div style="margin-top:8px;"><span style="color:#8a8a82;letter-spacing:0.1em;text-transform:uppercase;font-size:8.5pt;">N° Control</span><br><strong style="font-family:monospace;">${escapeHtml(n.ncControlNumber||'—')}</strong></div>` : ''}
+  </div>
+</div>
+
+${n.ncInvoiceNumber ? `
+<div class="doc-numbers">
+  <div class="doc-num-block">
+    <div class="label">N° Nota de Crédito</div>
+    <div class="value">${escapeHtml(n.ncInvoiceNumber)}</div>
+  </div>
+  <div class="doc-num-block">
+    <div class="label">N° Control</div>
+    <div class="value">${escapeHtml(n.ncControlNumber||'—')}</div>
+  </div>
+</div>` : ''}
+
+<div class="info-grid">
+  <div class="info-box">
+    <h3>Cliente</h3>
+    <div class="info-line"><strong>${escapeHtml(n.customerName||'')}</strong></div>
+    ${n.customerRif ? `<div class="info-line">RIF: ${escapeHtml(n.customerRif)}</div>` : ''}
+    ${customer && customer.address ? `<div class="info-line">${escapeHtml(customer.address)}</div>` : ''}
+    ${customer && customer.phone ? `<div class="info-line">Tel: ${escapeHtml(customer.phone)}</div>` : ''}
+  </div>
+  <div class="info-box">
+    <h3>Detalles</h3>
+    <div class="info-line"><strong>Modalidad:</strong> ${n.mode === 'BY_ITEMS' ? 'Por items' : 'Monto libre'}</div>
+    <div class="info-line"><strong>Acción:</strong> ${moneyActionLabels[n.moneyAction] || '—'}</div>
+    ${n.salespersonName || (invoice && invoice.salespersonName) ? `<div class="info-line"><strong>Vendedor:</strong> ${escapeHtml(n.salespersonName || invoice.salespersonName)}</div>` : ''}
+    ${n.notes ? `<div class="info-line" style="margin-top:6px;"><strong>Observación:</strong> ${escapeHtml(n.notes)}</div>` : ''}
+  </div>
+</div>
+
+${invoiceOriginBox}
+
+${itemsHtml}
+
+<div class="totals-section">
+  <div class="footer-info">
+    <div class="row" style="font-size:9pt;color:#7c2d12;background:#fff7ed;padding:8px 12px;border-radius:6px;border:1px solid #fdba74;">
+      ⚠️ Esta nota de crédito modifica la factura origen. ${n.moneyAction === 'REFUND' ? 'El monto fue reembolsado al cliente.' : n.moneyAction === 'CREDIT_BALANCE' ? 'El monto queda a favor del cliente para futuras compras.' : 'El monto reduce el saldo pendiente de la factura origen.'}
+    </div>
+    ${legalNote}
+  </div>
+  <div class="totals">
+    <div class="totals-row"><span>Sub-Total</span><span class="num">${formatMoney(n.subtotal, n.currency)}</span></div>
+    ${n.exemptBase > 0 ? `<div class="totals-row"><span>Exento de IVA</span><span class="num">${formatMoney(n.exemptBase, n.currency)}</span></div>` : ''}
+    ${n.taxableBase > 0 ? `<div class="totals-row"><span>Base imponible</span><span class="num">${formatMoney(n.taxableBase, n.currency)}</span></div>` : ''}
+    ${n.taxableBase > 0 ? `<div class="totals-row"><span>I.V.A. ${n.ivaRate||16}%</span><span class="num">${formatMoney(n.ivaAmount, n.currency)}</span></div>` : ''}
+    <div class="totals-row grand"><span>NETO N/C</span><span class="num">${formatMoney(n.total, n.currency)}</span></div>
+  </div>
+</div>
+
+${n.refundAmount ? `
+<div style="margin-top:24px;padding:14px 18px;background:#dbeafe;border:1px solid #93c5fd;border-radius:8px;font-size:10pt;color:#1e40af;page-break-inside:avoid;">
+  <strong>💸 Reembolso ejecutado:</strong> ${formatMoney(n.refundAmount, n.currency)} ${n.refundDate ? `el ${formatDate(n.refundDate)}` : ''}
+</div>` : ''}
+
+<div style="margin-top:48px;padding-top:24px;border-top:1px solid #d8d4c5;font-size:9pt;color:#8a8a82;text-align:center;">
+  Este documento es una nota de crédito emitida en sustitución parcial o total de la factura origen.<br>
+  Generado el ${formatDate(new Date().toISOString().slice(0,10))} · altcare Manufacturing OS
+</div>
+
+</body></html>`;
+
+  const w = window.open('', '_blank');
+  if (!w) { ui.toast('Permitir ventanas emergentes para imprimir', 'error'); return; }
+  w.document.write(html);
+  w.document.close();
+}
+
 function escapeHtml(s) { return String(s ?? '').replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m])); }
 function formatDate(iso) { return iso ? new Date(iso).toLocaleDateString('es-VE', { day: '2-digit', month: 'long', year: 'numeric' }) : '—'; }
 function formatMoney(amount, ccy) {
@@ -2046,15 +3276,12 @@ Object.assign(window, {
   renderCuentasPorCobrar: typeof renderCuentasPorCobrar !== 'undefined' ? renderCuentasPorCobrar : undefined,
   onSearch: typeof onSearch !== 'undefined' ? onSearch : undefined,
   onTypeFilter: typeof onTypeFilter !== 'undefined' ? onTypeFilter : undefined,
+  onDeliveryFilter: typeof onDeliveryFilter !== 'undefined' ? onDeliveryFilter : undefined,
   newDoc: typeof newDoc !== 'undefined' ? newDoc : undefined,
   renderCreate: typeof renderCreate !== 'undefined' ? renderCreate : undefined,
   renderVenSummary: typeof renderVenSummary !== 'undefined' ? renderVenSummary : undefined,
   onCustomerChange: typeof onCustomerChange !== 'undefined' ? onCustomerChange : undefined,
   setSalesperson: typeof setSalesperson !== 'undefined' ? setSalesperson : undefined,
-  onIssueDateChange: typeof onIssueDateChange !== 'undefined' ? onIssueDateChange : undefined,
-  onPaymentDaysChange: typeof onPaymentDaysChange !== 'undefined' ? onPaymentDaysChange : undefined,
-  onPaymentTermsPreset: typeof onPaymentTermsPreset !== 'undefined' ? onPaymentTermsPreset : undefined,
-  getPaymentDays: typeof getPaymentDays !== 'undefined' ? getPaymentDays : undefined,
   addItem: typeof addItem !== 'undefined' ? addItem : undefined,
   updateItemFormula: typeof updateItemFormula !== 'undefined' ? updateItemFormula : undefined,
   updateItemProduct: typeof updateItemProduct !== 'undefined' ? updateItemProduct : undefined,
@@ -2070,6 +3297,15 @@ Object.assign(window, {
   backToList: typeof backToList !== 'undefined' ? backToList : undefined,
   renderDetail: typeof renderDetail !== 'undefined' ? renderDetail : undefined,
   convertTo: typeof convertTo !== 'undefined' ? convertTo : undefined,
+  // Estado de entrega
+  renderDeliveryCard: typeof renderDeliveryCard !== 'undefined' ? renderDeliveryCard : undefined,
+  openShipModal: typeof openShipModal !== 'undefined' ? openShipModal : undefined,
+  confirmShip: typeof confirmShip !== 'undefined' ? confirmShip : undefined,
+  openDeliveredModal: typeof openDeliveredModal !== 'undefined' ? openDeliveredModal : undefined,
+  confirmDelivered: typeof confirmDelivered !== 'undefined' ? confirmDelivered : undefined,
+  openEditDeliveryModal: typeof openEditDeliveryModal !== 'undefined' ? openEditDeliveryModal : undefined,
+  confirmEditDelivery: typeof confirmEditDelivery !== 'undefined' ? confirmEditDelivery : undefined,
+  confirmRevertDelivery: typeof confirmRevertDelivery !== 'undefined' ? confirmRevertDelivery : undefined,
   cancelDoc: typeof cancelDoc !== 'undefined' ? cancelDoc : undefined,
   confirmCancel: typeof confirmCancel !== 'undefined' ? confirmCancel : undefined,
   // Notas de Crédito
@@ -2100,6 +3336,26 @@ Object.assign(window, {
   cancelAssign: typeof cancelAssign !== 'undefined' ? cancelAssign : undefined,
   saveAssignment: typeof saveAssignment !== 'undefined' ? saveAssignment : undefined,
   printDoc: typeof printDoc !== 'undefined' ? printDoc : undefined,
+  printCreditNote: typeof printCreditNote !== 'undefined' ? printCreditNote : undefined,
+  // Notas de Débito
+  renderDebitNotesSection: typeof renderDebitNotesSection !== 'undefined' ? renderDebitNotesSection : undefined,
+  openDebitNoteForm: typeof openDebitNoteForm !== 'undefined' ? openDebitNoteForm : undefined,
+  renderDebitNoteForm: typeof renderDebitNoteForm !== 'undefined' ? renderDebitNoteForm : undefined,
+  setNDReason: typeof setNDReason !== 'undefined' ? setNDReason : undefined,
+  setNDMode: typeof setNDMode !== 'undefined' ? setNDMode : undefined,
+  setNDApplyIva: typeof setNDApplyIva !== 'undefined' ? setNDApplyIva : undefined,
+  setNDFreeAmount: typeof setNDFreeAmount !== 'undefined' ? setNDFreeAmount : undefined,
+  setNDIsGross: typeof setNDIsGross !== 'undefined' ? setNDIsGross : undefined,
+  setNDInterestRate: typeof setNDInterestRate !== 'undefined' ? setNDInterestRate : undefined,
+  setNDInterestDays: typeof setNDInterestDays !== 'undefined' ? setNDInterestDays : undefined,
+  applyNDInterestCalc: typeof applyNDInterestCalc !== 'undefined' ? applyNDInterestCalc : undefined,
+  addNDItem: typeof addNDItem !== 'undefined' ? addNDItem : undefined,
+  removeNDItem: typeof removeNDItem !== 'undefined' ? removeNDItem : undefined,
+  updateNDItem: typeof updateNDItem !== 'undefined' ? updateNDItem : undefined,
+  confirmDebitNote: typeof confirmDebitNote !== 'undefined' ? confirmDebitNote : undefined,
+  viewDebitNote: typeof viewDebitNote !== 'undefined' ? viewDebitNote : undefined,
+  cancelDebitNote: typeof cancelDebitNote !== 'undefined' ? cancelDebitNote : undefined,
+  printDebitNote: typeof printDebitNote !== 'undefined' ? printDebitNote : undefined,
   escapeHtml: typeof escapeHtml !== 'undefined' ? escapeHtml : undefined,
   formatDate: typeof formatDate !== 'undefined' ? formatDate : undefined,
   formatMoney: typeof formatMoney !== 'undefined' ? formatMoney : undefined,

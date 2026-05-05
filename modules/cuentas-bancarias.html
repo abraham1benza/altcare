@@ -204,7 +204,6 @@ function renderList() {
           ${totalsBar}
         </div>
         <div class="action-bar-right">
-          <button class="btn btn-secondary btn-sm" onclick="repairBankMoves()" title="Reconstruye movimientos bancarios faltantes desde los pagos guardados. Úsalo si los saldos están en cero pero hay pagos registrados.">🔧 Reparar</button>
           <button class="btn btn-secondary btn-sm" onclick="recalcBalances()" title="Recalcula los saldos desde los movimientos. Útil si hay diferencia.">${ui.icon('refresh')} Recalcular</button>
           <button class="btn btn-primary" onclick="newAccount()">${ui.icon('plus')} Nueva cuenta</button>
         </div>
@@ -492,37 +491,13 @@ function saveMove(e, id) {
 
 function recalcBalances() {
   ui.confirm(
-    '¿Recalcular los saldos de todas las cuentas desde sus movimientos? Esto corrige diferencias en los saldos sin tocar los movimientos.',
+    '¿Recalcular los saldos de todas las cuentas desde sus movimientos? Esto corrige diferencias por bugs anteriores. No elimina movimientos.',
     () => {
-      const result = payments.recalcAllBalances();
-      let msg = '';
-      if (result.fixed > 0) msg = `${result.fixed} cuenta(s) corregida(s). `;
-      else msg = 'Todos los saldos coincidían. ';
-      if (result.skippedSafe > 0) {
-        msg += `\n\n⚠️ ${result.skippedSafe} cuenta(s) tienen pagos guardados pero sin movimientos bancarios. Usa "Reparar" para reconstruir esos movimientos.`;
-        ui.toast(msg, 'warning');
-      } else {
-        ui.toast(msg, 'success');
-      }
+      const fixed = payments.recalcAllBalances();
+      ui.toast(fixed > 0 ? `${fixed} cuenta(s) corregida(s)` : 'Todos los saldos están correctos', 'success');
       render();
     },
     { confirmLabel: 'Recalcular' }
-  );
-}
-
-function repairBankMoves() {
-  ui.confirm(
-    '¿Reconstruir movimientos bancarios faltantes desde los pagos? Esto crea movimientos bancarios para los pagos que perdieron su movimiento. NO se duplican: solo se crean los que faltan. Después se recalculan los saldos.',
-    () => {
-      const result = payments.repairMissingBankMoves();
-      if (result.rebuilt === 0) {
-        ui.toast('No hay movimientos faltantes. Todos los pagos tienen su movimiento bancario.', 'info');
-      } else {
-        ui.toast(`${result.rebuilt} movimiento(s) reconstruido(s) en ${result.accountsAffected} cuenta(s). ${result.balancesFixed} saldo(s) actualizado(s).`, 'success');
-      }
-      render();
-    },
-    { confirmLabel: 'Reparar movimientos' }
   );
 }
 
@@ -905,7 +880,6 @@ Object.assign(window, {
   newManualMove: typeof newManualMove !== 'undefined' ? newManualMove : undefined,
   saveMove: typeof saveMove !== 'undefined' ? saveMove : undefined,
   recalcBalances: typeof recalcBalances !== 'undefined' ? recalcBalances : undefined,
-  repairBankMoves: typeof repairBankMoves !== 'undefined' ? repairBankMoves : undefined,
   quickDeposit: typeof quickDeposit !== 'undefined' ? quickDeposit : undefined,
   quickWithdraw: typeof quickWithdraw !== 'undefined' ? quickWithdraw : undefined,
   confirmQuickMove: typeof confirmQuickMove !== 'undefined' ? confirmQuickMove : undefined,
