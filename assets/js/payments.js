@@ -414,19 +414,41 @@ const payments = {
    * Devuelve cuántas cuentas se repararon.
    */
   recalcAllBalances() {
+    // VERSIÓN SEGURA: NO sobreescribe balance con 0 si la cuenta tiene payments
+    // huérfanos (sin bankMoves). Solo recalcula cuentas que tienen movimientos.
     let fixed = 0;
-    db.getAll(db.COLLECTIONS.bankAccounts).forEach(a => {
+    let skippedSafe = 0;        // cuentas saltadas por seguridad (tenían payments sin moves)
+    let skippedNoData = 0;      // cuentas sin nada (sin moves ni payments)
+    const accounts = db.getAll(db.COLLECTIONS.bankAccounts);
+
+    accounts.forEach(a => {
       const moves = db.query(db.COLLECTIONS.bankMoves, m => m.accountId === a.id);
+      // Detectar payments asociados a esta cuenta
+      const paymentsForAccount = db.query(db.COLLECTIONS.payments, p => p.bankAccountId === a.id);
+
+      // CASO PELIGROSO: la cuenta tiene payments pero no tiene bankMoves
+      // Esto pasa cuando los bankMoves se perdieron pero los payments no.
+      // NO podemos recalcular a 0 porque rompería la realidad.
+      if (paymentsForAccount.length > 0 && moves.length === 0) {
+        console.warn(`[recalcBalances] Cuenta "${a.name}" tiene ${paymentsForAccount.length} pagos pero 0 movimientos bancarios. Saltando para no perder datos. Usá "Reparar movimientos" para reconstruirlos.`);
+        skippedSafe++;
+        return;
+      }
+
+      // CASO NORMAL: cuenta sin nada (ni moves ni payments)
+      // No tocamos su balance — si está en 0 sigue en 0; si tiene un saldo manual lo respetamos
+      if (moves.length === 0 && paymentsForAccount.length === 0) {
+        skippedNoData++;
+        return;
+      }
+
+      // CASO NORMAL: recalcular desde los movimientos
       let realBalance = 0;
-      // Ordenar por fecha+timestamp y recalcular
       moves.sort((x,y) => (x.timestamp||'').localeCompare(y.timestamp||''));
       moves.forEach(m => {
         const isCredit = ['DEPOSIT','OPENING','TRANSFER_IN','PAYMENT_IN'].includes(m.type);
         const isDebit = ['WITHDRAWAL','TRANSFER_OUT','PAYMENT_OUT','FEE'].includes(m.type);
         const sign = isCredit ? 1 : (isDebit ? -1 : 1);
-        // IMPORTANTE: usar el equivalente en moneda de la cuenta para el saldo
-        // En movimientos viejos (antes del fix) puede no existir amountInAccountCurrency,
-        // en ese caso asumir que estaban en la moneda de la cuenta
         const amountForBalance = m.amountInAccountCurrency != null
           ? parseFloat(m.amountInAccountCurrency)
           : parseFloat(m.amount) || 0;
@@ -440,7 +462,129 @@ const payments = {
         fixed++;
       }
     });
-    return fixed;
+    return { fixed, skippedSafe, skippedNoData };
+  },
+
+  /**
+   * REPARACIÓN: Reconstruye los bankMoves faltantes desde los payments existentes.
+   * Útil cuando se perdieron los bankMoves pero los payments siguen en la DB.
+   *
+   * Para cada payment con bankAccountId, verifica si existe un bankMove con paymentId = payment.id.
+   * Si NO existe, lo crea.
+   *
+   * Después llama recalcAllBalances() para actualizar los saldos.
+   *
+   * @returns {object} { rebuilt, accountsAffected, balancesFixed }
+   */
+  repairMissingBankMoves() {
+    const allPayments = db.getAll(db.COLLECTIONS.payments);
+    const allMoves = db.getAll(db.COLLECTIONS.bankMoves);
+    // Set de paymentIds que ya tienen bankMove
+    const movesByPaymentId = new Set(allMoves.map(m => m.paymentId).filter(Boolean));
+
+    let rebuilt = 0;
+    const accountsAffected = new Set();
+
+    allPayments.forEach(p => {
+      if (!p.bankAccountId) return;          // pago sin cuenta (caja, no aplica)
+      if (movesByPaymentId.has(p.id)) return; // ya tiene bankMove → OK
+
+      // Reconstruir el bankMove desde los datos del payment
+      const account = db.getById(db.COLLECTIONS.bankAccounts, p.bankAccountId);
+      if (!account) {
+        console.warn(`[repair] Pago ${p.code} apunta a cuenta inexistente ${p.bankAccountId}`);
+        return;
+      }
+
+      const isCredit = p.direction === 'IN';
+      const moveType = isCredit ? 'PAYMENT_IN' : 'PAYMENT_OUT';
+      const sign = isCredit ? 1 : -1;
+
+      // Calcular el amount en la moneda de la cuenta (igual que registerBankMove pero sin actualizar balance)
+      const ccy = p.currency;
+      const amt = parseFloat(p.amount) || 0;
+      let amountInAccountCcy = amt;
+      let conversionApplied = false;
+      let usedRate = null;
+      let usedRateType = null;
+
+      if (ccy !== account.currency) {
+        conversionApplied = true;
+        // Usar la tasa que el payment tenía guardada
+        usedRate = parseFloat(p.conversionRate) || parseFloat(p.rateAtPayment) || 0;
+        usedRateType = p.conversionRateType || p.rateTypeAtPayment || 'BCV_USD';
+
+        if (!usedRate || usedRate <= 0) {
+          // Fallback: usar BCV actual
+          if ((ccy === 'USD' && account.currency === 'VES') || (ccy === 'VES' && account.currency === 'USD')) {
+            const r = currency.getRate('BCV_USD');
+            usedRate = r?.value || 0;
+            usedRateType = 'BCV_USD';
+          }
+        }
+
+        if (usedRate > 0) {
+          let amtInVES = 0;
+          if (ccy === 'VES') amtInVES = amt;
+          else amtInVES = amt * usedRate;
+          if (account.currency === 'VES') amountInAccountCcy = amtInVES;
+          else amountInAccountCcy = amtInVES / usedRate;
+          amountInAccountCcy = Math.round(amountInAccountCcy * 100) / 100;
+        }
+      }
+
+      const move = {
+        accountId: p.bankAccountId,
+        accountName: account.name,
+        type: moveType,
+        direction: isCredit ? 'IN' : 'OUT',
+        amount: amt,
+        currency: ccy,
+        amountInAccountCurrency: amountInAccountCcy,
+        accountCurrency: account.currency,
+        conversionApplied,
+        conversionRate: usedRate || null,
+        conversionRateType: usedRateType || null,
+        signedAmount: amountInAccountCcy * sign,
+        runningBalance: 0,           // se calcula al final con recalcAllBalances
+        date: p.date,
+        timestamp: p.createdAt || p.date + 'T00:00:00.000Z',
+        reference: `${isCredit ? 'Cobro de' : 'Pago a'} ${p.counterpartyName || '?'} · ${p.relatedDocCode || ''} (reparado)`,
+        paymentId: p.id,
+        counterpartyName: p.counterpartyName || ''
+      };
+      db.save(db.COLLECTIONS.bankMoves, move);
+      rebuilt++;
+      accountsAffected.add(p.bankAccountId);
+    });
+
+    // Recalcular balances de las cuentas afectadas
+    let balancesFixed = 0;
+    accountsAffected.forEach(accountId => {
+      const a = db.getById(db.COLLECTIONS.bankAccounts, accountId);
+      if (!a) return;
+      const moves = db.query(db.COLLECTIONS.bankMoves, m => m.accountId === accountId);
+      let realBalance = 0;
+      moves.sort((x,y) => (x.timestamp||'').localeCompare(y.timestamp||''));
+      moves.forEach(m => {
+        const isCredit = ['DEPOSIT','OPENING','TRANSFER_IN','PAYMENT_IN'].includes(m.type);
+        const isDebit = ['WITHDRAWAL','TRANSFER_OUT','PAYMENT_OUT','FEE'].includes(m.type);
+        const sign = isCredit ? 1 : (isDebit ? -1 : 1);
+        const amountForBalance = m.amountInAccountCurrency != null
+          ? parseFloat(m.amountInAccountCurrency)
+          : parseFloat(m.amount) || 0;
+        realBalance += amountForBalance * sign;
+        m.runningBalance = realBalance;
+        db.save(db.COLLECTIONS.bankMoves, m);
+      });
+      if (Math.abs((a.balance||0) - realBalance) > 0.01) {
+        a.balance = realBalance;
+        db.save(db.COLLECTIONS.bankAccounts, a);
+        balancesFixed++;
+      }
+    });
+
+    return { rebuilt, accountsAffected: accountsAffected.size, balancesFixed };
   },
 
   /**
