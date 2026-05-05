@@ -313,15 +313,18 @@ function newDoc(initialType) {
   const me = auth.currentUser();
   const meUser = me ? db.query(db.COLLECTIONS.users, u => u.email === me.email)[0] : null;
   const autoVendor = (meUser && meUser.commissionEnabled) ? meUser : null;
+  const issueDate = new Date().toISOString().slice(0,10);
+  const defaultTerms = cfg.invoicePaymentTermsDefault || 'Contado';
+  const defaultDays = parsePaymentTermsDays(defaultTerms);
   creating = {
     type: docType,
     code: db.nextCode(db.COLLECTIONS.salesOrders, codePrefix),
     customerId: '', customerName: '',
     currency: 'VES',
     rateType: cfg.defaultRateType || 'BCV_USD',
-    issueDate: new Date().toISOString().slice(0,10),
-    dueDate: '',
-    paymentTerms: cfg.invoicePaymentTermsDefault || 'Contado',
+    issueDate: issueDate,
+    dueDate: defaultDays > 0 ? addDaysToDateStr(issueDate, defaultDays) : '',
+    paymentTerms: defaultTerms,
     items: [],
     notes: '',
     salespersonId: autoVendor ? autoVendor.id : '',
@@ -420,11 +423,15 @@ function renderCreate() {
             <option value="">— Selecciona —</option>
             ${customers.map(cu => `<option value="${cu.id}" ${cu.id===c.customerId?'selected':''}>${ui.escape(cu.name)} · ${ui.escape(cu.rif||'')}</option>`).join('')}
           </select></div>
-          <div class="field"><label class="field-label">Fecha emisión</label><input class="input" type="date" value="${c.issueDate}" onchange="creating.issueDate=this.value"></div>
-          <div class="field"><label class="field-label">Vencimiento</label><input class="input" type="date" value="${c.dueDate||''}" onchange="creating.dueDate=this.value"></div>
-          <div class="field"><label class="field-label">Términos de pago</label><select class="select" onchange="creating.paymentTerms=this.value">
-            ${['Contado','7 días','15 días','30 días','45 días','60 días','90 días'].map(t => `<option ${t===c.paymentTerms?'selected':''}>${t}</option>`).join('')}
-          </select></div>
+          <div class="field"><label class="field-label">Fecha emisión</label><input class="input" type="date" value="${c.issueDate}" onchange="onIssueDateChange(this.value)"></div>
+          <div class="field"><label class="field-label">Vencimiento</label><input id="ven-due-date" class="input" type="date" value="${c.dueDate||''}" onchange="onDueDateChange(this.value)"></div>
+          <div class="field"><label class="field-label">Términos de pago (días)</label>
+            <div style="display:flex;gap:8px;align-items:center;">
+              <input id="ven-terms-days" class="input" type="number" min="0" step="1" value="${parsePaymentTermsDays(c.paymentTerms)}" placeholder="0 = Contado" style="flex:1;font-family:var(--font-mono);text-align:right;" oninput="onPaymentTermsDaysChange(this.value)">
+              <span style="color:var(--ink-3);font-size:12px;white-space:nowrap;">días</span>
+            </div>
+            <div style="font-size:11px;color:var(--ink-3);margin-top:4px;">Actual: <strong id="ven-terms-label">${ui.escape(c.paymentTerms||'Contado')}</strong> · El vencimiento se recalcula automáticamente</div>
+          </div>
           <div class="field"><label class="field-label">Moneda</label><select class="select" onchange="creating.currency=this.value;render()">
             <option value="VES" ${c.currency==='VES'?'selected':''}>Bolívares (VES)</option>
             <option value="USD" ${c.currency==='USD'?'selected':''}>Dólares (USD)</option>
@@ -495,7 +502,87 @@ function onCustomerChange(cid) {
   if (cu) {
     creating.customerName = cu.name;
     if (cu.preferredCurrency) creating.currency = cu.preferredCurrency;
-    if (cu.paymentTerms) creating.paymentTerms = cu.paymentTerms;
+    if (cu.paymentTerms) {
+      creating.paymentTerms = cu.paymentTerms;
+      // Recalcular vencimiento según los días que vengan del cliente
+      const days = parsePaymentTermsDays(cu.paymentTerms);
+      creating.dueDate = addDaysToDateStr(creating.issueDate, days);
+    }
+  }
+  render();
+}
+
+/**
+ * Extrae los días de un string de términos de pago.
+ * "30 días" → 30, "Contado" → 0, "" → 0, "15" → 15
+ */
+function parsePaymentTermsDays(terms) {
+  if (!terms) return 0;
+  if (typeof terms === 'number') return terms;
+  const s = String(terms).trim().toLowerCase();
+  if (s === 'contado' || s === '') return 0;
+  const m = s.match(/(\d+)/);
+  return m ? parseInt(m[1], 10) : 0;
+}
+
+/**
+ * Suma días a una fecha en formato 'YYYY-MM-DD' y devuelve string en el mismo formato.
+ * Usa parsing local para evitar corrimientos de zona horaria.
+ */
+function addDaysToDateStr(dateStr, days) {
+  if (!dateStr) return '';
+  const [y, m, d] = dateStr.split('-').map(n => parseInt(n, 10));
+  const dt = new Date(y, (m||1) - 1, d||1);
+  dt.setDate(dt.getDate() + (parseInt(days, 10) || 0));
+  const yy = dt.getFullYear();
+  const mm = String(dt.getMonth() + 1).padStart(2, '0');
+  const dd = String(dt.getDate()).padStart(2, '0');
+  return `${yy}-${mm}-${dd}`;
+}
+
+/**
+ * Calcula la diferencia en días entre dos fechas 'YYYY-MM-DD' (b - a).
+ */
+function daysBetweenDateStr(a, b) {
+  if (!a || !b) return 0;
+  const [ya, ma, da] = a.split('-').map(n => parseInt(n, 10));
+  const [yb, mb, db_] = b.split('-').map(n => parseInt(n, 10));
+  const dA = new Date(ya, (ma||1) - 1, da||1);
+  const dB = new Date(yb, (mb||1) - 1, db_||1);
+  const ms = dB.getTime() - dA.getTime();
+  return Math.round(ms / (1000 * 60 * 60 * 24));
+}
+
+/** El usuario escribe la cantidad de días → recalcula vencimiento y paymentTerms */
+function onPaymentTermsDaysChange(val) {
+  const days = Math.max(0, parseInt(val, 10) || 0);
+  creating.paymentTerms = days === 0 ? 'Contado' : `${days} días`;
+  creating.dueDate = days === 0 ? '' : addDaysToDateStr(creating.issueDate, days);
+  // Update parcial sin re-render (para no perder el foco mientras se escribe)
+  const dueEl = document.getElementById('ven-due-date');
+  if (dueEl) dueEl.value = creating.dueDate || '';
+  const labelEl = document.getElementById('ven-terms-label');
+  if (labelEl) labelEl.textContent = creating.paymentTerms || 'Contado';
+}
+
+/** El usuario cambia la fecha de emisión → recalcula vencimiento manteniendo los días */
+function onIssueDateChange(val) {
+  creating.issueDate = val;
+  const days = parsePaymentTermsDays(creating.paymentTerms);
+  if (days > 0) {
+    creating.dueDate = addDaysToDateStr(val, days);
+  }
+  render();
+}
+
+/** El usuario cambia el vencimiento manualmente → recalcula los días y paymentTerms */
+function onDueDateChange(val) {
+  creating.dueDate = val;
+  if (!val) {
+    creating.paymentTerms = 'Contado';
+  } else {
+    const days = Math.max(0, daysBetweenDateStr(creating.issueDate, val));
+    creating.paymentTerms = days === 0 ? 'Contado' : `${days} días`;
   }
   render();
 }
