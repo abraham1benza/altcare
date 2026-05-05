@@ -36,17 +36,20 @@ const sales = {
   checkStockAvailability(items) {
     const warnings = [];
     items.forEach((it, idx) => {
-      const qty = parseFloat(it.quantity) || 0;
-
-      // Caso 1: ítem con lote específico (sin fórmula o lote forzado) → validar contra ese lote
-      if (it.fgLotId) {
-        const lot = db.getById(db.COLLECTIONS.finishedGoods, it.fgLotId);
-        const totalAvailable = (lot && lot.status === 'LIBERADO') ? (lot.balance || 0) : 0;
+      // Caso 1: item con fórmula → chequear stock total de los lotes de esa fórmula
+      if (it.formulaId) {
+        const lots = db.query(db.COLLECTIONS.finishedGoods, l =>
+          l.formulaId === it.formulaId &&
+          l.status === 'LIBERADO' &&
+          l.balance > 0
+        );
+        const totalAvailable = lots.reduce((s, l) => s + (l.balance || 0), 0);
+        const qty = parseFloat(it.quantity) || 0;
         if (qty > totalAvailable) {
           warnings.push({
             itemIdx: idx,
-            formulaId: it.formulaId || null,
-            formulaName: it.formulaName || it.description || (lot ? lot.code : ''),
+            formulaId: it.formulaId,
+            formulaName: it.formulaName || it.description,
             requested: qty,
             available: totalAvailable,
             missing: qty - totalAvailable
@@ -54,27 +57,25 @@ const sales = {
         }
         return;
       }
-
-      // Caso 2: ítem libre sin fórmula y sin lote → no controlamos stock
-      if (!it.formulaId) return;
-
-      // Caso 3: ítem con fórmula → sumar todos los lotes liberados de la fórmula
-      const lots = db.query(db.COLLECTIONS.finishedGoods, l =>
-        l.formulaId === it.formulaId &&
-        l.status === 'LIBERADO' &&
-        l.balance > 0
-      );
-      const totalAvailable = lots.reduce((s, l) => s + (l.balance || 0), 0);
-      if (qty > totalAvailable) {
-        warnings.push({
-          itemIdx: idx,
-          formulaId: it.formulaId,
-          formulaName: it.formulaName || it.description,
-          requested: qty,
-          available: totalAvailable,
-          missing: qty - totalAvailable
-        });
+      // Caso 2: item con lote directo (sin fórmula) → chequear el balance del lote específico
+      if (it.fgLotId) {
+        const lot = db.getById(db.COLLECTIONS.finishedGoods, it.fgLotId);
+        if (!lot) return;
+        const available = parseFloat(lot.balance) || 0;
+        const qty = parseFloat(it.quantity) || 0;
+        if (qty > available) {
+          warnings.push({
+            itemIdx: idx,
+            formulaId: null,
+            formulaName: lot.productName || lot.formulaName || it.description,
+            requested: qty,
+            available,
+            missing: qty - available
+          });
+        }
+        return;
       }
+      // Caso 3: ítem libre sin fórmula ni lote → no se controla stock
     });
     return { ok: warnings.length === 0, warnings };
   },
@@ -303,7 +304,7 @@ const sales = {
    * Crea un documento de venta en estado inicial (PEDIDO por defecto).
    * Items: [{ formulaId, formulaName, fgLotId (opcional), quantity, unitPrice, unit, notes }]
    */
-  create({ customerId, currency: docCurrency, rateType, items, status, notes, paymentTerms, dueDate, salespersonId, salespersonName, customerAddress }) {
+  create({ customerId, currency: docCurrency, rateType, items, status, notes, paymentTerms, dueDate, salespersonId, salespersonName }) {
     const customer = db.getById(db.COLLECTIONS.customers, customerId);
     if (!customer) throw new Error('Cliente no encontrado');
     if (!items || !items.length) throw new Error('Debe haber al menos un ítem');
@@ -352,7 +353,7 @@ const sales = {
       customerId,
       customerName: customer.name,
       customerRif: customer.rif,
-      customerAddress: (customerAddress != null ? customerAddress : customer.address) || '',
+      customerAddress: customer.address || '',
       customerPhone: customer.phone || '',
       // Numeración fiscal (solo se asigna al convertir a FACTURA, NUNCA a NE)
       invoiceNumber: null,
@@ -387,22 +388,6 @@ const sales = {
       // Vendedor asignado (para comisiones)
       salespersonId: salespersonId || null,
       salespersonName: salespersonName || '',
-      // Estado de entrega / logística
-      // PENDIENTE: aún no se despachó · DESPACHADO: salió del almacén · ENTREGADO: recibido por el cliente
-      // NO_APLICA: para cotizaciones (no se entrega mercancía)
-      deliveryStatus: docType === 'COTIZACION' ? 'NO_APLICA' : 'PENDIENTE',
-      shippedAt: null,                // ISO datetime al marcar despachado
-      shippedDate: null,              // YYYY-MM-DD (para mostrar/calcular)
-      deliveredAt: null,              // ISO datetime al marcar entregado
-      deliveredDate: null,            // YYYY-MM-DD
-      carrierId: null,
-      carrierName: null,
-      carrierType: null,
-      trackingNumber: null,
-      deliveryNotes: null,
-      // Si dueDate fue puesto manualmente por el usuario, no recalcular automáticamente
-      // al avanzar el estado de entrega. Por defecto sí recalcula.
-      dueDateAuto: true,
       // Cancelación
       cancelled: false,
       cancellationReason: null,
@@ -427,166 +412,6 @@ const sales = {
     }
 
     return db.getById(db.COLLECTIONS.salesOrders, saved.id);
-  },
-
-  // ====== ENTREGA / LOGÍSTICA ======
-
-  /**
-   * Helper local para sumar días a una fecha YYYY-MM-DD.
-   * Usa parsing local para evitar corrimientos por TZ.
-   */
-  _addDaysToDateStr(dateStr, days) {
-    if (!dateStr) return '';
-    const [y, m, d] = dateStr.split('-').map(n => parseInt(n, 10));
-    const dt = new Date(y, (m||1) - 1, d||1);
-    dt.setDate(dt.getDate() + (parseInt(days, 10) || 0));
-    const yy = dt.getFullYear();
-    const mm = String(dt.getMonth() + 1).padStart(2, '0');
-    const dd = String(dt.getDate()).padStart(2, '0');
-    return `${yy}-${mm}-${dd}`;
-  },
-
-  /** Extrae los días de un string de términos de pago. "30 días" → 30, "Contado" → 0. */
-  _parsePaymentTermsDays(terms) {
-    if (!terms) return 0;
-    if (typeof terms === 'number') return terms;
-    const s = String(terms).trim().toLowerCase();
-    if (s === 'contado' || s === '') return 0;
-    const m = s.match(/(\d+)/);
-    return m ? parseInt(m[1], 10) : 0;
-  },
-
-  /**
-   * Recalcula el dueDate del documento según la regla de negocio:
-   *   fecha_base = deliveredDate || shippedDate || issueDate
-   *   dueDate = fecha_base + días_de_crédito
-   *
-   * Casos donde NO recalcula (preserva el dueDate actual):
-   *   - El usuario lo editó manualmente (dueDateAuto = false)
-   *   - El doc está pago al contado (paymentTerms = "Contado") porque no aplica
-   *   - El doc ya está totalmente pagado (cobrado) — proteger casos contado-anticipado
-   */
-  _recalcDueDate(doc) {
-    if (!doc) return;
-    if (doc.dueDateAuto === false) return; // usuario lo cambió manualmente
-    const days = this._parsePaymentTermsDays(doc.paymentTerms);
-    if (days === 0) return; // contado: no aplica vencimiento
-    // Si ya está totalmente pagado, no movemos la fecha
-    if ((doc.paidAmount || 0) > 0 && (doc.total - (doc.paidAmount || 0)) < 0.01) return;
-    const base = doc.deliveredDate || doc.shippedDate || doc.issueDate;
-    if (!base) return;
-    doc.dueDate = this._addDaysToDateStr(base, days);
-  },
-
-  /**
-   * Marca un pedido/factura/NE como despachado.
-   * @param {string} docId
-   * @param {object} data - { shippedDate, carrierId, trackingNumber, notes }
-   */
-  markShipped(docId, data = {}) {
-    const doc = db.getById(db.COLLECTIONS.salesOrders, docId);
-    if (!doc) throw new Error('Documento no encontrado');
-    if (doc.cancelled) throw new Error('Documento anulado');
-    if (doc.type === 'COTIZACION') throw new Error('Las cotizaciones no se despachan');
-
-    // Datos del transportista (snapshot)
-    let carrierName = data.carrierName || '';
-    let carrierType = data.carrierType || '';
-    if (data.carrierId) {
-      const c = db.getById(db.COLLECTIONS.carriers, data.carrierId);
-      if (c) {
-        carrierName = c.name;
-        carrierType = c.carrierType || '';
-      }
-    }
-
-    doc.deliveryStatus = 'DESPACHADO';
-    doc.shippedDate = data.shippedDate || new Date().toISOString().slice(0, 10);
-    doc.shippedAt = new Date().toISOString();
-    doc.carrierId = data.carrierId || null;
-    doc.carrierName = carrierName || null;
-    doc.carrierType = carrierType || null;
-    doc.trackingNumber = (data.trackingNumber || '').trim() || null;
-    doc.deliveryNotes = (data.notes || '').trim() || null;
-
-    this._recalcDueDate(doc);
-    return db.save(db.COLLECTIONS.salesOrders, doc);
-  },
-
-  /**
-   * Marca un pedido como entregado al cliente. Recalcula vencimiento.
-   * @param {string} docId
-   * @param {object} data - { deliveredDate, notes }
-   */
-  markDelivered(docId, data = {}) {
-    const doc = db.getById(db.COLLECTIONS.salesOrders, docId);
-    if (!doc) throw new Error('Documento no encontrado');
-    if (doc.cancelled) throw new Error('Documento anulado');
-    if (doc.type === 'COTIZACION') throw new Error('Las cotizaciones no se entregan');
-
-    doc.deliveryStatus = 'ENTREGADO';
-    doc.deliveredDate = data.deliveredDate || new Date().toISOString().slice(0, 10);
-    doc.deliveredAt = new Date().toISOString();
-    if (data.notes) {
-      doc.deliveryNotes = doc.deliveryNotes
-        ? `${doc.deliveryNotes}\n[Entrega] ${data.notes}`
-        : data.notes;
-    }
-
-    this._recalcDueDate(doc);
-    return db.save(db.COLLECTIONS.salesOrders, doc);
-  },
-
-  /**
-   * Revierte el estado de entrega a PENDIENTE (limpia todo).
-   * Útil si se marcó por error.
-   */
-  revertDelivery(docId) {
-    const doc = db.getById(db.COLLECTIONS.salesOrders, docId);
-    if (!doc) throw new Error('Documento no encontrado');
-    doc.deliveryStatus = 'PENDIENTE';
-    doc.shippedDate = null;
-    doc.shippedAt = null;
-    doc.deliveredDate = null;
-    doc.deliveredAt = null;
-    doc.carrierId = null;
-    doc.carrierName = null;
-    doc.carrierType = null;
-    doc.trackingNumber = null;
-    // Re-calcular dueDate desde issueDate
-    this._recalcDueDate(doc);
-    return db.save(db.COLLECTIONS.salesOrders, doc);
-  },
-
-  /**
-   * Edita los datos de un despacho ya hecho (transportista, guía, notas, fechas).
-   * No cambia el estado.
-   */
-  editDelivery(docId, data = {}) {
-    const doc = db.getById(db.COLLECTIONS.salesOrders, docId);
-    if (!doc) throw new Error('Documento no encontrado');
-    if (doc.deliveryStatus === 'PENDIENTE') throw new Error('No hay despacho que editar');
-
-    if (data.shippedDate != null) doc.shippedDate = data.shippedDate || null;
-    if (data.deliveredDate != null) doc.deliveredDate = data.deliveredDate || null;
-    if (data.carrierId !== undefined) {
-      doc.carrierId = data.carrierId || null;
-      if (data.carrierId) {
-        const c = db.getById(db.COLLECTIONS.carriers, data.carrierId);
-        if (c) {
-          doc.carrierName = c.name;
-          doc.carrierType = c.carrierType || null;
-        }
-      } else {
-        doc.carrierName = null;
-        doc.carrierType = null;
-      }
-    }
-    if (data.trackingNumber !== undefined) doc.trackingNumber = (data.trackingNumber || '').trim() || null;
-    if (data.notes !== undefined) doc.deliveryNotes = (data.notes || '').trim() || null;
-
-    this._recalcDueDate(doc);
-    return db.save(db.COLLECTIONS.salesOrders, doc);
   },
 
   /**
@@ -1270,218 +1095,6 @@ const sales = {
     db.save(db.COLLECTIONS.creditNotes, note);
 
     return note;
-  },
-
-  // ==========================================================================
-  // ====== NOTAS DE DÉBITO ======
-  // ==========================================================================
-  // Una nota de débito AUMENTA el saldo del cliente sobre una factura origen.
-  // Es un documento independiente con su propio total a cobrar (a diferencia
-  // de la NC que reduce el saldo de la factura). Aparece en libro de ventas
-  // sumando al débito fiscal cuando lleva IVA.
-  // ==========================================================================
-
-  /** Motivos posibles de ND y si por defecto gravan IVA */
-  DEBIT_NOTE_REASONS: {
-    INTEREST:     { label: 'Intereses de mora',      icon: '⏱️',  defaultIva: false }, // exento Art. 4 LIVA
-    SURCHARGE:    { label: 'Recargo / Penalización', icon: '📈',  defaultIva: true  },
-    PRICE_ADJUST: { label: 'Ajuste de precio',       icon: '🔧',  defaultIva: true  },
-    EXTRA_COST:   { label: 'Gastos extras (flete/envío/comisión)', icon: '🚚', defaultIva: true },
-    OTHER:        { label: 'Otro motivo',            icon: '📝',  defaultIva: true  }
-  },
-
-  /** Estados posibles de ND */
-  DEBIT_NOTE_STATUS: {
-    ISSUED:    { label: 'Emitida',          color: 'badge-invoice'   },
-    PAID:      { label: 'Cobrada',          color: 'badge-paid'      },
-    PARTIAL:   { label: 'Parcialmente cobrada', color: 'badge-warning' },
-    CANCELLED: { label: 'Anulada',          color: 'badge-cancelled' }
-  },
-
-  /** Devuelve las NDs de una factura (excluye anuladas) */
-  getDebitNotesForInvoice(invoiceId) {
-    return db.query(db.COLLECTIONS.debitNotes, n => n.invoiceId === invoiceId && n.status !== 'CANCELLED');
-  },
-
-  /** Suma total de NDs activas sobre una factura (en moneda de la factura) */
-  getDebitedAmount(invoiceId) {
-    return this.getDebitNotesForInvoice(invoiceId).reduce((s, n) => s + (n.total || 0), 0);
-  },
-
-  /**
-   * Crea una nota de débito asociada a una factura.
-   * @param {object} args
-   *   - invoiceId         (string, requerido)
-   *   - reason            (key de DEBIT_NOTE_REASONS)
-   *   - mode              ('BY_ITEMS' | 'FREE_AMOUNT')
-   *   - applyIva          (boolean, override del default por motivo)
-   *   - items             [{ description, quantity, unitPrice, exempt }] solo si BY_ITEMS
-   *   - freeAmount        (number) solo si FREE_AMOUNT — base imponible o total según applyIva
-   *   - freeAmountIsGross (boolean) si freeAmount ya incluye IVA (default false)
-   *   - notes
-   *   - invoiceNumber     (N° factura ND fiscal del talonario, opcional al crear)
-   *   - controlNumber     (N° control SENIAT, opcional al crear)
-   *   - interestData      (opcional, solo cuando reason='INTEREST': { days, ratePercent, baseAmount } para auditoría del cálculo)
-   */
-  createDebitNote(args) {
-    const inv = db.getById(db.COLLECTIONS.salesOrders, args.invoiceId);
-    if (!inv) throw new Error('Factura origen no encontrada');
-    if (inv.cancelled) throw new Error('No se puede emitir ND sobre factura anulada');
-    if (inv.type !== 'FACTURA') throw new Error('Solo se pueden emitir ND sobre facturas');
-
-    const reason = args.reason || 'OTHER';
-    const reasonInfo = this.DEBIT_NOTE_REASONS[reason] || this.DEBIT_NOTE_REASONS.OTHER;
-    const mode = args.mode || 'FREE_AMOUNT';
-    // Si el form no especifica applyIva, usa el default del motivo
-    const applyIva = (args.applyIva !== undefined) ? !!args.applyIva : reasonInfo.defaultIva;
-
-    const cfg = db.getById(db.COLLECTIONS.config, 'main') || {};
-    const ivaRate = applyIva ? (cfg.defaultIvaRate || 16) : 0;
-
-    let items = [];
-    let subtotal = 0;
-    let taxableBase = 0;
-    let exemptBase = 0;
-
-    if (mode === 'BY_ITEMS') {
-      if (!Array.isArray(args.items) || args.items.length === 0) {
-        throw new Error('Debe especificar al menos un ítem');
-      }
-      items = args.items.map(it => {
-        const qty = parseFloat(it.quantity) || 0;
-        const price = parseFloat(it.unitPrice) || 0;
-        const sub = round(qty * price);
-        const isExempt = !applyIva || !!it.exempt;
-        if (isExempt) exemptBase += sub;
-        else taxableBase += sub;
-        subtotal += sub;
-        return {
-          description: it.description || '',
-          quantity: qty,
-          unit: it.unit || 'unidad',
-          unitPrice: price,
-          subtotal: sub,
-          exempt: isExempt
-        };
-      });
-    } else {
-      // FREE_AMOUNT: el usuario ingresa un monto. Si applyIva, lo trato como base
-      // a menos que indique freeAmountIsGross=true (en cuyo caso lo descompongo).
-      const amount = parseFloat(args.freeAmount) || 0;
-      if (amount <= 0) throw new Error('El monto debe ser mayor a 0');
-      if (applyIva && args.freeAmountIsGross) {
-        // El usuario puso el total con IVA → calcular base hacia atrás
-        const base = round(amount / (1 + ivaRate / 100));
-        subtotal = base;
-        taxableBase = base;
-      } else if (applyIva) {
-        subtotal = round(amount);
-        taxableBase = round(amount);
-      } else {
-        subtotal = round(amount);
-        exemptBase = round(amount);
-      }
-    }
-
-    subtotal    = round(subtotal);
-    taxableBase = round(taxableBase);
-    exemptBase  = round(exemptBase);
-    const ivaAmount = round(taxableBase * (ivaRate / 100));
-    const total     = round(subtotal + ivaAmount);
-
-    // Numeración interna: ND-XXXX
-    const code = db.nextCode(db.COLLECTIONS.debitNotes, 'ND');
-
-    const note = {
-      code,
-      invoiceId: inv.id,
-      invoiceCode: inv.code,
-      invoiceNumber: inv.invoiceNumber || '',
-      // Cliente (heredado de la factura origen — snapshot)
-      customerId: inv.customerId,
-      customerName: inv.customerName,
-      customerRif: inv.customerRif || '',
-      customerAddress: inv.customerAddress || '',
-      customerPhone: inv.customerPhone || '',
-      // Datos fiscales ND (forma libre — se asignan al imprimir contra el talonario)
-      ndInvoiceNumber: args.invoiceNumber || '',
-      ndControlNumber: args.controlNumber || '',
-      // Datos
-      reason,
-      mode,
-      items,
-      applyIva,
-      // Tasa: heredada de la factura origen para coherencia con SENIAT y libros
-      currency: inv.currency,
-      rateType: inv.rateType || 'BCV_USD',
-      rateValue: inv.rateValue || 0,
-      rateDate: inv.issueDate || null,
-      // Cálculos
-      subtotal,
-      taxableBase,
-      exemptBase,
-      ivaRate,
-      ivaAmount,
-      total,
-      totalVES: inv.currency === 'VES' ? total : round(total * (inv.rateValue || 0)),
-      // Cobranza propia (la ND se cobra como factura independiente)
-      paidAmount: 0,
-      paidPercent: 0,
-      // Vendedor heredado de la factura
-      salespersonId: inv.salespersonId || null,
-      salespersonName: inv.salespersonName || '',
-      // Datos opcionales del motivo (ej. cálculo de interés por mora)
-      interestData: args.interestData || null,
-      // Estado
-      status: 'ISSUED',
-      issueDate: new Date().toISOString().slice(0, 10),
-      dueDate: args.dueDate || null,
-      issuedBy: (typeof window !== 'undefined' && window.auth && window.auth.currentUser()?.email) || 'sistema',
-      notes: args.notes || '',
-      createdAt: new Date().toISOString()
-    };
-
-    return db.save(db.COLLECTIONS.debitNotes, note);
-  },
-
-  /**
-   * Anula una nota de débito ya emitida.
-   * No se puede anular si tiene cobros aplicados (hay que reversarlos antes).
-   */
-  cancelDebitNote(noteId, reason) {
-    const note = db.getById(db.COLLECTIONS.debitNotes, noteId);
-    if (!note) throw new Error('Nota de débito no encontrada');
-    if (note.status === 'CANCELLED') throw new Error('Ya está anulada');
-    if ((note.paidAmount || 0) > 0) {
-      throw new Error('No se puede anular: hay cobros registrados sobre esta ND. Reverse los cobros primero.');
-    }
-    note.status = 'CANCELLED';
-    note.cancellationReason = reason || '';
-    note.cancelledAt = new Date().toISOString();
-    db.save(db.COLLECTIONS.debitNotes, note);
-    return note;
-  },
-
-  /**
-   * Helper para calcular intereses de mora.
-   * Tasa anual / 365 * días * monto base.
-   * Devuelve el monto del interés y los datos de auditoría.
-   */
-  calculateInterest(invoiceId, annualRate, daysOverdue) {
-    const inv = db.getById(db.COLLECTIONS.salesOrders, invoiceId);
-    if (!inv) throw new Error('Factura no encontrada');
-    const baseAmount = inv.total - (inv.paidAmount || 0); // saldo pendiente
-    const dailyRate = (parseFloat(annualRate) || 0) / 365 / 100;
-    const interest = round(baseAmount * dailyRate * (parseInt(daysOverdue, 10) || 0));
-    return {
-      interest,
-      data: {
-        baseAmount,
-        ratePercent: parseFloat(annualRate) || 0,
-        days: parseInt(daysOverdue, 10) || 0,
-        currency: inv.currency
-      }
-    };
   }
 };
 
