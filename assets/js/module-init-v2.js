@@ -77,6 +77,10 @@ window.moduleInit = async function(moduleName) {
       return false;
     }
 
+    // 4b. Aplicar clases CSS de permisos (controla visibilidad de botones de
+    //     editar/eliminar según los permisos del usuario en este módulo)
+    if (auth.applyPermissionClasses) auth.applyPermissionClasses();
+
     // 5. Cargar datos
     setText('Cargando datos...');
     await db.init();

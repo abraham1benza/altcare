@@ -396,6 +396,101 @@ const auth = {
     return this.canAccess(moduleName);
   },
 
+  // ====== PERMISOS DE EDICIÓN Y ELIMINACIÓN ======
+  // Por defecto SOLO admin puede editar/eliminar en cualquier módulo.
+  // El admin puede otorgar permisos individuales a otros usuarios usando los
+  // campos `canEditModules` y `canDeleteModules` del perfil (arrays de
+  // nombres de módulo, ej: ['clientes', 'ventas']).
+  // Casos especiales:
+  //   - 'all' dentro del array significa "todos los módulos"
+  //   - El módulo 'usuarios' SIEMPRE requiere admin (no puede delegarse)
+
+  /**
+   * ¿El usuario actual puede editar registros en el módulo?
+   * @param {string} moduleName  ej. 'clientes', 'ventas', 'compras'
+   */
+  canEdit(moduleName) {
+    if (!this._profile) return false;
+    if (this.isAdmin()) return true;
+    // El módulo de usuarios solo lo edita admin
+    if (moduleName === 'usuarios') return false;
+    const list = this._profile.canEditModules || [];
+    return list.includes('all') || list.includes(moduleName);
+  },
+
+  /**
+   * ¿El usuario actual puede eliminar registros en el módulo?
+   * @param {string} moduleName
+   */
+  canDelete(moduleName) {
+    if (!this._profile) return false;
+    if (this.isAdmin()) return true;
+    if (moduleName === 'usuarios') return false;
+    const list = this._profile.canDeleteModules || [];
+    return list.includes('all') || list.includes(moduleName);
+  },
+
+  /**
+   * Aplica las clases CSS `no-edit` / `no-delete` al <body> según los permisos
+   * del usuario en el módulo actual. Esto hace que el CSS oculte los botones
+   * sin tener que modificar cada vista. El módulo se infiere de la URL.
+   * Llamar al inicio de cada página después de que el perfil esté cargado.
+   *
+   * Además instala un interceptor de defensa: si alguien intenta llamar
+   * editItem/deleteItem (u otras funciones de edición/borrado típicas) sin
+   * permiso (por ejemplo desde la consola), se bloquea y se muestra un toast.
+   */
+  applyPermissionClasses() {
+    if (typeof document === 'undefined' || !document.body) return;
+    // Inferir módulo de la URL: /modules/<moduleName>.html
+    const m = (location.pathname.match(/\/modules\/([^/.]+)\.html?/) || [])[1];
+    if (!m) return;
+    const body = document.body;
+    const canE = this.canEdit(m);
+    const canD = this.canDelete(m);
+    if (canE) body.classList.remove('no-edit');
+    else body.classList.add('no-edit');
+    if (canD) body.classList.remove('no-delete');
+    else body.classList.add('no-delete');
+
+    // ---- Interceptor de defensa ----
+    // Si la página todavía expone funciones globales de edit/delete y el usuario
+    // las invoca sin permiso, las bloqueamos. Esto se ejecuta solo una vez.
+    if (window.__authPermInterceptorInstalled) return;
+    window.__authPermInterceptorInstalled = true;
+
+    const denyToast = (action) => {
+      if (window.ui && window.ui.toast) {
+        window.ui.toast(`Sin permiso para ${action} en este módulo. Pedile al administrador.`, 'error', 4000);
+      } else {
+        alert(`Sin permiso para ${action}.`);
+      }
+    };
+
+    // Intercepta una función global del window: si el flag dice que está
+    // bloqueada, no ejecuta y muestra toast. Si está permitida, ejecuta normal.
+    // Lo hace lazy: en el momento de la llamada vuelve a consultar canEdit/canDelete
+    // (importante por si se permite/revoca el permiso durante la sesión).
+    const self = this;
+    const wrapBlock = (fnName, kind) => {
+      let stored = window[fnName];
+      const wrapped = function(...args) {
+        const action = kind === 'edit' ? 'editar' : 'eliminar';
+        const allowed = kind === 'edit' ? self.canEdit(m) : self.canDelete(m);
+        if (!allowed) { denyToast(action); return; }
+        return stored.apply(this, args);
+      };
+      Object.defineProperty(window, fnName, {
+        configurable: true,
+        get() { return stored ? wrapped : undefined; },
+        set(v) { stored = v; }
+      });
+    };
+
+    wrapBlock('editItem', 'edit');
+    wrapBlock('deleteItem', 'delete');
+  },
+
   // ====== GESTIÓN DE USUARIOS (admin) ======
 
   /**
@@ -441,6 +536,9 @@ const auth = {
         // Visibilidad
         clientAccess: data.clientAccess || 'own',  // 'own' | 'all'
         managerId: data.managerId || null,          // gerente directo (para isolation)
+        // Permisos avanzados (editar/eliminar)
+        canEditModules: data.canEditModules || [],
+        canDeleteModules: data.canDeleteModules || [],
         createdAt: new Date().toISOString(),
         createdBy: currentAdminEmail || 'sistema'
       };
