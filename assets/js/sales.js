@@ -866,7 +866,8 @@ const sales = {
     // 1. Stock: si es devolución y los items tienen stockAction, devolver al inventario
     if (mode === 'BY_ITEMS' && reason === 'RETURN') {
       saved.items.forEach(item => {
-        if (!item.formulaId) return;
+        // Aceptar items con fórmula O con lote directo
+        if (!item.formulaId && !item.fgLotId && !item.originalLotId) return;
         if (item.stockAction === 'LIBERADO' || item.stockAction === 'CUARENTENA') {
           this._returnStockFromCreditNote(item, saved, inv);
         } else if (item.stockAction === 'DISCARD') {
@@ -875,8 +876,8 @@ const sales = {
             inventory.registerMove({
               type: 'DISCARD',
               itemKind: 'PT',
-              itemId: item.formulaId,
-              itemName: item.formulaName,
+              itemId: item.formulaId || null,
+              itemName: item.formulaName || item.description || '',
               quantity: -item.quantity,
               unit: item.unit,
               reference: `NC ${saved.code} · descarte`
