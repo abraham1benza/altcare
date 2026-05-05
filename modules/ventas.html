@@ -637,7 +637,8 @@ function saveDoc() {
   if (!c.customerId) { ui.toast('Selecciona un cliente', 'error'); return; }
   if (!c.items.length) { ui.toast('Agrega al menos un ítem', 'error'); return; }
   for (const it of c.items) {
-    if (!it.formulaId) { ui.toast('Cada ítem debe tener producto seleccionado', 'error'); return; }
+    // Acepta items con fórmula tradicional O con lote sin fórmula (carga inicial vía ingreso)
+    if (!it.formulaId && !it.fgLotId) { ui.toast('Cada ítem debe tener producto seleccionado', 'error'); return; }
     if (!it.quantity || it.quantity <= 0) { ui.toast('Cada ítem debe tener cantidad', 'error'); return; }
     if (!it.unitPrice || it.unitPrice <= 0) { ui.toast('Cada ítem debe tener precio', 'error'); return; }
   }
