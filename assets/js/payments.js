@@ -413,34 +413,98 @@ const payments = {
    * Recalcula el balance real desde los movimientos.
    * Devuelve cuántas cuentas se repararon.
    */
-  recalcAllBalances() {
+  /**
+   * Recalcula los saldos de todas las cuentas desde sus movimientos.
+   *
+   * @param {object} options
+   *   - dryRun: si true, NO modifica nada. Solo devuelve el preview de los cambios.
+   *   - skipEmpty: si true (default), NO toca cuentas sin movimientos (preserva el saldo manual).
+   *
+   * @returns {object} {
+   *     fixed: cantidad de cuentas que se ajustarían/ajustaron
+   *     skipped: cantidad de cuentas sin movimientos que se preservaron
+   *     changes: [{ accountId, name, currency, oldBalance, newBalance, diff, hasMovements }]
+   *   }
+   */
+  recalcAllBalances(options = {}) {
+    const dryRun = !!options.dryRun;
+    const skipEmpty = options.skipEmpty !== false; // default true (seguro)
+    const changes = [];
     let fixed = 0;
+    let skipped = 0;
+
     db.getAll(db.COLLECTIONS.bankAccounts).forEach(a => {
       const moves = db.query(db.COLLECTIONS.bankMoves, m => m.accountId === a.id);
+
+      // SEGURIDAD: si la cuenta NO tiene movimientos pero tiene saldo, no la tocamos.
+      // Esto preserva saldos cargados manualmente o por importación que no generaron
+      // un movimiento OPENING. Antes este código las mandaba a 0 silenciosamente.
+      if (moves.length === 0) {
+        if (skipEmpty && Math.abs(a.balance || 0) > 0.01) {
+          skipped++;
+          changes.push({
+            accountId: a.id,
+            name: a.name,
+            currency: a.currency,
+            oldBalance: a.balance || 0,
+            newBalance: a.balance || 0,
+            diff: 0,
+            hasMovements: false,
+            preserved: true
+          });
+          return;
+        }
+      }
+
+      // Recalcular sumando movimientos en orden
       let realBalance = 0;
-      // Ordenar por fecha+timestamp y recalcular
-      moves.sort((x,y) => (x.timestamp||'').localeCompare(y.timestamp||''));
+      moves.sort((x, y) => (x.timestamp || '').localeCompare(y.timestamp || ''));
+      const movesToUpdate = [];
       moves.forEach(m => {
-        const isCredit = ['DEPOSIT','OPENING','TRANSFER_IN','PAYMENT_IN'].includes(m.type);
-        const isDebit = ['WITHDRAWAL','TRANSFER_OUT','PAYMENT_OUT','FEE'].includes(m.type);
+        const isCredit = ['DEPOSIT', 'OPENING', 'TRANSFER_IN', 'PAYMENT_IN'].includes(m.type);
+        const isDebit  = ['WITHDRAWAL', 'TRANSFER_OUT', 'PAYMENT_OUT', 'FEE'].includes(m.type);
         const sign = isCredit ? 1 : (isDebit ? -1 : 1);
-        // IMPORTANTE: usar el equivalente en moneda de la cuenta para el saldo
-        // En movimientos viejos (antes del fix) puede no existir amountInAccountCurrency,
-        // en ese caso asumir que estaban en la moneda de la cuenta
         const amountForBalance = m.amountInAccountCurrency != null
           ? parseFloat(m.amountInAccountCurrency)
           : parseFloat(m.amount) || 0;
         realBalance += amountForBalance * sign;
-        m.runningBalance = realBalance;
-        db.save(db.COLLECTIONS.bankMoves, m);
+        if (m.runningBalance !== realBalance) {
+          movesToUpdate.push({ move: m, newRunning: realBalance });
+        }
       });
-      if (Math.abs((a.balance||0) - realBalance) > 0.01) {
-        a.balance = realBalance;
-        db.save(db.COLLECTIONS.bankAccounts, a);
+
+      const diff = (a.balance || 0) - realBalance;
+      const willChange = Math.abs(diff) > 0.01 || movesToUpdate.length > 0;
+
+      changes.push({
+        accountId: a.id,
+        name: a.name,
+        currency: a.currency,
+        oldBalance: a.balance || 0,
+        newBalance: realBalance,
+        diff: Math.abs(diff),
+        movesUpdated: movesToUpdate.length,
+        hasMovements: true,
+        preserved: false
+      });
+
+      if (!dryRun && willChange) {
+        // Aplicar cambios
+        movesToUpdate.forEach(({ move, newRunning }) => {
+          move.runningBalance = newRunning;
+          db.save(db.COLLECTIONS.bankMoves, move);
+        });
+        if (Math.abs(diff) > 0.01) {
+          a.balance = realBalance;
+          db.save(db.COLLECTIONS.bankAccounts, a);
+          fixed++;
+        }
+      } else if (dryRun && Math.abs(diff) > 0.01) {
         fixed++;
       }
     });
-    return fixed;
+
+    return { fixed, skipped, changes };
   },
 
   /**
