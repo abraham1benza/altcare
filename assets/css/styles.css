@@ -111,8 +111,18 @@ input, select, textarea { font-family: inherit; font-size: inherit; color: inher
 
 .app {
   display: grid;
-  grid-template-columns: var(--sidebar-w) 1fr;
+  grid-template-columns: var(--sidebar-w) minmax(0, 1fr);
   min-height: 100vh;
+}
+@media (max-width: 1100px) {
+  .app {
+    grid-template-columns: 220px minmax(0, 1fr);
+  }
+}
+@media (max-width: 800px) {
+  .app {
+    grid-template-columns: 200px minmax(0, 1fr);
+  }
 }
 
 .sidebar {
@@ -392,7 +402,18 @@ input, select, textarea { font-family: inherit; font-size: inherit; color: inher
 .fx-pill .label { color: var(--ink-3); font-size: 11px; font-weight: 600; }
 .fx-pill .value { font-family: var(--font-mono); font-weight: 600; color: var(--ink); }
 
-.content { padding: 32px; max-width: 1400px; width: 100%; }
+.content {
+  padding: 32px;
+  max-width: 1600px;
+  width: 100%;
+  min-width: 0;       /* permite que el contenido interior se contraiga */
+}
+@media (max-width: 1100px) {
+  .content { padding: 24px 20px; }
+}
+@media (max-width: 700px) {
+  .content { padding: 18px 14px; }
+}
 
 /* ============== TYPOGRAPHY ============== */
 
@@ -433,10 +454,20 @@ h3 { font-size: 18px; font-weight: 500; font-style: normal; letter-spacing: -0.0
   padding: 24px;
   box-shadow: var(--shadow-1);
   transition: box-shadow var(--t-base);
+  min-width: 0;            /* permite contraerse dentro de un grid */
 }
 .card:hover {
   box-shadow: var(--shadow-2);
 }
+/* Card que contiene directamente una tabla → permitir scroll horizontal */
+.card:has(> table) {
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+.card:has(> table)::-webkit-scrollbar { height: 10px; }
+.card:has(> table)::-webkit-scrollbar-track { background: var(--surface-2); border-radius: 0 0 var(--r-lg) var(--r-lg); }
+.card:has(> table)::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: 5px; border: 2px solid var(--surface-2); }
+.card:has(> table)::-webkit-scrollbar-thumb:hover { background: var(--ink-3); }
 .card-header {
   display: flex;
   align-items: center;
@@ -716,8 +747,26 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--gold); cursor:
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--r-lg);
-  overflow: hidden;
+  overflow-x: auto;        /* barra de scroll horizontal cuando la tabla es más ancha que el contenedor */
+  overflow-y: hidden;
+  max-width: 100%;
 }
+.table-wrap::-webkit-scrollbar { height: 10px; width: 10px; }
+.table-wrap::-webkit-scrollbar-track { background: var(--surface-2); border-radius: 0 0 var(--r-lg) var(--r-lg); }
+.table-wrap::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: 5px; border: 2px solid var(--surface-2); }
+.table-wrap::-webkit-scrollbar-thumb:hover { background: var(--ink-3); }
+
+/* Utility: scroll horizontal con la misma estética del table-wrap.
+   Útil para envolver cualquier cuadro/contenedor con contenido ancho. */
+.scroll-x {
+  overflow-x: auto;
+  overflow-y: hidden;
+  max-width: 100%;
+}
+.scroll-x::-webkit-scrollbar { height: 10px; }
+.scroll-x::-webkit-scrollbar-track { background: var(--surface-2); }
+.scroll-x::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: 5px; border: 2px solid var(--surface-2); }
+.scroll-x::-webkit-scrollbar-thumb:hover { background: var(--ink-3); }
 .table-toolbar {
   display: flex;
   align-items: center;
