@@ -487,6 +487,51 @@ const reports = {
     return { rows: all, totals, rmRows, fgRows };
   },
 
+  // ====== INVENTARIO EN FABRICACIÓN (OFs en proceso) ======
+
+  /**
+   * Productos actualmente en fabricación: OFs con estado IN_PROCESS.
+   * El "valor" es la MP ya consumida/reservada para esa OF (en USD).
+   */
+  inventarioEnFabricacion() {
+    const ofs = db.getAll(db.COLLECTIONS.productionOrders)
+      .filter(o => o.status === 'IN_PROCESS')
+      .sort((a,b) => (a.scheduledDate||'').localeCompare(b.scheduledDate||''));
+
+    const rows = ofs.map(o => {
+      let materialCostUSD = 0;
+      (o.items||[]).forEach(it => {
+        const lot = db.getById(db.COLLECTIONS.rmLots, it.lotId);
+        if (lot) {
+          let usd = (it.required||0) * (lot.unitCost||0);
+          if (lot.costCurrency === 'VES') {
+            const r = currency.getActiveRate();
+            usd = r && r.value ? usd / r.value : 0;
+          }
+          materialCostUSD += usd;
+        }
+      });
+      return {
+        kind: 'OF',
+        code: o.code,
+        name: o.formulaName,
+        unit: o.batchUnit,
+        quantity: o.batchSize || 0,
+        scheduledDate: o.scheduledDate,
+        valueUSD: materialCostUSD,
+        ofId: o.id,
+        formulaVersion: o.formulaVersion
+      };
+    });
+
+    const totals = {
+      countOFs: rows.length,
+      totalQty: rows.reduce((s,r) => s + r.quantity, 0),
+      totalValueUSD: rows.reduce((s,r) => s + r.valueUSD, 0)
+    };
+    return { rows, totals };
+  },
+
   // ====== PRODUCCIÓN POR PERÍODO ======
 
   produccion(from, to) {

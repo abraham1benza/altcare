@@ -10,6 +10,7 @@ const inventory = {
   // arma el kardex y la trazabilidad.
   MOVE_TYPES: {
     RECEIPT_MP:    { code: 'RECEIPT_MP',    label: 'Recepción de MP',          direction: 'in'  },
+    INITIAL_LOAD:  { code: 'INITIAL_LOAD',  label: 'Carga inicial',             direction: 'in'  },
     CONSUMPTION:   { code: 'CONSUMPTION',   label: 'Consumo en producción',     direction: 'out' },
     PRODUCTION:    { code: 'PRODUCTION',    label: 'Producción de PT',          direction: 'in'  },
     SALE:          { code: 'SALE',          label: 'Venta',                     direction: 'out' },
