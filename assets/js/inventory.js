@@ -286,6 +286,8 @@ const inventory = {
       // Precios de venta del producto
       priceDistributor: parseFloat(args.priceDistributor) || 0,
       pricePharmacy: parseFloat(args.pricePharmacy) || 0,
+      // Stock mínimo: nivel de alerta cuando el balance baja de este número
+      minStock: args.minStock != null ? parseFloat(args.minStock) : 25,
       active: true,
       notes: args.notes || 'Carga inicial de inventario'
     };
