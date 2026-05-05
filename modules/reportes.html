@@ -53,6 +53,13 @@ const REPORTS = {
     category: 'Comercial',
     color: '#5b7a5a'
   },
+  'cliente-general': {
+    title: 'Clientes · General',
+    subtitle: 'Listado completo de clientes con datos fiscales y comerciales',
+    icon: 'users',
+    category: 'Comercial',
+    color: '#5b7a5a'
+  },
   'estado-cuenta-proveedor': {
     title: 'Estado de cuenta · Proveedor',
     subtitle: 'Movimientos por proveedor con saldo corriente',
@@ -96,6 +103,7 @@ let customFrom = '';
 let customTo = '';
 let entityId = ''; // para reportes que requieren cliente/proveedor
 let inventoryFilter = 'all'; // all | MP | PT | OF (para inventario-valorizado)
+let salespersonFilter = ''; // userId del vendedor (para cliente-general)
 
 function render() {
   if (currentReport) return renderReport();
@@ -160,6 +168,7 @@ function openReport(id) {
   period = 'this_month';
   entityId = '';
   inventoryFilter = 'all';
+  salespersonFilter = '';
   render();
 }
 
@@ -208,6 +217,7 @@ function renderReport() {
     case 'libro-ventas':        body = renderLibroVentas(from, to); exportButtons = exportButtonsFor('libro-ventas', from, to); break;
     case 'retenciones':         body = renderRetenciones(from, to); exportButtons = exportButtonsFor('retenciones', from, to); break;
     case 'estado-cuenta-cliente':   body = renderEstadoCliente(from, to); exportButtons = entityId ? exportButtonsFor('estado-cuenta-cliente', from, to) : ''; break;
+    case 'cliente-general':     body = renderClienteGeneral(); exportButtons = exportButtonsFor('cliente-general', null, null); break;
     case 'estado-cuenta-proveedor': body = renderEstadoProveedor(from, to); exportButtons = entityId ? exportButtonsFor('estado-cuenta-proveedor', from, to) : ''; break;
     case 'inventario-valorizado':   body = renderInventario(); exportButtons = exportButtonsFor('inventario-valorizado', null, null); break;
     case 'produccion':          body = renderProduccion(from, to); exportButtons = exportButtonsFor('produccion', from, to); break;
@@ -226,7 +236,9 @@ function renderReport() {
 
       <p class="text-muted mb-24">${ui.escape(r.subtitle)}</p>
 
-      ${periodPicker}
+      ${currentReport === 'cliente-general' ? '' : periodPicker}
+
+      ${currentReport === 'cliente-general' ? renderSalespersonPicker() : ''}
 
       ${currentReport === 'inventario-valorizado' ? `
         <div class="card mb-24">
@@ -594,6 +606,153 @@ function renderInventario() {
   `;
 }
 
+// ====== CLIENTE GENERAL ======
+
+function renderSalespersonPicker() {
+  // Lista de usuarios candidatos a vendedor (mismos criterios que el form de cliente)
+  const allUsers = db.getAll(db.COLLECTIONS.users)
+    .filter(u => u.active !== false)
+    .sort((a, b) => (a.fullName||a.username||'').localeCompare(b.fullName||b.username||''));
+
+  return `
+    <div class="card mb-24">
+      <div class="form-grid form-grid-2">
+        <div class="field"><label class="field-label">Filtrar por vendedor</label>
+          <select class="select" onchange="onSalespersonFilterChange(this.value)">
+            <option value="">Todos los vendedores</option>
+            <option value="__none__" ${salespersonFilter==='__none__'?'selected':''}>Sin vendedor asignado</option>
+            ${allUsers.map(u => `<option value="${u.id}" ${u.id===salespersonFilter?'selected':''}>${ui.escape(u.fullName||u.username)}</option>`).join('')}
+          </select>
+          <div class="field-hint">Mostrá solo los clientes asignados a un vendedor específico.</div>
+        </div>
+        <div class="field"><label class="field-label">Vendedor seleccionado</label>
+          <div class="input" style="background:var(--surface-2);">${
+            !salespersonFilter ? 'Todos los vendedores' :
+            salespersonFilter === '__none__' ? 'Sin vendedor asignado' :
+            (() => {
+              const u = db.getById(db.COLLECTIONS.users, salespersonFilter);
+              return u ? ui.escape(u.fullName||u.username) : 'Vendedor no encontrado';
+            })()
+          }</div>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function onSalespersonFilterChange(v) {
+  salespersonFilter = v;
+  render();
+}
+
+/** Devuelve los clientes filtrados según salespersonFilter (con compat de campo legacy single). */
+function getFilteredCustomers() {
+  let customers = db.getAll(db.COLLECTIONS.customers);
+
+  if (salespersonFilter === '__none__') {
+    customers = customers.filter(c => {
+      const ids = (c.salesRepUserIds || []).slice();
+      if (c.salesRepUserId && !ids.includes(c.salesRepUserId)) ids.push(c.salesRepUserId);
+      return ids.length === 0;
+    });
+  } else if (salespersonFilter) {
+    customers = customers.filter(c => {
+      const ids = (c.salesRepUserIds || []).slice();
+      if (c.salesRepUserId && !ids.includes(c.salesRepUserId)) ids.push(c.salesRepUserId);
+      return ids.includes(salespersonFilter);
+    });
+  }
+
+  return customers.sort((a, b) => (a.name||'').localeCompare(b.name||''));
+}
+
+function renderClienteGeneral() {
+  const customers = getFilteredCustomers();
+  if (!customers.length) {
+    return '<div class="empty-state"><div class="empty-state-title">Sin clientes</div><div class="empty-state-text">No hay clientes que coincidan con el filtro seleccionado.</div></div>';
+  }
+
+  // Helper para resolver nombres de vendedores
+  const resolveVendors = (c) => {
+    const ids = (c.salesRepUserIds || []).slice();
+    if (c.salesRepUserId && !ids.includes(c.salesRepUserId)) ids.push(c.salesRepUserId);
+    const names = ids
+      .map(uid => db.getById(db.COLLECTIONS.users, uid))
+      .filter(Boolean)
+      .map(u => u.fullName || u.username);
+    return names.length > 0 ? names.join(', ') : (c.salesRep || '');
+  };
+
+  // KPIs
+  const withCredit = customers.filter(c => (parseFloat(c.creditLimit)||0) > 0).length;
+  const totalCreditUSD = customers.reduce((s,c) => {
+    const limit = parseFloat(c.creditLimit) || 0;
+    if (!limit) return s;
+    if (c.preferredCurrency === 'USD' || !c.preferredCurrency) return s + (c.preferredCurrency === 'USD' ? limit : 0);
+    if (c.preferredCurrency === 'VES') {
+      const r = currency.getActiveRate();
+      return s + (r && r.value ? limit / r.value : 0);
+    }
+    return s;
+  }, 0);
+  const byType = {};
+  customers.forEach(c => {
+    const t = c.customerType || 'Sin clasificar';
+    byType[t] = (byType[t]||0) + 1;
+  });
+
+  return `
+    <div class="grid grid-3 mb-24">
+      <div class="kpi"><div class="kpi-label">Clientes</div><div class="kpi-value">${customers.length}</div><div class="kpi-value-sub">${salespersonFilter ? 'filtrados' : 'totales'}</div></div>
+      <div class="kpi"><div class="kpi-label">Con línea de crédito</div><div class="kpi-value">${withCredit}</div><div class="kpi-value-sub">de ${customers.length}</div></div>
+      <div class="kpi"><div class="kpi-label">Tipos</div><div class="kpi-value" style="font-size:14px;line-height:1.4;">${Object.entries(byType).map(([t,n])=>`<div>${ui.escape(t)}: <strong>${n}</strong></div>`).join('')}</div></div>
+    </div>
+
+    <div class="table-wrap">
+      <table>
+        <thead><tr>
+          <th>Código</th>
+          <th>Razón social</th>
+          <th>RIF</th>
+          <th>Tipo cliente</th>
+          <th>Contribuyente</th>
+          <th>Contacto</th>
+          <th>Teléfono</th>
+          <th>Email</th>
+          <th>Dirección fiscal</th>
+          <th>Vendedor(es)</th>
+          <th>Términos</th>
+          <th>Moneda</th>
+          <th style="text-align:right;">Crédito</th>
+          <th style="text-align:right;">Desc. %</th>
+          <th>Creado</th>
+        </tr></thead>
+        <tbody>${customers.map(c => `<tr>
+          <td><span class="td-mono td-strong">${ui.escape(c.code||'—')}</span></td>
+          <td>
+            <div class="td-strong">${ui.escape(c.name||'')}</div>
+            ${c.tradename ? `<div class="text-muted" style="font-size:11px;">${ui.escape(c.tradename)}</div>` : ''}
+          </td>
+          <td><span class="td-mono">${ui.escape(c.rif||'—')}</span></td>
+          <td>${c.customerType ? `<span class="badge badge-plain">${ui.escape(c.customerType)}</span>` : '<span class="td-muted">—</span>'}</td>
+          <td><span class="text-muted" style="font-size:11px;">${ui.escape(c.taxpayerType||'—')}</span></td>
+          <td>${c.contactName ? ui.escape(c.contactName) : '<span class="td-muted">—</span>'}${c.contactRole ? `<div class="text-muted" style="font-size:11px;">${ui.escape(c.contactRole)}</div>` : ''}</td>
+          <td><span class="td-mono" style="font-size:12px;">${ui.escape(c.phone||c.whatsapp||'—')}</span></td>
+          <td><span style="font-size:12px;">${ui.escape(c.email||'—')}</span></td>
+          <td><span style="font-size:11px;line-height:1.4;">${ui.escape(c.address||'—')}</span></td>
+          <td><span style="font-size:12px;">${ui.escape(resolveVendors(c)) || '<span class="td-muted">—</span>'}</span></td>
+          <td>${c.paymentTerms ? `<span class="td-mono">${ui.escape(c.paymentTerms)}</span>` : '<span class="td-muted">—</span>'}</td>
+          <td><span class="badge ${c.preferredCurrency==='USD'?'badge-accent':'badge-plain'}">${c.preferredCurrency||'VES'}</span></td>
+          <td style="text-align:right;">${c.creditLimit ? `<span class="td-mono">${currency.formatCompact(c.creditLimit, c.preferredCurrency || 'VES')}</span>` : '<span class="td-muted">—</span>'}</td>
+          <td style="text-align:right;"><span class="td-mono">${c.defaultDiscount ? c.defaultDiscount + '%' : '—'}</span></td>
+          <td><span class="text-muted" style="font-size:11px;">${c.createdAt ? fmtDate(c.createdAt) : '<em>n/d</em>'}</span></td>
+        </tr>`).join('')}
+        </tbody>
+      </table>
+    </div>
+  `;
+}
+
 function renderProduccion(from, to) {
   const { rows, totals } = reports.produccion(from, to);
   if (!rows.length) return '<div class="empty-state"><div class="empty-state-title">Sin órdenes de fabricación en el período</div></div>';
@@ -799,6 +958,67 @@ function exportCSV(reportId, from, to) {
       filename = `estado-cuenta-${supplier.name.replace(/\s/g,'_')}-${from}-a-${to}.csv`;
       break;
     }
+    case 'cliente-general': {
+      const customers = getFilteredCustomers();
+      const rows = customers.map(c => {
+        const ids = (c.salesRepUserIds || []).slice();
+        if (c.salesRepUserId && !ids.includes(c.salesRepUserId)) ids.push(c.salesRepUserId);
+        const vendorNames = ids
+          .map(uid => db.getById(db.COLLECTIONS.users, uid))
+          .filter(Boolean)
+          .map(u => u.fullName || u.username);
+        return {
+          code: c.code || '',
+          name: c.name || '',
+          tradename: c.tradename || '',
+          rif: c.rif || '',
+          customerType: c.customerType || '',
+          taxpayerType: c.taxpayerType || '',
+          contactName: c.contactName || '',
+          contactRole: c.contactRole || '',
+          phone: c.phone || '',
+          whatsapp: c.whatsapp || '',
+          email: c.email || '',
+          address: c.address || '',
+          shippingAddress: c.shippingAddress || '',
+          vendors: vendorNames.length ? vendorNames.join(' / ') : (c.salesRep || ''),
+          paymentTerms: c.paymentTerms || '',
+          preferredCurrency: c.preferredCurrency || 'VES',
+          creditLimit: parseFloat(c.creditLimit) || 0,
+          defaultDiscount: parseFloat(c.defaultDiscount) || 0,
+          createdAt: c.createdAt ? c.createdAt.slice(0,10) : '',
+          notes: c.notes || ''
+        };
+      });
+      csv = reports.toCSV(rows, [
+        { key: 'code', label: 'Código' },
+        { key: 'name', label: 'Razón social' },
+        { key: 'tradename', label: 'Nombre comercial' },
+        { key: 'rif', label: 'RIF' },
+        { key: 'customerType', label: 'Tipo de cliente' },
+        { key: 'taxpayerType', label: 'Tipo de contribuyente' },
+        { key: 'contactName', label: 'Contacto' },
+        { key: 'contactRole', label: 'Cargo' },
+        { key: 'phone', label: 'Teléfono' },
+        { key: 'whatsapp', label: 'WhatsApp' },
+        { key: 'email', label: 'Email' },
+        { key: 'address', label: 'Dirección fiscal' },
+        { key: 'shippingAddress', label: 'Dirección envío' },
+        { key: 'vendors', label: 'Vendedor(es)' },
+        { key: 'paymentTerms', label: 'Términos de pago' },
+        { key: 'preferredCurrency', label: 'Moneda' },
+        { key: 'creditLimit', label: 'Límite de crédito', format: v => (v||0).toFixed(2) },
+        { key: 'defaultDiscount', label: 'Descuento %', format: v => (v||0).toFixed(2) },
+        { key: 'createdAt', label: 'Fecha de creación' },
+        { key: 'notes', label: 'Notas' }
+      ]);
+      const sp = !salespersonFilter ? 'todos' : salespersonFilter === '__none__' ? 'sin-vendedor' : (() => {
+        const u = db.getById(db.COLLECTIONS.users, salespersonFilter);
+        return u ? (u.fullName||u.username||'').replace(/\s/g,'_') : 'vendedor';
+      })();
+      filename = `clientes-general-${sp}-${new Date().toISOString().slice(0,10)}.csv`;
+      break;
+    }
     case 'inventario-valorizado': {
       if (inventoryFilter === 'OF') {
         const { rows } = reports.inventarioEnFabricacion();
@@ -891,15 +1111,28 @@ function exportCSV(reportId, from, to) {
 }
 
 function exportPDF(reportId, from, to) {
-  const periodLbl = reports.periodLabel(period, customFrom, customTo);
+  let periodLbl = reports.periodLabel(period, customFrom, customTo);
   const r = REPORTS[reportId];
   let bodyHtml = '';
+
+  // Para cliente-general no hay rango de fechas: mostramos el filtro de vendedor en el sello
+  if (reportId === 'cliente-general') {
+    if (!salespersonFilter) {
+      periodLbl = 'Todos los vendedores';
+    } else if (salespersonFilter === '__none__') {
+      periodLbl = 'Sin vendedor asignado';
+    } else {
+      const u = db.getById(db.COLLECTIONS.users, salespersonFilter);
+      periodLbl = 'Vendedor: ' + (u ? (u.fullName || u.username) : 'desconocido');
+    }
+  }
 
   switch (reportId) {
     case 'libro-compras':       bodyHtml = pdfLibroCompras(from, to); break;
     case 'libro-ventas':        bodyHtml = pdfLibroVentas(from, to); break;
     case 'retenciones':         bodyHtml = pdfRetenciones(from, to); break;
     case 'estado-cuenta-cliente':   bodyHtml = pdfEstadoCliente(from, to); break;
+    case 'cliente-general':     bodyHtml = pdfClienteGeneral(); break;
     case 'estado-cuenta-proveedor': bodyHtml = pdfEstadoProveedor(from, to); break;
     case 'inventario-valorizado':   bodyHtml = pdfInventario(); break;
     case 'produccion':          bodyHtml = pdfProduccion(from, to); break;
@@ -1133,6 +1366,52 @@ function pdfInventario() {
   `;
 }
 
+function pdfClienteGeneral() {
+  const customers = getFilteredCustomers();
+  if (!customers.length) return '<p>Sin clientes para el filtro seleccionado.</p>';
+
+  const resolveVendors = (c) => {
+    const ids = (c.salesRepUserIds || []).slice();
+    if (c.salesRepUserId && !ids.includes(c.salesRepUserId)) ids.push(c.salesRepUserId);
+    const names = ids
+      .map(uid => db.getById(db.COLLECTIONS.users, uid))
+      .filter(Boolean)
+      .map(u => u.fullName || u.username);
+    return names.length ? names.join(', ') : (c.salesRep || '—');
+  };
+
+  return `
+    <div class="summary-grid">
+      <div class="summary-box"><div class="label">Clientes</div><div class="value">${customers.length}</div></div>
+      <div class="summary-box"><div class="label">Con crédito</div><div class="value">${customers.filter(c => (parseFloat(c.creditLimit)||0) > 0).length}</div></div>
+    </div>
+    <table>
+      <thead><tr>
+        <th>Código</th><th>Razón social</th><th>RIF</th><th>Tipo</th>
+        <th>Contacto</th><th>Teléfono</th><th>Email</th>
+        <th>Dirección</th><th>Vendedor(es)</th>
+        <th>Términos</th><th>Mon.</th><th class="num">Crédito</th><th>Creado</th>
+      </tr></thead>
+      <tbody>${customers.map(c => `<tr>
+        <td>${escapeHtml(c.code||'—')}</td>
+        <td>${escapeHtml(c.name||'')}${c.tradename?'<br><small>'+escapeHtml(c.tradename)+'</small>':''}</td>
+        <td>${escapeHtml(c.rif||'—')}</td>
+        <td>${escapeHtml(c.customerType||'—')}</td>
+        <td>${escapeHtml(c.contactName||'—')}</td>
+        <td>${escapeHtml(c.phone||c.whatsapp||'—')}</td>
+        <td>${escapeHtml(c.email||'—')}</td>
+        <td>${escapeHtml(c.address||'—')}</td>
+        <td>${escapeHtml(resolveVendors(c))}</td>
+        <td>${escapeHtml(c.paymentTerms||'—')}</td>
+        <td>${c.preferredCurrency||'VES'}</td>
+        <td class="num">${c.creditLimit ? currency.formatCompact(c.creditLimit, c.preferredCurrency || 'VES') : '—'}</td>
+        <td>${c.createdAt ? fmtDate(c.createdAt) : '—'}</td>
+      </tr>`).join('')}
+      </tbody>
+    </table>
+  `;
+}
+
 function pdfProduccion(from, to) {
   const { rows, totals } = reports.produccion(from, to);
   if (!rows.length) return '<p>Sin OFs en el período.</p>';
@@ -1230,6 +1509,7 @@ try { Object.defineProperty(window, 'customFrom', { get: () => customFrom, set: 
 try { Object.defineProperty(window, 'customTo', { get: () => customTo, set: (val) => { customTo = val; }, configurable: true }); } catch(e) {}
 try { Object.defineProperty(window, 'entityId', { get: () => entityId, set: (val) => { entityId = val; }, configurable: true }); } catch(e) {}
 try { Object.defineProperty(window, 'inventoryFilter', { get: () => inventoryFilter, set: (val) => { inventoryFilter = val; }, configurable: true }); } catch(e) {}
+try { Object.defineProperty(window, 'salespersonFilter', { get: () => salespersonFilter, set: (val) => { salespersonFilter = val; }, configurable: true }); } catch(e) {}
 
 Object.assign(window, {
   render: typeof render !== 'undefined' ? render : undefined,
@@ -1239,7 +1519,10 @@ Object.assign(window, {
   renderReport: typeof renderReport !== 'undefined' ? renderReport : undefined,
   onPeriodChange: typeof onPeriodChange !== 'undefined' ? onPeriodChange : undefined,
   onInventoryFilterChange: typeof onInventoryFilterChange !== 'undefined' ? onInventoryFilterChange : undefined,
+  onSalespersonFilterChange: typeof onSalespersonFilterChange !== 'undefined' ? onSalespersonFilterChange : undefined,
   renderEntityPicker: typeof renderEntityPicker !== 'undefined' ? renderEntityPicker : undefined,
+  renderSalespersonPicker: typeof renderSalespersonPicker !== 'undefined' ? renderSalespersonPicker : undefined,
+  getFilteredCustomers: typeof getFilteredCustomers !== 'undefined' ? getFilteredCustomers : undefined,
   exportButtonsFor: typeof exportButtonsFor !== 'undefined' ? exportButtonsFor : undefined,
   renderLibroCompras: typeof renderLibroCompras !== 'undefined' ? renderLibroCompras : undefined,
   renderLibroVentas: typeof renderLibroVentas !== 'undefined' ? renderLibroVentas : undefined,
@@ -1248,6 +1531,7 @@ Object.assign(window, {
   renderEstadoProveedor: typeof renderEstadoProveedor !== 'undefined' ? renderEstadoProveedor : undefined,
   renderEstadoTable: typeof renderEstadoTable !== 'undefined' ? renderEstadoTable : undefined,
   renderInventario: typeof renderInventario !== 'undefined' ? renderInventario : undefined,
+  renderClienteGeneral: typeof renderClienteGeneral !== 'undefined' ? renderClienteGeneral : undefined,
   renderProduccion: typeof renderProduccion !== 'undefined' ? renderProduccion : undefined,
   renderMargenes: typeof renderMargenes !== 'undefined' ? renderMargenes : undefined,
   renderFlujoCaja: typeof renderFlujoCaja !== 'undefined' ? renderFlujoCaja : undefined,
@@ -1259,6 +1543,7 @@ Object.assign(window, {
   pdfEstadoCliente: typeof pdfEstadoCliente !== 'undefined' ? pdfEstadoCliente : undefined,
   pdfEstadoProveedor: typeof pdfEstadoProveedor !== 'undefined' ? pdfEstadoProveedor : undefined,
   pdfInventario: typeof pdfInventario !== 'undefined' ? pdfInventario : undefined,
+  pdfClienteGeneral: typeof pdfClienteGeneral !== 'undefined' ? pdfClienteGeneral : undefined,
   pdfProduccion: typeof pdfProduccion !== 'undefined' ? pdfProduccion : undefined,
   pdfMargenes: typeof pdfMargenes !== 'undefined' ? pdfMargenes : undefined,
   pdfFlujoCaja: typeof pdfFlujoCaja !== 'undefined' ? pdfFlujoCaja : undefined,

@@ -109,7 +109,7 @@ function render() {
                   ? `<span class="text-muted" style="font-size:11px;">${ui.escape(fallbackName)}</span><div style="font-size:10px;color:#92400e;">⚠ sin vincular</div>`
                   : '<span class="td-muted">—</span>');
             return `
-            <tr>
+            <tr style="cursor:pointer;" onclick="viewItem('${r.id}')">
               <td><span class="td-mono td-strong">${r.code || '—'}</span></td>
               <td>
                 <div class="td-strong">${ui.escape(r.name)}</div>
@@ -125,7 +125,7 @@ function render() {
               <td>${r.paymentTerms ? `<span class="td-mono">${ui.escape(r.paymentTerms)}</span>` : '<span class="td-muted">—</span>'}</td>
               <td><span class="badge ${r.preferredCurrency==='USD'?'badge-accent':'badge-plain'}">${r.preferredCurrency || 'VES'}</span></td>
               <td style="text-align:right;">${r.creditLimit ? `<span class="td-mono">${currency.formatCompact(r.creditLimit, r.preferredCurrency || 'VES')}</span>` : '<span class="td-muted">—</span>'}</td>
-              <td class="td-actions">
+              <td class="td-actions" onclick="event.stopPropagation()">
                 <button class="btn-icon" onclick="editItem('${r.id}')" title="Editar">${ui.icon('edit')}</button>
                 <button class="btn-icon" onclick="deleteItem('${r.id}')" title="Eliminar">${ui.icon('trash')}</button>
               </td>
@@ -207,6 +207,95 @@ function newItem() {
 function editItem(id) {
   const r = db.getById(db.COLLECTIONS.customers, id);
   if (r) openForm(r);
+}
+
+/**
+ * Vista de detalle (solo lectura) del cliente. Muestra toda la información
+ * y permite ir a editar desde un botón.
+ */
+function viewItem(id) {
+  const r = db.getById(db.COLLECTIONS.customers, id);
+  if (!r) { ui.toast('Cliente no encontrado', 'error'); return; }
+
+  // Vendedores asignados
+  const ids = (r.salesRepUserIds || []).slice();
+  if (r.salesRepUserId && !ids.includes(r.salesRepUserId)) ids.push(r.salesRepUserId);
+  const vendorList = ids
+    .map(uid => db.getById(db.COLLECTIONS.users, uid))
+    .filter(Boolean)
+    .map(u => u.fullName || u.username);
+  const vendorText = vendorList.length > 0
+    ? vendorList.join(', ')
+    : (r.salesRep ? `${ui.escape(r.salesRep)} (sin vincular)` : '—');
+
+  // Fecha de creación: si existe createdAt usa eso, sino busca el campo legacy o muestra dash
+  const createdLabel = r.createdAt
+    ? ui.formatDateTime(r.createdAt)
+    : '<span class="text-muted" style="font-size:11px;">No registrada (cliente importado o anterior)</span>';
+
+  // Helper para renderizar campo
+  const f = (label, value, mono = false) => `
+    <div class="field">
+      <div class="field-label">${label}</div>
+      <div class="input" style="background:var(--surface-2);${mono?'font-family:var(--font-mono);':''}">${value || '<span class="text-muted">—</span>'}</div>
+    </div>`;
+
+  ui.openModal({
+    size: 'lg',
+    title: r.name,
+    subtitle: `Código: ${r.code || '—'} · ${r.rif || 'sin RIF'}`,
+    body: `
+      <div class="section-title">Datos fiscales</div>
+      <div class="form-grid form-grid-2 mb-24">
+        ${f('Razón social / Nombre', ui.escape(r.name||''))}
+        ${f('Nombre comercial', ui.escape(r.tradename||''))}
+        ${f('RIF / Cédula', ui.escape(r.rif||''), true)}
+        ${f('Tipo de contribuyente', ui.escape(r.taxpayerType||''))}
+        <div class="field" style="grid-column:1/-1;">
+          <div class="field-label">Dirección fiscal</div>
+          <div class="input" style="background:var(--surface-2);min-height:36px;">${r.address ? ui.escape(r.address) : '<span class="text-muted">—</span>'}</div>
+        </div>
+        <div class="field" style="grid-column:1/-1;">
+          <div class="field-label">Dirección de envío</div>
+          <div class="input" style="background:var(--surface-2);min-height:36px;">${r.shippingAddress ? ui.escape(r.shippingAddress) : '<span class="text-muted">— (usa la dirección fiscal)</span>'}</div>
+        </div>
+      </div>
+
+      <div class="section-title">Contacto</div>
+      <div class="form-grid form-grid-2 mb-24">
+        ${f('Persona de contacto', ui.escape(r.contactName||''))}
+        ${f('Cargo', ui.escape(r.contactRole||''))}
+        ${f('Teléfono', ui.escape(r.phone||''), true)}
+        ${f('WhatsApp', ui.escape(r.whatsapp||''), true)}
+        ${f('Email', ui.escape(r.email||''))}
+      </div>
+
+      <div class="section-title">Comercial</div>
+      <div class="form-grid form-grid-3 mb-24">
+        ${f('Tipo de cliente', ui.escape(r.customerType||''))}
+        ${f('Términos de pago', ui.escape(r.paymentTerms||''), true)}
+        ${f('Moneda preferida', `<span class="badge ${r.preferredCurrency==='USD'?'badge-accent':'badge-plain'}">${r.preferredCurrency || 'VES'}</span>`)}
+        ${f('Límite de crédito', r.creditLimit ? `<span class="td-mono">${currency.format(r.creditLimit, r.preferredCurrency || 'VES')}</span>` : '0', false)}
+        ${f('Descuento habitual (%)', r.defaultDiscount ? `${r.defaultDiscount}%` : '0%', true)}
+        ${f('Vendedor(es) asignado(s)', vendorText)}
+      </div>
+
+      <div class="section-title">Sistema</div>
+      <div class="form-grid form-grid-2 mb-24">
+        ${f('Fecha de creación', createdLabel)}
+        ${f('Código interno', ui.escape(r.code||''), true)}
+      </div>
+
+      ${r.notes ? `
+        <div class="section-title">Notas</div>
+        <div class="input" style="background:var(--surface-2);white-space:pre-wrap;min-height:60px;padding:12px;">${ui.escape(r.notes)}</div>
+      ` : ''}
+    `,
+    footer: `
+      <button class="btn btn-secondary" onclick="ui.closeModal()">Cerrar</button>
+      <button class="btn btn-primary" onclick="ui.closeModal(); editItem('${r.id}')">${ui.icon('edit')} Editar</button>
+    `
+  });
 }
 
 function openForm(item) {
@@ -385,7 +474,10 @@ function saveItem(e, id) {
 
   if (id) {
     data.id = id;
+    // No tocamos createdAt al editar
   } else {
+    // Cliente nuevo: guardar fecha de creación
+    data.createdAt = new Date().toISOString();
     // Creación nueva: si el usuario no es admin/gerente y no marcó vendedores,
     // auto-asignarse a sí mismo (para que él lo vea en su lista)
     if (salesRepUserIds.length === 0) {
@@ -555,6 +647,7 @@ Object.assign(window, {
   onSort: typeof onSort !== 'undefined' ? onSort : undefined,
   newItem: typeof newItem !== 'undefined' ? newItem : undefined,
   editItem: typeof editItem !== 'undefined' ? editItem : undefined,
+  viewItem: typeof viewItem !== 'undefined' ? viewItem : undefined,
   openForm: typeof openForm !== 'undefined' ? openForm : undefined,
   saveItem: typeof saveItem !== 'undefined' ? saveItem : undefined,
   deleteItem: typeof deleteItem !== 'undefined' ? deleteItem : undefined,

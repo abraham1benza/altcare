@@ -319,7 +319,7 @@ function newDoc(initialType) {
   creating = {
     type: docType,
     code: db.nextCode(db.COLLECTIONS.salesOrders, codePrefix),
-    customerId: '', customerName: '',
+    customerId: '', customerName: '', customerAddress: '',
     currency: 'VES',
     rateType: cfg.defaultRateType || 'BCV_USD',
     issueDate: issueDate,
@@ -423,6 +423,10 @@ function renderCreate() {
             <option value="">— Selecciona —</option>
             ${customers.map(cu => `<option value="${cu.id}" ${cu.id===c.customerId?'selected':''}>${ui.escape(cu.name)} · ${ui.escape(cu.rif||'')}</option>`).join('')}
           </select></div>
+          <div class="field" style="grid-column:1/-1;"><label class="field-label">Dirección</label>
+            <input class="input" value="${ui.escape(c.customerAddress||'')}" placeholder="${c.customerId ? 'Sin dirección registrada — podés escribirla acá' : 'Selecciona un cliente para autocompletar'}" oninput="creating.customerAddress=this.value">
+            <div class="field-hint">Se autocompleta al elegir el cliente. Podés editarla solo para este pedido sin afectar la ficha del cliente.</div>
+          </div>
           <div class="field"><label class="field-label">Fecha emisión</label><input class="input" type="date" value="${c.issueDate}" onchange="onIssueDateChange(this.value)"></div>
           <div class="field"><label class="field-label">Vencimiento</label><input id="ven-due-date" class="input" type="date" value="${c.dueDate||''}" onchange="onDueDateChange(this.value)"></div>
           <div class="field"><label class="field-label">Términos de pago (días)</label>
@@ -501,6 +505,7 @@ function onCustomerChange(cid) {
   const cu = db.getById(db.COLLECTIONS.customers, cid);
   if (cu) {
     creating.customerName = cu.name;
+    creating.customerAddress = cu.address || '';
     if (cu.preferredCurrency) creating.currency = cu.preferredCurrency;
     if (cu.paymentTerms) {
       creating.paymentTerms = cu.paymentTerms;
@@ -508,6 +513,8 @@ function onCustomerChange(cid) {
       const days = parsePaymentTermsDays(cu.paymentTerms);
       creating.dueDate = addDaysToDateStr(creating.issueDate, days);
     }
+  } else {
+    creating.customerAddress = '';
   }
   render();
 }
@@ -759,7 +766,8 @@ function saveDoc() {
       paymentTerms: c.paymentTerms,
       dueDate: c.dueDate,
       salespersonId: c.salespersonId || null,
-      salespersonName: c.salespersonName || ''
+      salespersonName: c.salespersonName || '',
+      customerAddress: c.customerAddress || ''
     });
     const labels = { PEDIDO: 'Pedido', NOTA_ENTREGA: 'Nota de Entrega', COTIZACION: 'Cotización', FACTURA: 'Factura' };
     ui.toast(`${labels[c.type] || 'Pedido'} creada`, 'success');
