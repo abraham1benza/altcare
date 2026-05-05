@@ -95,6 +95,7 @@ let period = 'this_month';
 let customFrom = '';
 let customTo = '';
 let entityId = ''; // para reportes que requieren cliente/proveedor
+let inventoryFilter = 'all'; // all | MP | PT | OF (para inventario-valorizado)
 
 function render() {
   if (currentReport) return renderReport();
@@ -158,6 +159,7 @@ function openReport(id) {
   currentReport = id;
   period = 'this_month';
   entityId = '';
+  inventoryFilter = 'all';
   render();
 }
 
@@ -226,6 +228,26 @@ function renderReport() {
 
       ${periodPicker}
 
+      ${currentReport === 'inventario-valorizado' ? `
+        <div class="card mb-24">
+          <div class="form-grid form-grid-3">
+            <div class="field"><label class="field-label">Mostrar</label><select class="select" onchange="onInventoryFilterChange(this.value)">
+              <option value="all" ${inventoryFilter==='all'?'selected':''}>Todo el inventario (MP + PT)</option>
+              <option value="MP" ${inventoryFilter==='MP'?'selected':''}>Solo Materia Prima</option>
+              <option value="PT" ${inventoryFilter==='PT'?'selected':''}>Solo Producto Terminado</option>
+              <option value="OF" ${inventoryFilter==='OF'?'selected':''}>Productos en fabricación (OFs en proceso)</option>
+            </select></div>
+            <div></div>
+            <div class="field"><label class="field-label">Categoría seleccionada</label><div class="input" style="background:var(--surface-2);">${
+              inventoryFilter==='all' ? 'Todo el inventario' :
+              inventoryFilter==='MP'  ? 'Materia Prima' :
+              inventoryFilter==='PT'  ? 'Producto Terminado' :
+              'Productos en fabricación'
+            }</div></div>
+          </div>
+        </div>
+      ` : ''}
+
       ${body}
 
       ${exportButtons ? `<div style="display:flex;justify-content:flex-end;gap:8px;padding:24px 0;border-top:1px solid var(--border);margin-top:24px;">${exportButtons}</div>` : ''}
@@ -241,6 +263,11 @@ function onPeriodChange(p) {
     const monthAgo = new Date(today); monthAgo.setMonth(monthAgo.getMonth()-1);
     customFrom = monthAgo.toISOString().slice(0,10);
   }
+  render();
+}
+
+function onInventoryFilterChange(v) {
+  inventoryFilter = v;
   render();
 }
 
@@ -468,14 +495,79 @@ function renderEstadoTable(entity, movements, balanceByCcy, kind) {
 }
 
 function renderInventario() {
-  const { rows, totals } = reports.inventarioValorizado();
-  if (!rows.length) return '<div class="empty-state"><div class="empty-state-title">Sin inventario</div></div>';
-  return `
+  // Si el usuario eligió "Productos en fabricación", uso una vista distinta.
+  if (inventoryFilter === 'OF') {
+    const { rows, totals } = reports.inventarioEnFabricacion();
+    if (!rows.length) return '<div class="empty-state"><div class="empty-state-title">Sin OFs en proceso</div><div class="empty-state-text">No hay órdenes de fabricación actualmente en estado IN_PROCESS.</div></div>';
+    return `
+      <div class="grid grid-3 mb-24">
+        <div class="kpi"><div class="kpi-label">OFs en proceso</div><div class="kpi-value">${totals.countOFs}</div><div class="kpi-value-sub">órdenes</div></div>
+        <div class="kpi"><div class="kpi-label">Cantidad planificada</div><div class="kpi-value" style="font-size:24px;">${totals.totalQty.toFixed(3)}</div><div class="kpi-value-sub">unidades totales</div></div>
+        <div class="kpi"><div class="kpi-label">Valor MP comprometida</div><div class="kpi-value" style="color:var(--accent-ink);font-size:24px;">${fmtMode(totals.totalValueUSD)}</div></div>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr>
+            <th>OF</th><th>Producto</th><th>Versión</th><th>Programada</th>
+            <th style="text-align:right;">Cantidad plan.</th><th>Unidad</th><th style="text-align:right;">Valor MP USD</th>
+          </tr></thead>
+          <tbody>${rows.map(r => `<tr>
+            <td><span class="td-mono td-strong">${ui.escape(r.code||'—')}</span></td>
+            <td>${ui.escape(r.name||'—')}</td>
+            <td><span class="td-mono">v${r.formulaVersion||'—'}</span></td>
+            <td><span class="text-muted">${r.scheduledDate ? fmtDate(r.scheduledDate) : '—'}</span></td>
+            <td style="text-align:right;"><span class="td-mono td-strong">${(r.quantity||0).toFixed(3)}</span></td>
+            <td><span class="text-muted">${ui.escape(r.unit||'—')}</span></td>
+            <td style="text-align:right;"><span class="td-mono td-strong">${fmtMode(r.valueUSD)}</span></td>
+          </tr>`).join('')}
+          <tr style="background:var(--ink);color:white;font-weight:600;">
+            <td colspan="6">VALOR MP COMPROMETIDA EN FABRICACIÓN</td>
+            <td style="text-align:right;"><span class="td-mono">${fmtMode(totals.totalValueUSD)}</span></td>
+          </tr>
+          </tbody>
+        </table>
+      </div>
+    `;
+  }
+
+  // Vista estándar: MP, PT o Todo
+  const data = reports.inventarioValorizado();
+  let rows;
+  let totals;
+  if (inventoryFilter === 'MP') {
+    rows = data.rmRows;
+    totals = { rmValue: data.totals.rmValue, fgValue: 0, total: data.totals.rmValue };
+  } else if (inventoryFilter === 'PT') {
+    rows = data.fgRows;
+    totals = { rmValue: 0, fgValue: data.totals.fgValue, total: data.totals.fgValue };
+  } else {
+    rows = data.rows;
+    totals = data.totals;
+  }
+
+  if (!rows.length) return '<div class="empty-state"><div class="empty-state-title">Sin inventario</div><div class="empty-state-text">No hay items con stock para la categoría seleccionada.</div></div>';
+
+  // KPIs adaptables al filtro
+  const kpisHtml = inventoryFilter === 'MP' ? `
+    <div class="grid grid-2 mb-24">
+      <div class="kpi"><div class="kpi-label">Items MP con stock</div><div class="kpi-value">${rows.length}</div></div>
+      <div class="kpi"><div class="kpi-label">Valor MP</div><div class="kpi-value" style="color:var(--accent-ink);font-size:24px;">${fmtMode(totals.rmValue)}</div></div>
+    </div>
+  ` : inventoryFilter === 'PT' ? `
+    <div class="grid grid-2 mb-24">
+      <div class="kpi"><div class="kpi-label">Items PT con stock</div><div class="kpi-value">${rows.length}</div></div>
+      <div class="kpi"><div class="kpi-label">Valor PT</div><div class="kpi-value" style="color:var(--accent-ink);font-size:24px;">${fmtMode(totals.fgValue)}</div></div>
+    </div>
+  ` : `
     <div class="grid grid-3 mb-24">
       <div class="kpi"><div class="kpi-label">Valor MP</div><div class="kpi-value" style="color:var(--accent-ink);font-size:24px;">${fmtMode(totals.rmValue)}</div></div>
       <div class="kpi"><div class="kpi-label">Valor PT</div><div class="kpi-value" style="color:var(--accent-ink);font-size:24px;">${fmtMode(totals.fgValue)}</div></div>
       <div class="kpi"><div class="kpi-label">Total inventario</div><div class="kpi-value" style="color:var(--accent-ink);font-size:24px;">${fmtMode(totals.total)}</div></div>
     </div>
+  `;
+
+  return `
+    ${kpisHtml}
     <div class="table-wrap">
       <table>
         <thead><tr>
@@ -493,7 +585,7 @@ function renderInventario() {
           <td style="text-align:right;"><span class="td-mono td-strong">${fmtMode(r.valueUSD)}</span></td>
         </tr>`).join('')}
         <tr style="background:var(--ink);color:white;font-weight:600;">
-          <td colspan="7">VALOR TOTAL DE INVENTARIO</td>
+          <td colspan="7">VALOR TOTAL ${inventoryFilter==='MP'?'DE MATERIA PRIMA':inventoryFilter==='PT'?'DE PRODUCTO TERMINADO':'DE INVENTARIO'}</td>
           <td style="text-align:right;"><span class="td-mono">${fmtMode(totals.total)}</span></td>
         </tr>
         </tbody>
@@ -708,8 +800,26 @@ function exportCSV(reportId, from, to) {
       break;
     }
     case 'inventario-valorizado': {
-      const { rows } = reports.inventarioValorizado();
-      csv = reports.toCSV(rows, [
+      if (inventoryFilter === 'OF') {
+        const { rows } = reports.inventarioEnFabricacion();
+        csv = reports.toCSV(rows, [
+          { key: 'code', label: 'OF' }, { key: 'name', label: 'Producto' },
+          { key: 'formulaVersion', label: 'Versión' },
+          { key: 'scheduledDate', label: 'Programada' },
+          { key: 'quantity', label: 'Cantidad Plan', format: v => (v||0).toFixed(3) },
+          { key: 'unit', label: 'Unidad' },
+          { key: 'valueUSD', label: 'Valor MP (USD)', format: v => (v||0).toFixed(2) }
+        ]);
+        filename = `inventario-en-fabricacion-${new Date().toISOString().slice(0,10)}.csv`;
+        break;
+      }
+      const data = reports.inventarioValorizado();
+      let rowsToExport;
+      let suffix;
+      if (inventoryFilter === 'MP') { rowsToExport = data.rmRows; suffix = 'MP'; }
+      else if (inventoryFilter === 'PT') { rowsToExport = data.fgRows; suffix = 'PT'; }
+      else { rowsToExport = data.rows; suffix = 'todo'; }
+      csv = reports.toCSV(rowsToExport, [
         { key: 'kind', label: 'Tipo' }, { key: 'code', label: 'Código' },
         { key: 'name', label: 'Producto' }, { key: 'unit', label: 'Unidad' },
         { key: 'quantity', label: 'Cantidad', format: v => v.toFixed(3) },
@@ -717,7 +827,7 @@ function exportCSV(reportId, from, to) {
         { key: 'lotCount', label: 'Lotes' },
         { key: 'valueUSD', label: 'Valor (USD)', format: v => v.toFixed(2) }
       ]);
-      filename = `inventario-valorizado-${new Date().toISOString().slice(0,10)}.csv`;
+      filename = `inventario-valorizado-${suffix}-${new Date().toISOString().slice(0,10)}.csv`;
       break;
     }
     case 'produccion': {
@@ -949,12 +1059,62 @@ function pdfEstadoProveedor(from, to) {
 }
 
 function pdfInventario() {
-  const { rows, totals } = reports.inventarioValorizado();
-  return `
-    <div class="summary-grid">
+  if (inventoryFilter === 'OF') {
+    const { rows, totals } = reports.inventarioEnFabricacion();
+    if (!rows.length) return '<p>Sin órdenes de fabricación en proceso.</p>';
+    return `
+      <div class="summary-grid">
+        <div class="summary-box"><div class="label">OFs en proceso</div><div class="value">${totals.countOFs}</div></div>
+        <div class="summary-box"><div class="label">Cantidad plan.</div><div class="value">${totals.totalQty.toFixed(3)}</div></div>
+        <div class="summary-box"><div class="label">Valor MP USD</div><div class="value">${fmtMode(totals.totalValueUSD)}</div></div>
+      </div>
+      <table>
+        <thead><tr>
+          <th>OF</th><th>Producto</th><th>v.</th><th>Programada</th>
+          <th class="num">Cantidad</th><th>Unidad</th><th class="num">Valor MP</th>
+        </tr></thead>
+        <tbody>${rows.map(r => `<tr>
+          <td>${escapeHtml(r.code||'—')}</td><td>${escapeHtml(r.name||'—')}</td><td>v${r.formulaVersion||'—'}</td>
+          <td>${r.scheduledDate ? fmtDate(r.scheduledDate) : '—'}</td>
+          <td class="num">${(r.quantity||0).toFixed(3)}</td><td>${escapeHtml(r.unit||'—')}</td>
+          <td class="num"><strong>${fmtMode(r.valueUSD)}</strong></td>
+        </tr>`).join('')}
+        <tr class="total-row"><td colspan="6">VALOR MP COMPROMETIDA</td><td class="num">${fmtMode(totals.totalValueUSD)}</td></tr>
+        </tbody>
+      </table>
+    `;
+  }
+
+  const data = reports.inventarioValorizado();
+  let rows;
+  let totals;
+  let titleSummary;
+  if (inventoryFilter === 'MP') {
+    rows = data.rmRows;
+    totals = data.totals;
+    titleSummary = `<div class="summary-box"><div class="label">Valor MP</div><div class="value">${fmtMode(totals.rmValue)}</div></div>`;
+  } else if (inventoryFilter === 'PT') {
+    rows = data.fgRows;
+    totals = data.totals;
+    titleSummary = `<div class="summary-box"><div class="label">Valor PT</div><div class="value">${fmtMode(totals.fgValue)}</div></div>`;
+  } else {
+    rows = data.rows;
+    totals = data.totals;
+    titleSummary = `
       <div class="summary-box"><div class="label">Valor MP</div><div class="value">${fmtMode(totals.rmValue)}</div></div>
       <div class="summary-box"><div class="label">Valor PT</div><div class="value">${fmtMode(totals.fgValue)}</div></div>
       <div class="summary-box"><div class="label">TOTAL</div><div class="value">${fmtMode(totals.total)}</div></div>
+    `;
+  }
+  const totalForFooter = inventoryFilter === 'MP' ? totals.rmValue
+                       : inventoryFilter === 'PT' ? totals.fgValue
+                       : totals.total;
+  const footerLabel = inventoryFilter === 'MP' ? 'VALOR TOTAL DE MATERIA PRIMA'
+                    : inventoryFilter === 'PT' ? 'VALOR TOTAL DE PRODUCTO TERMINADO'
+                    : 'VALOR TOTAL DE INVENTARIO';
+  return `
+    <div class="summary-grid">
+      ${titleSummary}
     </div>
     <table>
       <thead><tr>
@@ -967,7 +1127,7 @@ function pdfInventario() {
         <td class="num">${fmtMode(r.avgCost)}</td><td class="num">${r.lotCount}</td>
         <td class="num"><strong>${fmtMode(r.valueUSD)}</strong></td>
       </tr>`).join('')}
-      <tr class="total-row"><td colspan="7">VALOR TOTAL DE INVENTARIO</td><td class="num">${fmtMode(totals.total)}</td></tr>
+      <tr class="total-row"><td colspan="7">${footerLabel}</td><td class="num">${fmtMode(totalForFooter)}</td></tr>
       </tbody>
     </table>
   `;
@@ -1069,6 +1229,7 @@ try { Object.defineProperty(window, 'period', { get: () => period, set: (val) =>
 try { Object.defineProperty(window, 'customFrom', { get: () => customFrom, set: (val) => { customFrom = val; }, configurable: true }); } catch(e) {}
 try { Object.defineProperty(window, 'customTo', { get: () => customTo, set: (val) => { customTo = val; }, configurable: true }); } catch(e) {}
 try { Object.defineProperty(window, 'entityId', { get: () => entityId, set: (val) => { entityId = val; }, configurable: true }); } catch(e) {}
+try { Object.defineProperty(window, 'inventoryFilter', { get: () => inventoryFilter, set: (val) => { inventoryFilter = val; }, configurable: true }); } catch(e) {}
 
 Object.assign(window, {
   render: typeof render !== 'undefined' ? render : undefined,
@@ -1077,6 +1238,7 @@ Object.assign(window, {
   backToDashboard: typeof backToDashboard !== 'undefined' ? backToDashboard : undefined,
   renderReport: typeof renderReport !== 'undefined' ? renderReport : undefined,
   onPeriodChange: typeof onPeriodChange !== 'undefined' ? onPeriodChange : undefined,
+  onInventoryFilterChange: typeof onInventoryFilterChange !== 'undefined' ? onInventoryFilterChange : undefined,
   renderEntityPicker: typeof renderEntityPicker !== 'undefined' ? renderEntityPicker : undefined,
   exportButtonsFor: typeof exportButtonsFor !== 'undefined' ? exportButtonsFor : undefined,
   renderLibroCompras: typeof renderLibroCompras !== 'undefined' ? renderLibroCompras : undefined,
