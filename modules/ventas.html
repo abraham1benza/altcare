@@ -357,6 +357,8 @@ function newDoc(initialType) {
     salespersonId: autoVendor ? autoVendor.id : '',
     salespersonName: autoVendor ? (autoVendor.fullName || autoVendor.username) : ''
   };
+  // Calcular fecha de vencimiento inicial basada en los términos por defecto
+  recalcDueDate();
   view = 'create'; render();
 }
 
@@ -450,11 +452,24 @@ function renderCreate() {
             <option value="">— Selecciona —</option>
             ${customers.map(cu => `<option value="${cu.id}" ${cu.id===c.customerId?'selected':''}>${ui.escape(cu.name)} · ${ui.escape(cu.rif||'')}</option>`).join('')}
           </select></div>
-          <div class="field"><label class="field-label">Fecha emisión</label><input class="input" type="date" value="${c.issueDate}" onchange="creating.issueDate=this.value"></div>
-          <div class="field"><label class="field-label">Vencimiento</label><input class="input" type="date" value="${c.dueDate||''}" onchange="creating.dueDate=this.value"></div>
-          <div class="field"><label class="field-label">Términos de pago</label><select class="select" onchange="creating.paymentTerms=this.value">
-            ${['Contado','7 días','15 días','30 días','45 días','60 días','90 días'].map(t => `<option ${t===c.paymentTerms?'selected':''}>${t}</option>`).join('')}
-          </select></div>
+          <div class="field"><label class="field-label">Fecha emisión</label><input class="input" type="date" value="${c.issueDate}" onchange="onIssueDateChange(this.value)"></div>
+          <div class="field"><label class="field-label">Términos de pago</label>
+            <div style="display:flex;gap:6px;">
+              <input class="input" type="number" min="0" max="365" step="1" placeholder="Días" value="${getPaymentDays(c.paymentTerms)}" oninput="onPaymentDaysChange(this.value)" style="width:90px;text-align:right;font-family:var(--font-mono);">
+              <select class="select" onchange="onPaymentTermsPreset(this.value)" style="flex:1;">
+                <option value="">Personalizado</option>
+                <option value="0" ${c.paymentTerms==='Contado'?'selected':''}>Contado (0 días)</option>
+                <option value="7" ${c.paymentTerms==='7 días'?'selected':''}>7 días</option>
+                <option value="15" ${c.paymentTerms==='15 días'?'selected':''}>15 días</option>
+                <option value="30" ${c.paymentTerms==='30 días'?'selected':''}>30 días</option>
+                <option value="45" ${c.paymentTerms==='45 días'?'selected':''}>45 días</option>
+                <option value="60" ${c.paymentTerms==='60 días'?'selected':''}>60 días</option>
+                <option value="90" ${c.paymentTerms==='90 días'?'selected':''}>90 días</option>
+              </select>
+            </div>
+            <div class="field-hint" style="font-size:11px;color:var(--ink-3);margin-top:4px;">Escribe los días que quieras o elige un preset. La fecha de vencimiento se calcula automáticamente.</div>
+          </div>
+          <div class="field"><label class="field-label">Vencimiento</label><input class="input" type="date" value="${c.dueDate||''}" onchange="creating.dueDate=this.value"><div class="field-hint" style="font-size:11px;color:var(--ink-3);margin-top:4px;">Se calcula automáticamente. Puedes editarla manualmente.</div></div>
           <div class="field"><label class="field-label">Moneda</label><select class="select" onchange="creating.currency=this.value;render()">
             <option value="VES" ${c.currency==='VES'?'selected':''}>Bolívares (VES)</option>
             <option value="USD" ${c.currency==='USD'?'selected':''}>Dólares (USD)</option>
@@ -525,8 +540,70 @@ function onCustomerChange(cid) {
   if (cu) {
     creating.customerName = cu.name;
     if (cu.preferredCurrency) creating.currency = cu.preferredCurrency;
-    if (cu.paymentTerms) creating.paymentTerms = cu.paymentTerms;
+    if (cu.paymentTerms) {
+      creating.paymentTerms = cu.paymentTerms;
+      recalcDueDate();
+    }
   }
+  render();
+}
+
+/** Extrae el número de días de un string de paymentTerms. Devuelve número o '' si no aplica. */
+function getPaymentDays(terms) {
+  if (!terms) return '';
+  if (terms === 'Contado' || terms === 'contado') return 0;
+  const m = String(terms).match(/(\d+)/);
+  return m ? parseInt(m[1], 10) : '';
+}
+
+/** Recalcula creating.dueDate basado en issueDate + días de paymentTerms */
+function recalcDueDate() {
+  const days = getPaymentDays(creating.paymentTerms);
+  if (days === '' || !creating.issueDate) return;
+  const d = new Date(creating.issueDate);
+  if (isNaN(d.getTime())) return;
+  d.setDate(d.getDate() + Number(days));
+  creating.dueDate = d.toISOString().slice(0, 10);
+}
+
+/** Cambio de la fecha de emisión: actualiza y recalcula el vencimiento */
+function onIssueDateChange(val) {
+  creating.issueDate = val;
+  recalcDueDate();
+  render();
+}
+
+/** El usuario escribió un número de días libre */
+function onPaymentDaysChange(val) {
+  const n = parseInt(val, 10);
+  if (isNaN(n) || n < 0) {
+    creating.paymentTerms = '';
+  } else if (n === 0) {
+    creating.paymentTerms = 'Contado';
+  } else {
+    creating.paymentTerms = `${n} días`;
+  }
+  recalcDueDate();
+  // Sin render() para no perder el foco del input mientras escribe
+  // Solo actualizar el campo de fecha
+  const dateInput = document.querySelector('input[type="date"][value="' + (creating.dueDate||'') + '"]');
+  // Más simple: forzar update del input de vencimiento por placeholder inteligente
+  const allDateInputs = document.querySelectorAll('input[type="date"]');
+  allDateInputs.forEach(inp => {
+    // El segundo date input del modal es el vencimiento
+    if (inp.getAttribute('onchange') && inp.getAttribute('onchange').includes('dueDate')) {
+      inp.value = creating.dueDate || '';
+    }
+  });
+}
+
+/** El usuario eligió un preset del dropdown */
+function onPaymentTermsPreset(val) {
+  if (val === '') return; // "Personalizado", no hacer nada
+  const days = parseInt(val, 10);
+  if (days === 0) creating.paymentTerms = 'Contado';
+  else creating.paymentTerms = `${days} días`;
+  recalcDueDate();
   render();
 }
 
@@ -1973,6 +2050,10 @@ Object.assign(window, {
   renderVenSummary: typeof renderVenSummary !== 'undefined' ? renderVenSummary : undefined,
   onCustomerChange: typeof onCustomerChange !== 'undefined' ? onCustomerChange : undefined,
   setSalesperson: typeof setSalesperson !== 'undefined' ? setSalesperson : undefined,
+  onIssueDateChange: typeof onIssueDateChange !== 'undefined' ? onIssueDateChange : undefined,
+  onPaymentDaysChange: typeof onPaymentDaysChange !== 'undefined' ? onPaymentDaysChange : undefined,
+  onPaymentTermsPreset: typeof onPaymentTermsPreset !== 'undefined' ? onPaymentTermsPreset : undefined,
+  getPaymentDays: typeof getPaymentDays !== 'undefined' ? getPaymentDays : undefined,
   addItem: typeof addItem !== 'undefined' ? addItem : undefined,
   updateItemFormula: typeof updateItemFormula !== 'undefined' ? updateItemFormula : undefined,
   updateItemProduct: typeof updateItemProduct !== 'undefined' ? updateItemProduct : undefined,
