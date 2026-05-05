@@ -306,8 +306,61 @@ const reports = {
       };
     });
 
+    // Agregar NDs con monto POSITIVO (suman al libro de ventas)
+    const debitNotes = db.getAll(db.COLLECTIONS.debitNotes)
+      .filter(n => n.status !== 'CANCELLED' && this.inRange(n.issueDate, from, to));
+
+    const ndRows = debitNotes.map((n, idx) => {
+      let baseVES = n.taxableBase;
+      let ivaVES = n.ivaAmount;
+      let totalVES = n.total;
+      let exemptVES = n.exemptBase;
+      let rateUsed = 0;
+      let rateLabel = '—';
+
+      if (n.currency !== 'VES') {
+        rateUsed = parseFloat(n.rateValue) || 0;
+        rateLabel = 'al emitir ND';
+        if (!rateUsed) {
+          const r = currency.getRate('BCV_USD');
+          rateUsed = r?.value || 0;
+          rateLabel = 'BCV hoy';
+        }
+        if (rateUsed > 0) {
+          baseVES *= rateUsed;
+          ivaVES *= rateUsed;
+          totalVES *= rateUsed;
+          exemptVES *= rateUsed;
+        }
+      }
+
+      return {
+        n: rows.length + ncRows.length + idx + 1,
+        fecha: n.issueDate,
+        rifCliente: n.customerRif || '',
+        nombreCliente: n.customerName,
+        nFactura: n.code + (n.ndInvoiceNumber ? ` (${n.ndInvoiceNumber})` : ''),
+        nControl: n.ndControlNumber || '',
+        tipoDoc: 'NOTA_DEBITO',
+        nFacturaAfectada: n.invoiceNumber || n.invoiceCode,
+        // Montos POSITIVOS porque suman al débito fiscal
+        baseImponible: baseVES,
+        ivaRate: n.ivaRate,
+        iva: ivaVES,
+        exento: exemptVES,
+        total: totalVES,
+        cancelled: false,
+        currency: n.currency,
+        docId: n.id,
+        rateUsed,
+        rateLabel,
+        isFrozen: false,
+        status: n.status
+      };
+    });
+
     // Combinar y ordenar por fecha
-    const allRows = [...rows, ...ncRows].sort((a, b) => (a.fecha||'').localeCompare(b.fecha||''));
+    const allRows = [...rows, ...ncRows, ...ndRows].sort((a, b) => (a.fecha||'').localeCompare(b.fecha||''));
     // Renumerar
     allRows.forEach((r, idx) => r.n = idx + 1);
 
