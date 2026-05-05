@@ -374,7 +374,7 @@ function renderCreate() {
               <optgroup label="Fórmulas">
                 ${formulas.map(f => `<option value="formula:${f.id}" ${`formula:${f.id}`===(it._productKey||(it.formulaId?'formula:'+it.formulaId:''))?'selected':''}>${ui.escape(f.code)} · ${ui.escape(f.name)}</option>`).join('')}
               </optgroup>
-              ${lotsWithoutFormula.length ? `<optgroup label="Lotes sin fórmula (carga inicial)">
+              ${lotsWithoutFormula.length ? `<optgroup label="Productos sin fabricación (compra/regalo/accesorios)">
                 ${lotsWithoutFormula.map(l => `<option value="lot:${l.id}" ${`lot:${l.id}`===(it._productKey||(it.fgLotId?'lot:'+it.fgLotId:''))?'selected':''}>${ui.escape(l.code)} · ${ui.escape(l.productName||l.formulaName)} (${l.balance} ${l.unit})</option>`).join('')}
               </optgroup>` : ''}
             </select>

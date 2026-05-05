@@ -67,7 +67,7 @@ function render() {
         <td>
           ${l.formulaId
             ? ui.escape(l.formulaName||'—')
-            : `<div>${ui.escape(l.productName || l.formulaName || '—')}</div><span class="badge badge-warning" style="font-size:9.5px;">⚠️ Sin fórmula</span>`
+            : `<div>${ui.escape(l.productName || l.formulaName || '—')}</div><span class="badge ${l.isInitialLoad ? 'badge-plain' : 'badge-warning'}" style="font-size:9.5px;">${l.isInitialLoad ? '📦 Sin fabricación' : '⚠️ Sin fórmula'}</span>`
           }
         </td>
         <td><span class="td-mono">${ui.escape(l.productionOrderCode||'—')}</span></td>
@@ -86,7 +86,7 @@ function render() {
         <td><span class="badge ${s.color}">${s.label}</span></td>
         ${isGerencialMode ? `<td style="text-align:right;"><span class="td-mono">$${((l.balance||0) * (l.unitCost||0)).toFixed(2)}</span></td>` : ''}
         <td class="td-actions">
-          ${!l.formulaId ? `<button class="btn-icon" onclick="openLinkFormula('${l.id}')" title="Vincular fórmula" style="color:#92400e;">🔗</button>` : ''}
+          ${!l.formulaId && !l.isInitialLoad ? `<button class="btn-icon" onclick="openLinkFormula('${l.id}')" title="Vincular fórmula" style="color:#92400e;">🔗</button>` : ''}
           ${l.qcTestId ? `<a class="btn-icon" href="calidad.html" onclick="event.stopPropagation()" title="Ver QC">${ui.icon('flask')}</a>` : ''}
           <button class="btn-icon" onclick="editLot('${l.id}')" title="Editar">${ui.icon('edit')}</button>
         </td>
@@ -106,6 +106,9 @@ function render() {
         <div class="action-bar-left">
           <h2 class="action-bar-title">Producto terminado</h2>
           <span class="action-bar-count">${all.length} lotes · ${counts.cuarentena} en cuarentena · ${counts.liberado} liberados · ${counts.rechazado} rechazados</span>
+        </div>
+        <div class="action-bar-right">
+          <button class="btn btn-primary" onclick="newProduct()">${ui.icon('plus')} Nuevo producto</button>
         </div>
       </div>
 
@@ -175,15 +178,192 @@ const _doSearchRender = ui.debounce(() => _preserveFocusRender(), 250);
 function onSearch(v) { searchTerm = v; _doSearchRender(); }
 function onStatusFilter(v) { statusFilter = v; render(); }
 
+/**
+ * Modal para agregar un nuevo producto al inventario que NO requiere fabricación.
+ * Útil para productos comprados para reventa, regalos, accesorios (carta de color,
+ * capas, toallas, etc.) que se venden pero no se fabrican con una fórmula.
+ * Usa inventory.createInitialFGLot que ya soporta lotes sin fórmula.
+ */
+function newProduct() {
+  const warehouses = db.getAll(db.COLLECTIONS.warehouses);
+  if (!warehouses.length) {
+    ui.toast('Primero creá un almacén en el módulo Almacenes', 'error');
+    return;
+  }
+  const today = new Date().toISOString().slice(0,10);
+
+  ui.openModal({
+    size: 'lg',
+    title: 'Nuevo producto (sin fabricación)',
+    subtitle: 'Para productos comprados, accesorios o regalos que se venden sin requerir fórmula',
+    body: `
+      <form id="new-product-form" onsubmit="saveNewProduct(event)">
+        <div class="text-muted" style="font-size:12px;line-height:1.5;margin-bottom:16px;padding:10px 12px;background:#f0f9ff;border:1px solid #bae6fd;border-radius:6px;color:#0369a1;">
+          💡 Estos productos aparecerán en ventas para poder facturarlos. Como no tienen fórmula, no consumen materia prima ni se descuentan de producción — solo se descuenta su stock al venderse.
+        </div>
+
+        <div class="section-title">Producto</div>
+        <div class="form-grid form-grid-2 mb-24">
+          <div class="field" style="grid-column:1/-1;">
+            <label class="field-label">Nombre del producto *</label>
+            <input class="input" name="productName" required placeholder="Ej: Carta de color, Capa peluquería, Toalla, etc.">
+          </div>
+          <div class="field">
+            <label class="field-label">Cantidad inicial *</label>
+            <input class="input" type="number" name="quantity" required min="0" step="0.001" value="1">
+          </div>
+          <div class="field">
+            <label class="field-label">Unidad *</label>
+            <select class="select" name="unit">
+              <option value="unidad">unidad</option>
+              <option value="caja">caja</option>
+              <option value="paquete">paquete</option>
+              <option value="par">par</option>
+              <option value="kg">kg</option>
+              <option value="g">g</option>
+              <option value="ml">ml</option>
+              <option value="L">L</option>
+              <option value="m">metros</option>
+            </select>
+          </div>
+          <div class="field">
+            <label class="field-label">Almacén *</label>
+            <select class="select" name="warehouseId" required>
+              ${warehouses.map(w => `<option value="${w.id}">${ui.escape(w.name)}</option>`).join('')}
+            </select>
+          </div>
+          <div class="field">
+            <label class="field-label">Estado inicial</label>
+            <select class="select" name="status">
+              <option value="LIBERADO" selected>Liberado (vendible)</option>
+              <option value="CUARENTENA">En cuarentena</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="section-title">Costos y precios</div>
+        <div class="form-grid form-grid-2 mb-24">
+          <div class="field">
+            <label class="field-label">Costo unitario (USD)</label>
+            <input class="input" type="number" name="unitCost" min="0" step="0.0001" value="0">
+            <div class="field-hint">Lo que te costó comprarlo (para márgenes y reportes)</div>
+          </div>
+          <div class="field">
+            <label class="field-label">Precio distribuidor (USD)</label>
+            <input class="input" type="number" name="priceDistributor" min="0" step="0.0001" value="0">
+          </div>
+          <div class="field">
+            <label class="field-label">Precio peluquería (USD)</label>
+            <input class="input" type="number" name="pricePharmacy" min="0" step="0.0001" value="0">
+          </div>
+          <div class="field">
+            <label class="field-label">Stock mínimo</label>
+            <input class="input" type="number" name="minStock" min="0" step="1" value="5">
+            <div class="field-hint">Te alertará cuando el balance baje a este número. 0 = sin alerta.</div>
+          </div>
+        </div>
+
+        <div class="section-title">Detalles opcionales</div>
+        <div class="form-grid form-grid-2 mb-24">
+          <div class="field">
+            <label class="field-label">Fecha de ingreso</label>
+            <input class="input" type="date" name="manufactureDate" value="${today}">
+            <div class="field-hint">Cuándo entró a inventario</div>
+          </div>
+          <div class="field">
+            <label class="field-label">Vencimiento (opcional)</label>
+            <input class="input" type="date" name="expiryDate">
+            <div class="field-hint">Solo si aplica (productos perecederos)</div>
+          </div>
+          <div class="field" style="grid-column:1/-1;">
+            <label class="field-label">Notas</label>
+            <textarea class="textarea" name="notes" placeholder="Proveedor, marca, observaciones..."></textarea>
+          </div>
+        </div>
+      </form>
+    `,
+    footer: `
+      <button class="btn btn-secondary" onclick="ui.closeModal()">Cancelar</button>
+      <button class="btn btn-primary" onclick="document.getElementById('new-product-form').requestSubmit()">${ui.icon('check')} Crear producto</button>
+    `
+  });
+}
+
+function saveNewProduct(e) {
+  e.preventDefault();
+  const data = ui.formData(e.target);
+  if (!data.productName || !data.productName.trim()) {
+    ui.toast('El nombre es obligatorio', 'error');
+    return;
+  }
+  const qty = parseFloat(data.quantity) || 0;
+  if (qty <= 0) {
+    ui.toast('La cantidad inicial debe ser mayor a 0', 'error');
+    return;
+  }
+  try {
+    inventory.createInitialFGLot({
+      productName: data.productName.trim(),
+      quantity: qty,
+      unit: data.unit || 'unidad',
+      warehouseId: data.warehouseId,
+      status: data.status || 'LIBERADO',
+      unitCost: parseFloat(data.unitCost) || 0,
+      costCurrency: 'USD',
+      priceDistributor: parseFloat(data.priceDistributor) || 0,
+      pricePharmacy: parseFloat(data.pricePharmacy) || 0,
+      minStock: data.minStock != null && data.minStock !== '' ? parseFloat(data.minStock) : 5,
+      manufactureDate: data.manufactureDate || new Date().toISOString().slice(0,10),
+      expiryDate: data.expiryDate || null,
+      notes: data.notes || ''
+    });
+    ui.closeModal();
+    ui.toast(`Producto "${data.productName.trim()}" creado`, 'success');
+    render();
+  } catch (err) {
+    ui.toast('Error: ' + err.message, 'error');
+  }
+}
+
 function editLot(id) {
   const l = db.getById(db.COLLECTIONS.finishedGoods, id);
   const warehouses = db.getAll(db.COLLECTIONS.warehouses);
+  // Si es un producto sin fórmula (carga inicial), permitimos editar campos
+  // adicionales: nombre, unidad, cantidad y costo. Para lotes producidos con fórmula
+  // estos campos vienen de la OF y no se editan acá.
+  const editableProduct = !l.formulaId && l.isInitialLoad;
   ui.openModal({
-    title: `Editar lote ${l.code}`,
+    size: editableProduct ? 'lg' : 'md',
+    title: `Editar ${editableProduct ? 'producto' : 'lote'} ${l.code}`,
     body: `
       <form id="edit-form" onsubmit="saveLot(event, '${id}')">
+        ${editableProduct ? `
+          <div class="section-title">Producto</div>
+          <div class="form-grid form-grid-2 mb-24">
+            <div class="field" style="grid-column:1/-1;">
+              <label class="field-label">Nombre del producto</label>
+              <input class="input" name="productName" value="${ui.escape(l.productName || l.formulaName || '')}">
+            </div>
+            <div class="field">
+              <label class="field-label">Cantidad / balance actual</label>
+              <input class="input" type="number" name="balance" value="${l.balance || 0}" min="0" step="0.001">
+              <div class="field-hint">⚠️ Cambiarlo afecta directamente el inventario sin generar movimiento. Para movimientos contables usá ajustes en almacén.</div>
+            </div>
+            <div class="field">
+              <label class="field-label">Unidad</label>
+              <select class="select" name="unit">
+                ${['unidad','caja','paquete','par','kg','g','ml','L','m'].map(u => `<option value="${u}" ${u===l.unit?'selected':''}>${u}</option>`).join('')}
+              </select>
+            </div>
+            <div class="field">
+              <label class="field-label">Costo unitario (USD)</label>
+              <input class="input" type="number" name="unitCost" value="${l.unitCost || 0}" min="0" step="0.0001">
+            </div>
+          </div>
+          <div class="section-title">Lote</div>
+        ` : ''}
         <div class="form-grid form-grid-2">
-          <div class="field"><label class="field-label">Lote</label><input class="input" name="code" value="${ui.escape(l.code)}" style="font-family:var(--font-mono);"></div>
+          <div class="field"><label class="field-label">Código de lote</label><input class="input" name="code" value="${ui.escape(l.code)}" style="font-family:var(--font-mono);"></div>
           <div class="field"><label class="field-label">Vencimiento</label><input class="input" type="date" name="expiryDate" value="${l.expiryDate||''}"></div>
           <div class="field"><label class="field-label">Almacén</label><select class="select" name="warehouseId">${warehouses.map(w => `<option value="${w.id}" ${w.id===l.warehouseId?'selected':''}>${ui.escape(w.name)}</option>`).join('')}</select></div>
           <div class="field"><label class="field-label">Estado</label><select class="select" name="status">${Object.entries(PT_STATUS).map(([k,s])=>`<option value="${k}" ${k===l.status?'selected':''}>${s.label}</option>`).join('')}</select></div>
@@ -206,6 +386,21 @@ function saveLot(e, id) {
   if (data.minStock != null) data.minStock = parseFloat(data.minStock) || 0;
   if (data.priceDistributor != null) data.priceDistributor = parseFloat(data.priceDistributor) || 0;
   if (data.pricePharmacy != null) data.pricePharmacy = parseFloat(data.pricePharmacy) || 0;
+  // Solo para productos sin fórmula (carga inicial): permitir editar nombre, balance, unit, unitCost
+  if (!l.formulaId && l.isInitialLoad) {
+    if (data.productName != null) {
+      data.productName = String(data.productName).trim();
+      data.formulaName = data.productName; // mantener consistencia con el campo legacy
+    }
+    if (data.balance != null) data.balance = parseFloat(data.balance) || 0;
+    if (data.unitCost != null) data.unitCost = parseFloat(data.unitCost) || 0;
+  } else {
+    // Para lotes con fórmula no permitimos editar estos campos por accidente
+    delete data.productName;
+    delete data.balance;
+    delete data.unit;
+    delete data.unitCost;
+  }
   Object.assign(l, data);
   db.save(db.COLLECTIONS.finishedGoods, l);
   ui.closeModal();
@@ -293,6 +488,8 @@ Object.assign(window, {
   render: typeof render !== 'undefined' ? render : undefined,
   onSearch: typeof onSearch !== 'undefined' ? onSearch : undefined,
   onStatusFilter: typeof onStatusFilter !== 'undefined' ? onStatusFilter : undefined,
+  newProduct: typeof newProduct !== 'undefined' ? newProduct : undefined,
+  saveNewProduct: typeof saveNewProduct !== 'undefined' ? saveNewProduct : undefined,
   editLot: typeof editLot !== 'undefined' ? editLot : undefined,
   saveLot: typeof saveLot !== 'undefined' ? saveLot : undefined,
   applyDefaultMinStock: typeof applyDefaultMinStock !== 'undefined' ? applyDefaultMinStock : undefined,
