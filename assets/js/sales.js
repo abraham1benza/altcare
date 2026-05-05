@@ -303,7 +303,7 @@ const sales = {
    * Crea un documento de venta en estado inicial (PEDIDO por defecto).
    * Items: [{ formulaId, formulaName, fgLotId (opcional), quantity, unitPrice, unit, notes }]
    */
-  create({ customerId, currency: docCurrency, rateType, items, status, notes, paymentTerms, dueDate, salespersonId, salespersonName }) {
+  create({ customerId, currency: docCurrency, rateType, items, status, notes, paymentTerms, dueDate, salespersonId, salespersonName, customerAddress }) {
     const customer = db.getById(db.COLLECTIONS.customers, customerId);
     if (!customer) throw new Error('Cliente no encontrado');
     if (!items || !items.length) throw new Error('Debe haber al menos un ítem');
@@ -352,7 +352,7 @@ const sales = {
       customerId,
       customerName: customer.name,
       customerRif: customer.rif,
-      customerAddress: customer.address || '',
+      customerAddress: (customerAddress != null ? customerAddress : customer.address) || '',
       customerPhone: customer.phone || '',
       // Numeración fiscal (solo se asigna al convertir a FACTURA, NUNCA a NE)
       invoiceNumber: null,
