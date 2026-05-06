@@ -259,11 +259,13 @@ function updateResult(idx, field, val) {
   // Recalcular el indicador de status del lado:
   if (field === 'value') {
     const r = creating.results[idx];
-    const param = creating.parameters[idx];
-    if (param && (param.min != null || param.max != null)) {
+    // Los rangos min/max viven en el propio result (se copiaron del qcParam al crear).
+    const min = (r.min === '' || r.min === null || r.min === undefined) ? null : parseFloat(r.min);
+    const max = (r.max === '' || r.max === null || r.max === undefined) ? null : parseFloat(r.max);
+    if (min != null || max != null) {
       const num = parseFloat(val);
       if (!isNaN(num)) {
-        if ((param.min != null && num < param.min) || (param.max != null && num > param.max)) {
+        if ((min != null && num < min) || (max != null && num > max)) {
           r._status = 'fail';
         } else {
           r._status = 'ok';
