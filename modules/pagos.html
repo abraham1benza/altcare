@@ -204,7 +204,10 @@ function renderCXPTable(invoices) {
       const dueClass = overdue ? 'badge-danger' : 'badge-plain';
       const supplier = db.getById(db.COLLECTIONS.suppliers, i.supplierId);
       const hasPhone = supplier && (supplier.whatsapp || supplier.phone);
-      const notifyUrl = `notificaciones.html?quickSend=1&type=supplier&id=${i.supplierId}&template=RECORDATORIO_PAGO_PROVEEDOR&docId=${i.id}`;
+      const notifyUrl = hasPhone
+        ? `notificaciones.html?quickSend=1&type=supplier&id=${i.supplierId}&template=RECORDATORIO_PAGO_PROVEEDOR&docId=${i.id}`
+        : `proveedores.html`;
+      const btnTitle = hasPhone ? 'Enviar recordatorio por WhatsApp' : 'Sin WhatsApp/teléfono guardado · click para agregarlo';
       return `<tr>
         <td><span class="td-mono td-strong">${i.code}</span><div class="text-muted" style="font-size:11px;">${ui.escape(i.supplierInvoiceNumber||'')}</div></td>
         <td>${ui.escape(i.supplierName)}</td>
@@ -215,7 +218,7 @@ function renderCXPTable(invoices) {
         <td style="text-align:right;"><span class="td-mono td-strong">${currency.format(remaining, i.currency)}</span></td>
         <td><span class="badge ${i.currency==='USD'?'badge-accent':'badge-plain'}">${i.currency}</span></td>
         <td class="td-actions" style="display:flex;gap:4px;justify-content:flex-end;">
-          ${hasPhone ? `<a href="${notifyUrl}" class="btn btn-secondary btn-sm" title="Enviar recordatorio por WhatsApp" style="font-size:11px;padding:4px 8px;">📱 Avisar</a>` : ''}
+          <a href="${notifyUrl}" class="btn ${hasPhone?'btn-secondary':'btn-ghost'} btn-sm" title="${btnTitle}" style="font-size:11px;padding:4px 8px;${!hasPhone?'opacity:0.5;':''}">📱 Avisar</a>
           <button class="btn btn-primary btn-sm" onclick="newPaymentForInvoice('${i.id}')">Registrar pago</button>
         </td>
       </tr>`;
@@ -226,14 +229,19 @@ function renderCXCTable(docs) {
   if (!docs.length) return '<div class="empty-state"><div class="empty-state-title">Sin facturas por cobrar</div><div class="empty-state-text">Todas tus facturas de venta están cobradas.</div></div>';
   const today = new Date().toISOString().slice(0,10);
   return `<div class="table-wrap"><table>
-    <thead><tr><th>Factura</th><th>Cliente</th><th>Emitida</th><th>Vence</th><th style="text-align:right;">Total</th><th style="text-align:right;">Cobrado</th><th style="text-align:right;">Pendiente</th><th>Moneda</th><th style="text-align:right;width:200px;">Acciones</th></tr></thead>
+    <thead><tr><th>Factura</th><th>Cliente</th><th>Emitida</th><th>Vence</th><th style="text-align:right;">Total</th><th style="text-align:right;">Cobrado</th><th style="text-align:right;">Pendiente</th><th>Moneda</th><th style="text-align:right;width:240px;">Acciones</th></tr></thead>
     <tbody>${docs.map(d => {
       const remaining = d.total - (d.paidAmount||0);
       const overdue = d.dueDate && d.dueDate < today;
       const dueClass = overdue ? 'badge-danger' : 'badge-plain';
       const customer = db.getById(db.COLLECTIONS.customers, d.customerId);
       const hasPhone = customer && (customer.whatsapp || customer.phone);
-      const notifyUrl = `notificaciones.html?quickSend=1&type=customer&id=${d.customerId}&template=COBRO_PENDIENTE_CLIENTE&docId=${d.id}`;
+      // Si tiene WhatsApp/teléfono → va al módulo notificaciones precargado.
+      // Si no tiene → va al detalle del cliente para que le carguen el teléfono.
+      const notifyUrl = hasPhone
+        ? `notificaciones.html?quickSend=1&type=customer&id=${d.customerId}&template=COBRO_PENDIENTE_CLIENTE&docId=${d.id}`
+        : `clientes.html`;
+      const btnTitle = hasPhone ? 'Enviar recordatorio por WhatsApp' : 'Sin WhatsApp/teléfono guardado · click para agregarlo';
       return `<tr>
         <td><span class="td-mono td-strong">${d.invoiceNumber||d.code}</span><div class="text-muted" style="font-size:11px;">Ctrl: ${d.controlNumber||'—'}</div></td>
         <td>${ui.escape(d.customerName)}</td>
@@ -244,7 +252,7 @@ function renderCXCTable(docs) {
         <td style="text-align:right;"><span class="td-mono td-strong">${currency.format(remaining, d.currency)}</span></td>
         <td><span class="badge ${d.currency==='USD'?'badge-accent':'badge-plain'}">${d.currency}</span></td>
         <td class="td-actions" style="display:flex;gap:4px;justify-content:flex-end;">
-          ${hasPhone ? `<a href="${notifyUrl}" class="btn btn-secondary btn-sm" title="Enviar recordatorio por WhatsApp" style="font-size:11px;padding:4px 8px;">📱 Avisar</a>` : ''}
+          <a href="${notifyUrl}" class="btn ${hasPhone?'btn-secondary':'btn-ghost'} btn-sm" title="${btnTitle}" style="font-size:11px;padding:4px 8px;${!hasPhone?'opacity:0.5;':''}">📱 Avisar</a>
           <button class="btn btn-primary btn-sm" onclick="newPaymentForDoc('${d.id}')">Registrar cobro</button>
         </td>
       </tr>`;

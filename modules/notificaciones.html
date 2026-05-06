@@ -580,19 +580,35 @@ function handleUrlParams() {
     render();
   }
 
-  // Función que aplica todo el preset; reintenta si los nodos del DOM aún
-  // no están listos (puede pasar si seedDefaultTemplates está corriendo).
+  // Función que aplica todo el preset; reintenta si los nodos del DOM o las
+  // plantillas aún no están listos. Las plantillas pueden tardar en aparecer
+  // si seedDefaultTemplates() está corriendo en paralelo (Firestore async).
   let attempts = 0;
+  const MAX_ATTEMPTS = 30; // ~3 segundos máximo
   const tryApply = () => {
     attempts++;
     const tplSelect = document.getElementById('template-select');
     const textarea  = document.getElementById('message-text');
+
+    // 1) Esperar a que el DOM esté listo
     if (!tplSelect || !textarea) {
-      if (attempts < 20) return setTimeout(tryApply, 100);
+      if (attempts < MAX_ATTEMPTS) return setTimeout(tryApply, 100);
       ui.toast('No se pudo cargar el formulario de envío', 'error');
       return;
     }
 
+    // 2) Si pidieron una plantilla específica, esperar a que esté disponible
+    //    (se siembra en background si no existe). Solo verificamos esto una vez
+    //    se confirmó que el DOM está listo.
+    let tpl = null;
+    if (templateKey) {
+      tpl = notifications.getTemplateByKey(templateKey);
+      if (!tpl && attempts < MAX_ATTEMPTS) {
+        return setTimeout(tryApply, 100);
+      }
+    }
+
+    // 3) Preparar datos del contacto y documento
     let prepared = null;
     if (docId && type === 'supplier') {
       prepared = notifications.prepareDataFromSupplierInvoice(docId);
@@ -608,31 +624,50 @@ function handleUrlParams() {
     }
 
     if (!prepared || !prepared.contact) {
-      ui.toast('No se pudo cargar el contacto. Verificá que tenga teléfono/WhatsApp registrado.', 'error', 4500);
-      return;
+      // Si tenemos id pero no se pudo preparar (ej. cliente borrado), hacer fallback simple
+      if (id) {
+        const coll = type === 'supplier' ? db.COLLECTIONS.suppliers : db.COLLECTIONS.customers;
+        const contact = db.getById(coll, id);
+        if (contact) {
+          prepared = { contact, data: { nombre: contact.name || '' } };
+        }
+      }
+      if (!prepared || !prepared.contact) {
+        ui.toast('No se pudo cargar el contacto', 'error', 4000);
+        return;
+      }
     }
 
-    // 1) Pre-seleccionar contacto en el selector
-    selectContact(type, prepared.contact.id);
+    // 4) Pre-seleccionar contacto
+    try {
+      selectContact(type, prepared.contact.id);
+    } catch (err) {
+      console.error('Error al seleccionar contacto:', err);
+    }
 
-    // 2) Pre-seleccionar plantilla y aplicar el mensaje con los datos del documento.
-    //    Esto se hace DESPUÉS del selectContact (que dispara su propio onTemplateChange
-    //    pero como aún no había plantilla, no rompe nada).
+    // 5) Aplicar plantilla y mensaje. Si la plantilla no se encontró, dejamos
+    //    el textarea vacío y avisamos amablemente — el usuario igual puede escribir.
     if (templateKey) {
-      const tpl = notifications.getTemplateByKey(templateKey);
       if (tpl) {
         tplSelect.value = tpl.id;
         textarea.value = notifications.applyTemplate(tpl.message, prepared.data);
       } else {
-        // Si la plantilla no existe (ej. el usuario nunca la sembró), avisar amablemente
-        ui.toast(`Plantilla "${templateKey}" no encontrada. Sembrá las plantillas predeterminadas desde "Plantillas".`, 'error', 5000);
+        // Plantilla pedida pero no disponible (probablemente nunca se sembró)
+        ui.toast(
+          `Plantilla "${templateKey}" no disponible aún. ` +
+          (auth._profile?.role === 'admin' || auth._profile?.role === 'gerente'
+            ? 'Andá a "Plantillas" y la podés crear o sembrar.'
+            : 'Pedile a un admin que siembre las plantillas predeterminadas.'),
+          'error', 6000
+        );
+        // Mensaje fallback genérico para que el usuario igual pueda enviar
+        textarea.value = `Hola ${prepared.data.nombre || ''}, te escribo para coordinar.`.trim();
       }
     }
 
-    // 3) Limpiar la URL para que recargar la página no vuelva a aplicar el preset
+    // 6) Limpiar la URL (así si refrescás no vuelve a aplicar el preset)
     if (window.history && window.history.replaceState) {
-      const cleanUrl = window.location.pathname;
-      window.history.replaceState({}, document.title, cleanUrl);
+      window.history.replaceState({}, document.title, window.location.pathname);
     }
   };
 
