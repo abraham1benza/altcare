@@ -251,7 +251,9 @@ function renderDashboard() {
   const ofsInProcess = ofs.filter(o => o.status === 'IN_PROCESS').length;
   const ofsPlanned = ofs.filter(o => o.status === 'PLANNED').length;
   const fgLots = db.getAll(db.COLLECTIONS.finishedGoods).filter(l => l.balance > 0);
-  const fgQuarantine = db.getAll(db.COLLECTIONS.finishedGoods).filter(l => l.status === 'CUARENTENA' && !l.qcTestId).length;
+  // PT en cuarentena esperando QC: guardamos la lista para poder mostrar referencias
+  const fgQuarantineList = db.getAll(db.COLLECTIONS.finishedGoods).filter(l => l.status === 'CUARENTENA' && !l.qcTestId);
+  const fgQuarantine = fgQuarantineList.length;
 
   // PT con stock bajo: lotes activos liberados cuyo balance está en/bajo el mínimo
   // Solo considera lotes con minStock > 0 definido
@@ -392,18 +394,114 @@ function renderDashboard() {
   };
 
   // === ALERTAS ===
+  // Cada alerta puede traer una lista opcional `items` con códigos/nombres específicos
+  // para que el usuario llegue rápido al problema sin tener que entrar al módulo a buscar.
+  // Mostramos hasta 5 items por alerta — si hay más, se indica con "y N más".
+  const MAX_ITEMS_PER_ALERT = 5;
+  const truncate = (arr) => arr.slice(0, MAX_ITEMS_PER_ALERT);
+
   const alerts = [];
   if (!cfg?.companyName) alerts.push({ severity: 'warning', text: 'Configura los datos fiscales de tu empresa', link: 'modules/configuracion.html' });
   if (!activeRate || !activeRate.value) alerts.push({ severity: 'warning', text: 'Aún no hay una tasa de cambio activa', link: 'modules/tasas-cambio.html' });
   if (db.getAll(db.COLLECTIONS.users).length === 1) alerts.push({ severity: 'info', text: 'Solo existe el usuario admin. Crea cuentas para tu equipo', link: 'modules/usuarios.html' });
-  if (cxcOverdue.length > 0) alerts.push({ severity: 'danger', text: `${cxcOverdue.length} factura(s) de venta vencidas sin cobrar`, link: 'modules/pagos.html' });
-  if (cxpOverdue.length > 0) alerts.push({ severity: 'danger', text: `${cxpOverdue.length} factura(s) de compra vencidas sin pagar`, link: 'modules/pagos.html' });
-  if (invoicesNoLots.length > 0) alerts.push({ severity: 'warning', text: `${invoicesNoLots.length} factura(s) de venta sin lotes asignados (inventario no descontado)`, link: 'modules/ventas.html' });
-  if (ocsToInvoice.length > 0) alerts.push({ severity: 'info', text: `${ocsToInvoice.length} orden(es) de compra recibidas sin factura`, link: 'modules/compras.html' });
-  if (fgQuarantine > 0) alerts.push({ severity: 'info', text: `${fgQuarantine} lote(s) de PT esperando control de calidad`, link: 'modules/calidad.html' });
-  if (expSoon > 0) alerts.push({ severity: 'warning', text: `${expSoon} lote(s) próximos a vencer (en menos de ${cfg?.expiryAlertDays||60} días)`, link: 'modules/almacen.html' });
-  if (lowStockCount > 0) alerts.push({ severity: 'warning', text: `${lowStockCount} materia(s) prima(s) con stock bajo`, link: 'modules/materias-primas.html' });
-  if (lowStockFGCount > 0) alerts.push({ severity: 'warning', text: `${lowStockFGCount} producto(s) terminado(s) con stock bajo`, link: 'modules/producto-terminado.html' });
+
+  if (cxcOverdue.length > 0) alerts.push({
+    severity: 'danger',
+    text: `${cxcOverdue.length} factura(s) de venta vencidas sin cobrar`,
+    link: 'modules/pagos.html',
+    items: truncate(cxcOverdue.map(d => ({
+      code: d.invoiceNumber || d.code,
+      detail: `${d.customerName || '—'} · ${currency.format(d.total - (d.paidAmount||0), d.currency)}${d.dueDate ? ' · venció '+ui.formatDate(d.dueDate) : ''}`
+    }))),
+    totalCount: cxcOverdue.length
+  });
+
+  if (cxpOverdue.length > 0) alerts.push({
+    severity: 'danger',
+    text: `${cxpOverdue.length} factura(s) de compra vencidas sin pagar`,
+    link: 'modules/pagos.html',
+    items: truncate(cxpOverdue.map(i => ({
+      code: i.supplierInvoiceNumber || i.code,
+      detail: `${i.supplierName || '—'} · ${currency.format(i.totalToPay - (i.paidAmount||0), i.currency)}${i.dueDate ? ' · venció '+ui.formatDate(i.dueDate) : ''}`
+    }))),
+    totalCount: cxpOverdue.length
+  });
+
+  if (invoicesNoLots.length > 0) alerts.push({
+    severity: 'warning',
+    text: `${invoicesNoLots.length} factura(s) de venta sin lotes asignados (inventario no descontado)`,
+    link: 'modules/ventas.html',
+    items: truncate(invoicesNoLots.map(d => ({
+      code: d.invoiceNumber || d.code,
+      detail: `${d.customerName || '—'} · ${ui.formatDate(d.issueDate)}`
+    }))),
+    totalCount: invoicesNoLots.length
+  });
+
+  if (ocsToInvoice.length > 0) alerts.push({
+    severity: 'info',
+    text: `${ocsToInvoice.length} orden(es) de compra recibidas sin factura`,
+    link: 'modules/compras.html',
+    items: truncate(ocsToInvoice.map(p => ({
+      code: p.code,
+      detail: `${p.supplierName || '—'} · ${currency.format(p.subtotal||0, p.currency||'USD')}`
+    }))),
+    totalCount: ocsToInvoice.length
+  });
+
+  if (fgQuarantine > 0) alerts.push({
+    severity: 'info',
+    text: `${fgQuarantine} lote(s) de PT esperando control de calidad`,
+    link: 'modules/calidad.html',
+    items: truncate(fgQuarantineList.map(l => ({
+      code: l.code,
+      detail: `${l.formulaName || l.productName || '—'}${l.balance ? ' · '+l.balance+' '+(l.unit||'') : ''}`
+    }))),
+    totalCount: fgQuarantine
+  });
+
+  if (expSoon > 0) {
+    // Combinamos lotes MP y PT que vencen pronto
+    const expiringAll = [
+      ...expiring.mp.map(x => ({
+        code: x.lot?.code || '—',
+        detail: `MP: ${x.rm?.name || '—'}${x.lot?.expiryDate ? ' · vence '+ui.formatDate(x.lot.expiryDate) : ''}`
+      })),
+      ...expiring.fg.map(x => ({
+        code: x.lot?.code || '—',
+        detail: `PT: ${x.lot?.formulaName || x.lot?.productName || '—'}${x.lot?.expiryDate ? ' · vence '+ui.formatDate(x.lot.expiryDate) : ''}`
+      }))
+    ];
+    alerts.push({
+      severity: 'warning',
+      text: `${expSoon} lote(s) próximos a vencer (en menos de ${cfg?.expiryAlertDays||60} días)`,
+      link: 'modules/almacen.html',
+      items: truncate(expiringAll),
+      totalCount: expSoon
+    });
+  }
+
+  if (lowStockCount > 0) alerts.push({
+    severity: 'warning',
+    text: `${lowStockCount} materia(s) prima(s) con stock bajo`,
+    link: 'modules/materias-primas.html',
+    items: truncate(lowStockList.map(x => ({
+      code: x.rm.code,
+      detail: `${x.rm.name} · stock ${x.stock} ${x.rm.unit||''}${x.min>0 ? ' (mín: '+x.min+')' : ' (sin stock)'}`
+    }))),
+    totalCount: lowStockCount
+  });
+
+  if (lowStockFGCount > 0) alerts.push({
+    severity: 'warning',
+    text: `${lowStockFGCount} producto(s) terminado(s) con stock bajo`,
+    link: 'modules/producto-terminado.html',
+    items: truncate(lowStockFG.map(l => ({
+      code: l.code,
+      detail: `${l.formulaName || l.productName || '—'} · stock ${l.balance||0} ${l.unit||''} (mín: ${l.minStock||0})`
+    }))),
+    totalCount: lowStockFGCount
+  });
 
   const sevColor = { danger: 'var(--danger)', warning: 'var(--warning)', info: 'var(--accent-ink)' };
   const sevBg = { danger: 'var(--danger-soft)', warning: 'var(--warning-soft)', info: 'var(--accent-soft)' };
@@ -416,12 +514,31 @@ function renderDashboard() {
     ${['danger','warning','info'].filter(lvl => alertsByLevel[lvl].length).map(lvl => `
       <div class="card" style="background:${sevBg[lvl]};border-color:${sevBorder[lvl]};margin-bottom:12px;padding:0;">
         <div style="padding:10px 18px;border-bottom:1px solid ${sevBorder[lvl]};font-size:11px;letter-spacing:0.12em;text-transform:uppercase;font-weight:600;color:${sevColor[lvl]};">${lvl==='danger'?'Urgente':lvl==='warning'?'Atención':'Información'}</div>
-        ${alertsByLevel[lvl].map(a => `
-          <div style="display:flex;align-items:center;justify-content:space-between;padding:10px 18px;border-bottom:1px solid ${sevBorder[lvl]};gap:12px;">
-            <span style="font-size:13.5px;color:var(--ink-2);">${a.text}</span>
-            <a href="${a.link}" class="btn btn-sm btn-secondary" style="white-space:nowrap;">Ir →</a>
+        ${alertsByLevel[lvl].map(a => {
+          const hasItems = a.items && a.items.length > 0;
+          const moreCount = (a.totalCount || 0) - a.items?.length;
+          return `
+          <div style="padding:10px 18px;border-bottom:1px solid ${sevBorder[lvl]};">
+            <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;${hasItems?'margin-bottom:6px;':''}">
+              <span style="font-size:13.5px;color:var(--ink-2);">${a.text}</span>
+              <a href="${a.link}" class="btn btn-sm btn-secondary" style="white-space:nowrap;flex-shrink:0;">Ir →</a>
+            </div>
+            ${hasItems ? `
+              <ul style="margin:4px 0 0 0;padding-left:18px;list-style:none;">
+                ${a.items.map(it => `
+                  <li style="font-size:12px;color:var(--ink-2);line-height:1.55;padding:1px 0;position:relative;">
+                    <span style="position:absolute;left:-14px;color:${sevColor[lvl]};opacity:0.6;">•</span>
+                    <span class="td-mono" style="font-size:11px;color:var(--ink);font-weight:600;">${ui.escape(it.code)}</span>
+                    <span style="color:var(--ink-3);"> — ${ui.escape(it.detail)}</span>
+                  </li>
+                `).join('')}
+                ${moreCount > 0 ? `
+                  <li style="font-size:11px;color:var(--ink-3);font-style:italic;padding-top:2px;">y ${moreCount} más…</li>
+                ` : ''}
+              </ul>
+            ` : ''}
           </div>
-        `).join('')}
+        `;}).join('')}
       </div>
     `).join('')}
   ` : '';
