@@ -574,7 +574,25 @@ function handleUrlParams() {
   const docId = params.get('docId');          // optional: invoice/sales doc id
   const materialId = params.get('materialId'); // optional: para low stock
 
-  setTimeout(() => {
+  // Asegurarnos de estar en la pestaña "Enviar" (única donde existen los IDs).
+  if (activeTab !== 'send') {
+    activeTab = 'send';
+    render();
+  }
+
+  // Función que aplica todo el preset; reintenta si los nodos del DOM aún
+  // no están listos (puede pasar si seedDefaultTemplates está corriendo).
+  let attempts = 0;
+  const tryApply = () => {
+    attempts++;
+    const tplSelect = document.getElementById('template-select');
+    const textarea  = document.getElementById('message-text');
+    if (!tplSelect || !textarea) {
+      if (attempts < 20) return setTimeout(tryApply, 100);
+      ui.toast('No se pudo cargar el formulario de envío', 'error');
+      return;
+    }
+
     let prepared = null;
     if (docId && type === 'supplier') {
       prepared = notifications.prepareDataFromSupplierInvoice(docId);
@@ -590,29 +608,36 @@ function handleUrlParams() {
     }
 
     if (!prepared || !prepared.contact) {
-      ui.toast('No se pudo cargar el contacto', 'error');
+      ui.toast('No se pudo cargar el contacto. Verificá que tenga teléfono/WhatsApp registrado.', 'error', 4500);
       return;
     }
 
-    // Pre-seleccionar contacto (usa la nueva función de selección directa)
+    // 1) Pre-seleccionar contacto en el selector
     selectContact(type, prepared.contact.id);
 
-    // Pre-seleccionar plantilla
+    // 2) Pre-seleccionar plantilla y aplicar el mensaje con los datos del documento.
+    //    Esto se hace DESPUÉS del selectContact (que dispara su propio onTemplateChange
+    //    pero como aún no había plantilla, no rompe nada).
     if (templateKey) {
       const tpl = notifications.getTemplateByKey(templateKey);
       if (tpl) {
-        const tplSelect = document.getElementById('template-select');
-        if (tplSelect) {
-          tplSelect.value = tpl.id;
-          // Renderizar mensaje con datos preparados
-          const textarea = document.getElementById('message-text');
-          if (textarea) {
-            textarea.value = notifications.applyTemplate(tpl.message, prepared.data);
-          }
-        }
+        tplSelect.value = tpl.id;
+        textarea.value = notifications.applyTemplate(tpl.message, prepared.data);
+      } else {
+        // Si la plantilla no existe (ej. el usuario nunca la sembró), avisar amablemente
+        ui.toast(`Plantilla "${templateKey}" no encontrada. Sembrá las plantillas predeterminadas desde "Plantillas".`, 'error', 5000);
       }
     }
-  }, 200);
+
+    // 3) Limpiar la URL para que recargar la página no vuelva a aplicar el preset
+    if (window.history && window.history.replaceState) {
+      const cleanUrl = window.location.pathname;
+      window.history.replaceState({}, document.title, cleanUrl);
+    }
+  };
+
+  // Esperamos un tick para que el render() del paso 1 haya creado los nodos
+  setTimeout(tryApply, 50);
 }
 
 render();
