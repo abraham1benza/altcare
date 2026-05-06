@@ -200,7 +200,7 @@ function renderCreate() {
           ${c.presentationId ? `
             <div class="field">
               <label class="field-label">Unidades a envasar *</label>
-              <input class="input" type="number" min="1" value="${c.unitsPlanned||0}" oninput="onUnitsChange(this.value)">
+              <input id="of-units-input" class="input" type="number" min="1" value="${c.unitsPlanned||0}" oninput="onUnitsChange(this.value)">
               <div class="field-hint">Sugerido: ${(() => {
                 const r = inventory.checkOFRequirements(c.formulaId, c.batchSize, c.presentationId, c.unitsPlanned||0);
                 return r.theoreticalUnits > 0 ? r.theoreticalUnits + ' unidades teóricas' : '';
@@ -268,7 +268,7 @@ function renderCreate() {
               ${fs.map(f => `<option value="${f.id}" ${f.id===c.formulaId?'selected':''}>${ui.escape(f.code)} · ${ui.escape(f.name)} (v${f.currentVersion})</option>`).join('')}
             </select>
           </div>
-          <div class="field"><label class="field-label">Tamaño de batch *</label><input class="input" type="number" step="0.001" value="${c.batchSize}" oninput="onBatchSizeChange(this.value)"></div>
+          <div class="field"><label class="field-label">Tamaño de batch *</label><input id="of-batch-input" class="input" type="number" step="0.001" value="${c.batchSize}" oninput="onBatchSizeChange(this.value)"></div>
           <div class="field"><label class="field-label">Unidad</label><input class="input" value="${c.batchUnit}" disabled></div>
           <div class="field"><label class="field-label">Fecha programada</label><input class="input" type="date" value="${c.scheduledDate}" oninput="creating.scheduledDate=this.value"></div>
           <div class="field"><label class="field-label">Operario</label><select class="select" onchange="onOperatorChange(this.value)"><option value="">—</option>${users.map(u => `<option value="${u.id}" ${u.id===c.operatorId?'selected':''}>${ui.escape(u.fullName||u.username)}</option>`).join('')}</select></div>
@@ -300,9 +300,13 @@ function onPresentationChange(pId) {
   render();
 }
 
+// Debounced render para inputs numéricos: evita el bug del foco perdido
+// (cada tecla disparaba un render completo que recreaba el input).
+const _debouncedRender = ui.debounce(() => ui.preserveFocus(() => render()), 200);
+
 function onUnitsChange(val) {
   creating.unitsPlanned = parseInt(val, 10) || 0;
-  render();
+  _debouncedRender();
 }
 
 function onFormulaChange(fId) {
@@ -321,7 +325,7 @@ function onFormulaChange(fId) {
 function onBatchSizeChange(val) {
   creating.batchSize = parseFloat(val) || 0;
   rebuildItems();
-  render();
+  _debouncedRender();
 }
 
 function onOperatorChange(uid) {
