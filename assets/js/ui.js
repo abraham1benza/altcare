@@ -576,7 +576,73 @@ const ui = {
   /** Sanitiza HTML básico para evitar XSS al insertar texto del usuario */
   escape(s) {
     return String(s ?? '').replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
-  }
+  },
+  // ============================================================================
+  // ====== TABLA ORDENABLE POR COLUMNA ======
+  // ============================================================================
+  /**
+   * Ordena un array según una clave y dirección. Maneja números, strings,
+   * fechas (ISO YYYY-MM-DD), booleanos, null/undefined.
+   *
+   * Uso típico:
+   *   const sorted = ui.sortRows(rows, sortState, {
+   *     code: r => r.code,
+   *     fecha: r => r.issueDate,
+   *     total: r => r.total,
+   *   });
+   *
+   * sortState es un objeto { key, dir }. Si key es null, devuelve el array sin tocar.
+   */
+  sortRows(rows, sortState, accessors) {
+    if (!sortState || !sortState.key || !accessors[sortState.key]) return rows;
+    const acc = accessors[sortState.key];
+    const dir = sortState.dir === 'desc' ? -1 : 1;
+    return rows.slice().sort((a, b) => {
+      const va = acc(a);
+      const vb = acc(b);
+      // null/undefined al final
+      const aNull = va == null || va === '';
+      const bNull = vb == null || vb === '';
+      if (aNull && bNull) return 0;
+      if (aNull) return 1;  // siempre al final, sin importar dir
+      if (bNull) return -1;
+      // Números
+      if (typeof va === 'number' && typeof vb === 'number') return (va - vb) * dir;
+      // Booleanos
+      if (typeof va === 'boolean' && typeof vb === 'boolean') return ((va === vb) ? 0 : (va ? 1 : -1)) * dir;
+      // Strings (incluye fechas YYYY-MM-DD que se ordenan correctamente como string)
+      return String(va).localeCompare(String(vb), 'es', { numeric: true, sensitivity: 'base' }) * dir;
+    });
+  },
+
+  /**
+   * Renderiza el contenido de un <th> ordenable. Llamar dentro del HTML del thead.
+   * Devuelve un span con label + flecha de orden si está activo.
+   *
+   * Ejemplo:
+   *   <th onclick="onSort('cliente')" style="cursor:pointer;user-select:none;">
+   *     ${ui.sortHeader('Cliente', 'cliente', sortState)}
+   *   </th>
+   */
+  sortHeader(label, key, sortState) {
+    const isActive = sortState && sortState.key === key;
+    const arrow = !isActive ? '<span style="opacity:0.25;font-size:9px;margin-left:3px;">▲▼</span>'
+                : sortState.dir === 'desc' ? '<span style="font-size:10px;margin-left:3px;color:var(--accent-ink);">▼</span>'
+                : '<span style="font-size:10px;margin-left:3px;color:var(--accent-ink);">▲</span>';
+    return `${label}${arrow}`;
+  },
+
+  /**
+   * Helper que actualiza el sortState alternando ASC → DESC → null al hacer click
+   * sobre la misma columna. Si se cambia de columna, arranca en ASC.
+   * Devuelve el nuevo state.
+   */
+  toggleSort(sortState, key) {
+    if (!sortState || sortState.key !== key) return { key, dir: 'asc' };
+    if (sortState.dir === 'asc') return { key, dir: 'desc' };
+    return { key: null, dir: null };
+  },
+
 };
 
 // ============== HANDLER GLOBAL DE CAMBIO DE MODO ==============
