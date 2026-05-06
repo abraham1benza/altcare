@@ -467,12 +467,28 @@ const ui = {
 
   formatDate(iso) {
     if (!iso) return '—';
+    // BUG FIX TIMEZONE: si recibimos un string "YYYY-MM-DD" (sin tiempo),
+    // new Date(iso) lo interpreta como UTC medianoche, y al convertir a hora
+    // local en zonas negativas (ej. Venezuela UTC-4) muestra el día anterior.
+    // Solución: parsear los componentes manualmente como fecha local.
+    if (typeof iso === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(iso)) {
+      const [y, m, day] = iso.split('-').map(n => parseInt(n, 10));
+      const d = new Date(y, m - 1, day);
+      return d.toLocaleDateString('es-VE', { day: '2-digit', month: 'short', year: 'numeric' });
+    }
     const d = new Date(iso);
     return d.toLocaleDateString('es-VE', { day: '2-digit', month: 'short', year: 'numeric' });
   },
 
   formatDateTime(iso) {
     if (!iso) return '—';
+    // Para datetime ISO completo (con T y zona), respetamos la conversión normal.
+    // Solo aplicamos el fix si es solo fecha sin hora.
+    if (typeof iso === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(iso)) {
+      const [y, m, day] = iso.split('-').map(n => parseInt(n, 10));
+      const d = new Date(y, m - 1, day);
+      return d.toLocaleDateString('es-VE', { day: '2-digit', month: 'short', year: 'numeric' });
+    }
     const d = new Date(iso);
     return d.toLocaleString('es-VE', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
   },
