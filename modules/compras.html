@@ -533,6 +533,8 @@ function renderItemPicker(idx, item, rms) {
   }
 
   // Estado 1: buscador con dropdown
+  // El dropdown va con position:fixed para escapar el overflow:hidden del card padre.
+  // Su posición se calcula en runtime con getBoundingClientRect cuando se abre.
   return `
     <div style="position:relative;">
       <div style="display:flex;gap:4px;">
@@ -549,7 +551,7 @@ function renderItemPicker(idx, item, rms) {
                style="font-size:12px;">
       </div>
       <div id="po-dropdown-${idx}"
-           style="display:none;position:absolute;top:100%;left:0;right:0;background:white;border:1px solid var(--border);border-radius:6px;box-shadow:0 8px 16px rgba(0,0,0,0.1);z-index:1000;max-height:280px;overflow-y:auto;margin-top:2px;">
+           style="display:none;position:fixed;background:white;border:1px solid var(--border);border-radius:6px;box-shadow:0 8px 16px rgba(0,0,0,0.15);z-index:9999;max-height:280px;overflow-y:auto;">
       </div>
     </div>
   `;
@@ -603,6 +605,29 @@ function renderItemDropdownContent(idx, rms) {
   `;
 }
 
+/**
+ * Posiciona el dropdown (position:fixed) debajo del input de búsqueda.
+ * Se llama cada vez que se abre o que cambian las dimensiones del input.
+ */
+function positionItemDropdown(idx) {
+  const inp = document.getElementById(`po-search-${idx}`);
+  const dd = document.getElementById(`po-dropdown-${idx}`);
+  if (!inp || !dd) return;
+  const r = inp.getBoundingClientRect();
+  dd.style.left  = r.left + 'px';
+  dd.style.top   = (r.bottom + 2) + 'px';
+  dd.style.width = r.width + 'px';
+  // Si no entra abajo, mostrarlo arriba
+  const ddHeight = 280; // max-height del dropdown
+  const spaceBelow = window.innerHeight - r.bottom;
+  if (spaceBelow < ddHeight && r.top > ddHeight) {
+    dd.style.top = (r.top - ddHeight - 2) + 'px';
+    dd.style.maxHeight = (r.top - 8) + 'px';
+  } else {
+    dd.style.maxHeight = Math.min(ddHeight, spaceBelow - 8) + 'px';
+  }
+}
+
 function onItemSearch(idx, val) {
   if (!_itemPickerState[idx]) _itemPickerState[idx] = {};
   _itemPickerState[idx].query = val;
@@ -614,6 +639,7 @@ function onItemSearch(idx, val) {
     const rms = db.getAll(db.COLLECTIONS.rawMaterials);
     dd.innerHTML = renderItemDropdownContent(idx, rms);
     dd.style.display = 'block';
+    positionItemDropdown(idx);
   }
 }
 
@@ -625,6 +651,7 @@ function openItemDropdown(idx) {
     const rms = db.getAll(db.COLLECTIONS.rawMaterials);
     dd.innerHTML = renderItemDropdownContent(idx, rms);
     dd.style.display = 'block';
+    positionItemDropdown(idx);
   }
 }
 
@@ -646,6 +673,7 @@ function setItemKindFilter(idx, kind) {
     const rms = db.getAll(db.COLLECTIONS.rawMaterials);
     dd.innerHTML = renderItemDropdownContent(idx, rms);
     dd.style.display = 'block';
+    positionItemDropdown(idx);
   }
   // Devolver el foco al input
   const inp = document.getElementById(`po-search-${idx}`);

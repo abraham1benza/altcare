@@ -728,6 +728,7 @@ function renderSalesProductPicker(idx, item, formulas, lotsWithoutFormula) {
   }
 
   // Estado: buscador con dropdown
+  // El dropdown va con position:fixed para escapar el overflow del card padre.
   return `
     <div style="position:relative;">
       <input id="ven-prod-search-${idx}" class="input" placeholder="Buscar producto por nombre o código..."
@@ -738,7 +739,7 @@ function renderSalesProductPicker(idx, item, formulas, lotsWithoutFormula) {
              autocomplete="off"
              style="font-size:12px;">
       <div id="ven-prod-dropdown-${idx}"
-           style="display:none;position:absolute;top:100%;left:0;right:0;background:white;border:1px solid var(--border);border-radius:6px;box-shadow:0 8px 16px rgba(0,0,0,0.1);z-index:1000;max-height:280px;overflow-y:auto;margin-top:2px;">
+           style="display:none;position:fixed;background:white;border:1px solid var(--border);border-radius:6px;box-shadow:0 8px 16px rgba(0,0,0,0.15);z-index:9999;max-height:280px;overflow-y:auto;">
       </div>
     </div>
   `;
@@ -810,6 +811,28 @@ function renderSalesDropdownContent(idx) {
   return html;
 }
 
+/**
+ * Posiciona el dropdown (position:fixed) debajo del input de búsqueda.
+ * Si no entra debajo, lo muestra arriba.
+ */
+function positionSalesDropdown(idx) {
+  const inp = document.getElementById(`ven-prod-search-${idx}`);
+  const dd = document.getElementById(`ven-prod-dropdown-${idx}`);
+  if (!inp || !dd) return;
+  const r = inp.getBoundingClientRect();
+  dd.style.left  = r.left + 'px';
+  dd.style.top   = (r.bottom + 2) + 'px';
+  dd.style.width = r.width + 'px';
+  const ddHeight = 280;
+  const spaceBelow = window.innerHeight - r.bottom;
+  if (spaceBelow < ddHeight && r.top > ddHeight) {
+    dd.style.top = (r.top - ddHeight - 2) + 'px';
+    dd.style.maxHeight = (r.top - 8) + 'px';
+  } else {
+    dd.style.maxHeight = Math.min(ddHeight, spaceBelow - 8) + 'px';
+  }
+}
+
 function onSalesProductSearch(idx, val) {
   if (!_salesPickerState[idx]) _salesPickerState[idx] = {};
   _salesPickerState[idx].query = val;
@@ -819,6 +842,7 @@ function onSalesProductSearch(idx, val) {
   if (dd) {
     dd.innerHTML = renderSalesDropdownContent(idx);
     dd.style.display = 'block';
+    positionSalesDropdown(idx);
   }
 }
 
@@ -829,6 +853,7 @@ function openSalesProductDropdown(idx) {
   if (dd) {
     dd.innerHTML = renderSalesDropdownContent(idx);
     dd.style.display = 'block';
+    positionSalesDropdown(idx);
   }
 }
 
