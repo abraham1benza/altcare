@@ -28,6 +28,10 @@ let tab = 'pos';       // pos | invoices
 let selectedId = null;
 let editing = null;
 let receiving = null;
+// Estado de ordenamiento por columna
+let sortPOs = null;       // OCs
+let sortInvoices = null;  // Facturas
+let sortCXP = null;       // Cuentas por pagar
 
 function render() {
   if (view === 'poDetail') return renderPODetail();
@@ -98,7 +102,7 @@ function renderList() {
 /** Cuadro de Cuentas por Pagar: todas las facturas pendientes ordenadas por vencimiento */
 function renderCuentasPorPagar(invoices) {
   const today = new Date().toISOString().slice(0,10);
-  const pending = invoices
+  let pending = invoices
     .filter(i => i.status !== 'CANCELLED' && i.status !== 'PAID')
     .filter(i => (i.totalToPay - (i.paidAmount||0)) > 0.01)
     .sort((a, b) => {
@@ -107,6 +111,18 @@ function renderCuentasPorPagar(invoices) {
       if (!b.dueDate) return -1;
       return a.dueDate.localeCompare(b.dueDate);
     });
+
+  // Aplicar orden por columna seleccionada por el usuario
+  pending = ui.sortRows(pending, sortCXP, {
+    invoiceCode:           i => i.supplierInvoiceNumber || i.code,
+    supplierName:          i => (i.supplierName || '').toLowerCase(),
+    issueDate:             i => i.issueDate,
+    dueDate:               i => i.dueDate,
+    total:                 i => i.totalToPay,
+    paidAmount:            i => i.paidAmount || 0,
+    remaining:             i => i.totalToPay - (i.paidAmount || 0),
+    status:                i => i.status
+  });
 
   if (!pending.length) {
     return `<div class="card mb-24" style="margin-top:32px;padding:0;">
@@ -139,7 +155,17 @@ function renderCuentasPorPagar(invoices) {
     </div>
     <div class="table-wrap" style="border-radius:0;">
       <table>
-        <thead><tr><th>Factura</th><th>Proveedor</th><th>Emitida</th><th>Vence</th><th style="text-align:right;">Total</th><th style="text-align:right;">Pagado</th><th style="text-align:right;">Pendiente</th><th>Estado</th><th style="text-align:right;width:280px;">Acciones</th></tr></thead>
+        <thead><tr>
+          <th onclick="onSortCXP('invoiceCode')" style="cursor:pointer;user-select:none;">${ui.sortHeader('Factura', 'invoiceCode', sortCXP)}</th>
+          <th onclick="onSortCXP('supplierName')" style="cursor:pointer;user-select:none;">${ui.sortHeader('Proveedor', 'supplierName', sortCXP)}</th>
+          <th onclick="onSortCXP('issueDate')" style="cursor:pointer;user-select:none;">${ui.sortHeader('Emitida', 'issueDate', sortCXP)}</th>
+          <th onclick="onSortCXP('dueDate')" style="cursor:pointer;user-select:none;">${ui.sortHeader('Vence', 'dueDate', sortCXP)}</th>
+          <th onclick="onSortCXP('total')" style="cursor:pointer;user-select:none;text-align:right;">${ui.sortHeader('Total', 'total', sortCXP)}</th>
+          <th onclick="onSortCXP('paidAmount')" style="cursor:pointer;user-select:none;text-align:right;">${ui.sortHeader('Pagado', 'paidAmount', sortCXP)}</th>
+          <th onclick="onSortCXP('remaining')" style="cursor:pointer;user-select:none;text-align:right;">${ui.sortHeader('Pendiente', 'remaining', sortCXP)}</th>
+          <th onclick="onSortCXP('status')" style="cursor:pointer;user-select:none;">${ui.sortHeader('Estado', 'status', sortCXP)}</th>
+          <th style="text-align:right;width:280px;">Acciones</th>
+        </tr></thead>
         <tbody>${pending.map(i => {
           const remaining = i.totalToPay - (i.paidAmount||0);
           const overdue = i.dueDate && i.dueDate < today;
@@ -187,11 +213,35 @@ function renderCuentasPorPagar(invoices) {
 
 function changeTab(t) { tab = t; render(); }
 
+// Handlers de ordenamiento por columna
+function onSortPOs(key)      { sortPOs = ui.toggleSort(sortPOs, key); render(); }
+function onSortInvoices(key) { sortInvoices = ui.toggleSort(sortInvoices, key); render(); }
+function onSortCXP(key)      { sortCXP = ui.toggleSort(sortCXP, key); render(); }
+
 function renderPOTable(pos) {
   if (!pos.length) return `<div class="empty-state"><div class="empty-state-icon">${ui.icon('box')}</div><div class="empty-state-title">Sin órdenes de compra</div><div class="empty-state-text">Crea tu primera OC para empezar a gestionar compras a proveedores.</div><button class="btn btn-primary" onclick="newPO()">${ui.icon('plus')} Nueva OC</button></div>`;
+  // Aplicar orden por columna seleccionada por el usuario
+  const sortedPos = ui.sortRows(pos, sortPOs, {
+    code:         p => p.code,
+    supplierName: p => (p.supplierName || '').toLowerCase(),
+    issueDate:    p => p.issueDate,
+    expectedDate: p => p.expectedDate,
+    subtotal:     p => p.subtotal,
+    currency:     p => p.currency,
+    status:       p => p.status
+  });
   return `<div class="table-wrap"><table>
-    <thead><tr><th>Código</th><th>Proveedor</th><th>Fecha</th><th>Esperada</th><th style="text-align:right;">Total</th><th>Moneda</th><th>Estado</th><th style="text-align:right;width:100px;">Acciones</th></tr></thead>
-    <tbody>${pos.map(p => {
+    <thead><tr>
+      <th onclick="onSortPOs('code')" style="cursor:pointer;user-select:none;">${ui.sortHeader('Código', 'code', sortPOs)}</th>
+      <th onclick="onSortPOs('supplierName')" style="cursor:pointer;user-select:none;">${ui.sortHeader('Proveedor', 'supplierName', sortPOs)}</th>
+      <th onclick="onSortPOs('issueDate')" style="cursor:pointer;user-select:none;">${ui.sortHeader('Fecha', 'issueDate', sortPOs)}</th>
+      <th onclick="onSortPOs('expectedDate')" style="cursor:pointer;user-select:none;">${ui.sortHeader('Esperada', 'expectedDate', sortPOs)}</th>
+      <th onclick="onSortPOs('subtotal')" style="cursor:pointer;user-select:none;text-align:right;">${ui.sortHeader('Total', 'subtotal', sortPOs)}</th>
+      <th onclick="onSortPOs('currency')" style="cursor:pointer;user-select:none;">${ui.sortHeader('Moneda', 'currency', sortPOs)}</th>
+      <th onclick="onSortPOs('status')" style="cursor:pointer;user-select:none;">${ui.sortHeader('Estado', 'status', sortPOs)}</th>
+      <th style="text-align:right;width:100px;">Acciones</th>
+    </tr></thead>
+    <tbody>${sortedPos.map(p => {
       const s = purchases.PO_STATUS[p.status] || { label: p.status, color: 'badge-plain' };
       return `<tr style="cursor:pointer;" onclick="openPO('${p.id}')">
         <td><span class="td-mono td-strong">${p.code}</span></td>
@@ -212,20 +262,32 @@ function renderInvoiceTable(invoices) {
   if (!invoices.length) return `<div class="empty-state"><div class="empty-state-title">Sin documentos registrados</div><div class="empty-state-text">Los documentos de proveedor se generan desde una OC recibida.</div></div>`;
   const isGerencial = (typeof auth !== 'undefined' && auth.getActiveMode() === 'gerencial');
 
+  // Aplicar orden por columna seleccionada por el usuario
+  const sortedInvoices = ui.sortRows(invoices, sortInvoices, {
+    code:               inv => inv.code,
+    inventoryType:      inv => inv.inventoryType || '',
+    supplierInvoiceNumber: inv => inv.supplierInvoiceNumber || '',
+    supplierName:       inv => (inv.supplierName || '').toLowerCase(),
+    issueDate:          inv => inv.issueDate,
+    total:              inv => inv.total,
+    totalToPay:         inv => inv.totalToPay - (inv.paidAmount || 0),
+    status:             inv => inv.status
+  });
+
   return `<div class="table-wrap"><table>
     <thead><tr>
-      <th>Código</th>
-      <th>Tipo</th>
-      <th>N° Factura prov.</th>
-      <th>Proveedor</th>
-      <th>Fecha</th>
-      <th style="text-align:right;">Total ${isGerencial ? 'USD' : 'Bs'}</th>
+      <th onclick="onSortInvoices('code')" style="cursor:pointer;user-select:none;">${ui.sortHeader('Código', 'code', sortInvoices)}</th>
+      <th onclick="onSortInvoices('inventoryType')" style="cursor:pointer;user-select:none;">${ui.sortHeader('Tipo', 'inventoryType', sortInvoices)}</th>
+      <th onclick="onSortInvoices('supplierInvoiceNumber')" style="cursor:pointer;user-select:none;">${ui.sortHeader('N° Factura prov.', 'supplierInvoiceNumber', sortInvoices)}</th>
+      <th onclick="onSortInvoices('supplierName')" style="cursor:pointer;user-select:none;">${ui.sortHeader('Proveedor', 'supplierName', sortInvoices)}</th>
+      <th onclick="onSortInvoices('issueDate')" style="cursor:pointer;user-select:none;">${ui.sortHeader('Fecha', 'issueDate', sortInvoices)}</th>
+      <th onclick="onSortInvoices('total')" style="cursor:pointer;user-select:none;text-align:right;">${ui.sortHeader('Total ' + (isGerencial ? 'USD' : 'Bs'), 'total', sortInvoices)}</th>
       ${isGerencial ? `<th style="text-align:right;">Total Bs</th>` : ''}
-      <th style="text-align:right;">A pagar</th>
-      <th>Estado</th>
+      <th onclick="onSortInvoices('totalToPay')" style="cursor:pointer;user-select:none;text-align:right;">${ui.sortHeader('A pagar', 'totalToPay', sortInvoices)}</th>
+      <th onclick="onSortInvoices('status')" style="cursor:pointer;user-select:none;">${ui.sortHeader('Estado', 'status', sortInvoices)}</th>
       <th style="text-align:right;width:120px;">Acciones</th>
     </tr></thead>
-    <tbody>${invoices.map(inv => {
+    <tbody>${sortedInvoices.map(inv => {
       const s = purchases.INV_STATUS[inv.status] || { label: inv.status, color: 'badge-plain' };
       const isFrozen = !!inv.rateAtFullPayment;
       const isNote = inv.inventoryType === 'NOTA_ENTREGA';
@@ -471,27 +533,12 @@ function renderItemPicker(idx, item, rms) {
   }
 
   // Estado 1: buscador con dropdown
-  const query = (state.query || '').trim().toLowerCase();
-  const kindFilter = state.kindFilter || '';
-  let candidates = rms.filter(rm => {
-    if (kindFilter && (rm.kind || 'INGREDIENT') !== kindFilter) return false;
-    if (!query) return true;
-    return (rm.name || '').toLowerCase().includes(query)
-        || (rm.code || '').toLowerCase().includes(query)
-        || (rm.category || '').toLowerCase().includes(query);
-  });
-  // Limitar a 8 sugerencias para que no se haga eterno
-  candidates = candidates.slice(0, 8);
-
-  const showDropdown = state.open && (query.length > 0 || candidates.length > 0);
-  const noMatches = query && candidates.length === 0;
-
   return `
     <div style="position:relative;">
       <div style="display:flex;gap:4px;">
         <select class="select" onchange="setItemKindFilter(${idx},this.value)" style="max-width:120px;font-size:11px;flex-shrink:0;" title="Filtrar por tipo">
           <option value="">Todos</option>
-          ${Object.entries(_PO_KINDS).map(([k,v]) => `<option value="${k}" ${k===kindFilter?'selected':''}>${v.label}</option>`).join('')}
+          ${Object.entries(_PO_KINDS).map(([k,v]) => `<option value="${k}" ${k===(state.kindFilter||'')?'selected':''}>${v.label}</option>`).join('')}
         </select>
         <input id="po-search-${idx}" class="input" placeholder="Buscar o escribir nombre nuevo..."
                value="${ui.escape(state.query||'')}"
@@ -501,36 +548,58 @@ function renderItemPicker(idx, item, rms) {
                autocomplete="off"
                style="font-size:12px;">
       </div>
-      ${showDropdown ? `
-        <div style="position:absolute;top:100%;left:0;right:0;background:white;border:1px solid var(--border);border-radius:6px;box-shadow:0 8px 16px rgba(0,0,0,0.1);z-index:1000;max-height:280px;overflow-y:auto;margin-top:2px;">
-          ${candidates.length ? candidates.map(rm => {
-            const kindLabel = _PO_KINDS[rm.kind || 'INGREDIENT']?.label || 'Ítem';
-            return `
-              <div onmousedown="event.preventDefault()" onclick="selectItemAt(${idx},'${rm.id}')"
-                   style="padding:8px 10px;cursor:pointer;border-bottom:1px solid var(--border);"
-                   onmouseover="this.style.background='var(--surface-2)'" onmouseout="this.style.background='white'">
-                <div style="display:flex;justify-content:space-between;gap:8px;">
-                  <div style="min-width:0;flex:1;">
-                    <span class="td-mono" style="font-size:11px;color:var(--ink-3);">${ui.escape(rm.code)}</span>
-                    <div style="font-size:13px;font-weight:500;">${ui.escape(rm.name)}</div>
-                  </div>
-                  <div style="text-align:right;font-size:10.5px;color:var(--ink-3);flex-shrink:0;">
-                    ${kindLabel}${rm.category?`<br>${ui.escape(rm.category)}`:''}
-                  </div>
-                </div>
-              </div>
-            `;
-          }).join('') : ''}
-          ${noMatches || query ? `
-            <div onmousedown="event.preventDefault()" onclick="startCreateItem(${idx})"
-                 style="padding:10px;cursor:pointer;background:#fffbeb;border-top:${candidates.length?'2px solid #fcd34d':'none'};color:#78350f;font-size:12px;font-weight:600;"
-                 onmouseover="this.style.background='#fef3c7'" onmouseout="this.style.background='#fffbeb'">
-              ➕ Crear nuevo: <strong>"${ui.escape(state.query)}"</strong>
-            </div>
-          ` : ''}
-        </div>
-      ` : ''}
+      <div id="po-dropdown-${idx}"
+           style="display:none;position:absolute;top:100%;left:0;right:0;background:white;border:1px solid var(--border);border-radius:6px;box-shadow:0 8px 16px rgba(0,0,0,0.1);z-index:1000;max-height:280px;overflow-y:auto;margin-top:2px;">
+      </div>
     </div>
+  `;
+}
+
+/**
+ * Renderiza el HTML del dropdown solamente (sin el input).
+ * Lo separo así porque al escribir en el input solo necesito actualizar el dropdown,
+ * no destruir el input completo que tiene foco. Esto evita el bug del foco perdido.
+ */
+function renderItemDropdownContent(idx, rms) {
+  const state = _itemPickerState[idx] || {};
+  const query = (state.query || '').trim().toLowerCase();
+  const kindFilter = state.kindFilter || '';
+  let candidates = rms.filter(rm => {
+    if (kindFilter && (rm.kind || 'INGREDIENT') !== kindFilter) return false;
+    if (!query) return true;
+    return (rm.name || '').toLowerCase().includes(query)
+        || (rm.code || '').toLowerCase().includes(query)
+        || (rm.category || '').toLowerCase().includes(query);
+  });
+  candidates = candidates.slice(0, 8);
+  const noMatches = query && candidates.length === 0;
+
+  return `
+    ${candidates.length ? candidates.map(rm => {
+      const kindLabel = _PO_KINDS[rm.kind || 'INGREDIENT']?.label || 'Ítem';
+      return `
+        <div onmousedown="event.preventDefault()" onclick="selectItemAt(${idx},'${rm.id}')"
+             style="padding:8px 10px;cursor:pointer;border-bottom:1px solid var(--border);"
+             onmouseover="this.style.background='var(--surface-2)'" onmouseout="this.style.background='white'">
+          <div style="display:flex;justify-content:space-between;gap:8px;">
+            <div style="min-width:0;flex:1;">
+              <span class="td-mono" style="font-size:11px;color:var(--ink-3);">${ui.escape(rm.code)}</span>
+              <div style="font-size:13px;font-weight:500;">${ui.escape(rm.name)}</div>
+            </div>
+            <div style="text-align:right;font-size:10.5px;color:var(--ink-3);flex-shrink:0;">
+              ${kindLabel}${rm.category?`<br>${ui.escape(rm.category)}`:''}
+            </div>
+          </div>
+        </div>
+      `;
+    }).join('') : ''}
+    ${noMatches || query ? `
+      <div onmousedown="event.preventDefault()" onclick="startCreateItem(${idx})"
+           style="padding:10px;cursor:pointer;background:#fffbeb;border-top:${candidates.length?'2px solid #fcd34d':'none'};color:#78350f;font-size:12px;font-weight:600;"
+           onmouseover="this.style.background='#fef3c7'" onmouseout="this.style.background='#fffbeb'">
+        ➕ Crear nuevo: <strong>"${ui.escape(state.query||'')}"</strong>
+      </div>
+    ` : ''}
   `;
 }
 
@@ -538,29 +607,49 @@ function onItemSearch(idx, val) {
   if (!_itemPickerState[idx]) _itemPickerState[idx] = {};
   _itemPickerState[idx].query = val;
   _itemPickerState[idx].open = true;
-  _debouncedRenderItems();
+  // Solo actualizar el contenido del dropdown — sin tocar el input ni el resto
+  // de la fila. Esto preserva el foco del input automáticamente.
+  const dd = document.getElementById(`po-dropdown-${idx}`);
+  if (dd) {
+    const rms = db.getAll(db.COLLECTIONS.rawMaterials);
+    dd.innerHTML = renderItemDropdownContent(idx, rms);
+    dd.style.display = 'block';
+  }
 }
 
 function openItemDropdown(idx) {
   if (!_itemPickerState[idx]) _itemPickerState[idx] = {};
   _itemPickerState[idx].open = true;
-  _debouncedRenderItems();
+  const dd = document.getElementById(`po-dropdown-${idx}`);
+  if (dd) {
+    const rms = db.getAll(db.COLLECTIONS.rawMaterials);
+    dd.innerHTML = renderItemDropdownContent(idx, rms);
+    dd.style.display = 'block';
+  }
 }
 
 function closeItemDropdown(idx) {
   if (!_itemPickerState[idx]) return;
   _itemPickerState[idx].open = false;
-  // No queremos render() acá porque nos cierra el dropdown justo cuando se hizo
-  // click adentro. El onmousedown="event.preventDefault()" del dropdown evita
-  // que el blur dispare antes del click. Solo rerender si nadie eligió nada.
-  setTimeout(() => render(), 50);
+  // Solo ocultar el dropdown, sin rerender completo (evita perder lo que esté escrito)
+  const dd = document.getElementById(`po-dropdown-${idx}`);
+  if (dd) dd.style.display = 'none';
 }
 
 function setItemKindFilter(idx, kind) {
   if (!_itemPickerState[idx]) _itemPickerState[idx] = {};
   _itemPickerState[idx].kindFilter = kind;
   _itemPickerState[idx].open = true;
-  render();
+  // Refrescar solo el dropdown
+  const dd = document.getElementById(`po-dropdown-${idx}`);
+  if (dd) {
+    const rms = db.getAll(db.COLLECTIONS.rawMaterials);
+    dd.innerHTML = renderItemDropdownContent(idx, rms);
+    dd.style.display = 'block';
+  }
+  // Devolver el foco al input
+  const inp = document.getElementById(`po-search-${idx}`);
+  if (inp) inp.focus();
 }
 
 function selectItemAt(idx, rmId) {
@@ -1532,6 +1621,9 @@ Object.assign(window, {
   render: typeof render !== 'undefined' ? render : undefined,
   renderList: typeof renderList !== 'undefined' ? renderList : undefined,
   changeTab: typeof changeTab !== 'undefined' ? changeTab : undefined,
+  onSortPOs: typeof onSortPOs !== 'undefined' ? onSortPOs : undefined,
+  onSortInvoices: typeof onSortInvoices !== 'undefined' ? onSortInvoices : undefined,
+  onSortCXP: typeof onSortCXP !== 'undefined' ? onSortCXP : undefined,
   renderPOTable: typeof renderPOTable !== 'undefined' ? renderPOTable : undefined,
   renderInvoiceTable: typeof renderInvoiceTable !== 'undefined' ? renderInvoiceTable : undefined,
   renderCuentasPorPagar: typeof renderCuentasPorPagar !== 'undefined' ? renderCuentasPorPagar : undefined,

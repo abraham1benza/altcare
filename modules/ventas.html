@@ -31,6 +31,9 @@ let assigning = null;
 let typeFilter = '';
 let deliveryFilter = ''; // '' | 'PENDIENTE' | 'DESPACHADO' | 'ENTREGADO'
 let searchTerm = '';
+// Estado de ordenamiento por columna. null = orden por defecto (fecha desc).
+let sortDocs = null;       // { key, dir } para la lista de documentos
+let sortCXC = null;        // { key, dir } para el cuadro de cuentas por cobrar
 
 // Aplicar filtro inicial desde URL (?filter=PEDIDO viene del dashboard)
 (function applyUrlFilter() {
@@ -87,6 +90,19 @@ function renderList() {
   }
   docs.sort((a,b) => (b.issueDate||'').localeCompare(a.issueDate||''));
 
+  // Aplicar orden por columna seleccionada por el usuario (sobrescribe el default).
+  docs = ui.sortRows(docs, sortDocs, {
+    code:           d => d.code,
+    invoiceNumber:  d => d.invoiceNumber,
+    customerName:   d => (d.customerName || '').toLowerCase(),
+    issueDate:      d => d.issueDate,
+    dueDate:        d => d.dueDate,
+    total:          d => d.total,
+    type:           d => d.type,
+    deliveryStatus: d => d.deliveryStatus || '',
+    status:         d => d.status
+  });
+
   // Stats
   const counts = {
     pedidos: all.filter(d => d.type === 'PEDIDO').length,
@@ -112,16 +128,16 @@ function renderList() {
 
   const tableHtml = docs.length ? `<table>
     <thead><tr>
-      <th>Código</th>
-      <th>N° Factura</th>
-      <th>Cliente</th>
-      <th>Fecha</th>
-      <th>Vence</th>
-      <th style="text-align:right;">Total ${isGerencial ? 'USD' : 'Bs'}</th>
+      <th onclick="onSortDocs('code')" style="cursor:pointer;user-select:none;">${ui.sortHeader('Código', 'code', sortDocs)}</th>
+      <th onclick="onSortDocs('invoiceNumber')" style="cursor:pointer;user-select:none;">${ui.sortHeader('N° Factura', 'invoiceNumber', sortDocs)}</th>
+      <th onclick="onSortDocs('customerName')" style="cursor:pointer;user-select:none;">${ui.sortHeader('Cliente', 'customerName', sortDocs)}</th>
+      <th onclick="onSortDocs('issueDate')" style="cursor:pointer;user-select:none;">${ui.sortHeader('Fecha', 'issueDate', sortDocs)}</th>
+      <th onclick="onSortDocs('dueDate')" style="cursor:pointer;user-select:none;">${ui.sortHeader('Vence', 'dueDate', sortDocs)}</th>
+      <th onclick="onSortDocs('total')" style="cursor:pointer;user-select:none;text-align:right;">${ui.sortHeader('Total ' + (isGerencial ? 'USD' : 'Bs'), 'total', sortDocs)}</th>
       ${isGerencial ? `<th style="text-align:right;">Total Bs</th>` : ''}
-      <th>Tipo</th>
-      <th>Entrega</th>
-      <th>Estado</th>
+      <th onclick="onSortDocs('type')" style="cursor:pointer;user-select:none;">${ui.sortHeader('Tipo', 'type', sortDocs)}</th>
+      <th onclick="onSortDocs('deliveryStatus')" style="cursor:pointer;user-select:none;">${ui.sortHeader('Entrega', 'deliveryStatus', sortDocs)}</th>
+      <th onclick="onSortDocs('status')" style="cursor:pointer;user-select:none;">${ui.sortHeader('Estado', 'status', sortDocs)}</th>
       <th style="text-align:right;width:100px;">Acciones</th>
     </tr></thead>
     <tbody>${docs.map(d => {
@@ -232,7 +248,7 @@ function renderList() {
 /** Cuadro de Cuentas por Cobrar: facturas con saldo pendiente, ordenadas por vencimiento */
 function renderCuentasPorCobrar(allDocs) {
   const today = new Date().toISOString().slice(0,10);
-  const pending = allDocs
+  let pending = allDocs
     .filter(d => d.type === 'FACTURA' && !d.cancelled)
     .filter(d => (d.total - (d.paidAmount||0)) > 0.01)
     .sort((a, b) => {
@@ -240,6 +256,18 @@ function renderCuentasPorCobrar(allDocs) {
       if (!b.dueDate) return -1;
       return a.dueDate.localeCompare(b.dueDate);
     });
+
+  // Aplicar orden por columna seleccionada por el usuario
+  pending = ui.sortRows(pending, sortCXC, {
+    invoiceNumber: d => d.invoiceNumber || d.code,
+    customerName:  d => (d.customerName || '').toLowerCase(),
+    issueDate:     d => d.issueDate,
+    dueDate:       d => d.dueDate,
+    total:         d => d.total,
+    paidAmount:    d => d.paidAmount || 0,
+    remaining:     d => d.total - (d.paidAmount || 0),
+    status:        d => d.status
+  });
 
   if (!pending.length) {
     return `<div class="card mb-24" style="margin-top:32px;padding:0;">
@@ -272,7 +300,17 @@ function renderCuentasPorCobrar(allDocs) {
     </div>
     <div class="table-wrap" style="border-radius:0;">
       <table>
-        <thead><tr><th>Factura</th><th>Cliente</th><th>Emitida</th><th>Vence</th><th style="text-align:right;">Total</th><th style="text-align:right;">Cobrado</th><th style="text-align:right;">Pendiente</th><th>Estado</th><th style="text-align:right;width:280px;">Acciones</th></tr></thead>
+        <thead><tr>
+          <th onclick="onSortCXC('invoiceNumber')" style="cursor:pointer;user-select:none;">${ui.sortHeader('Factura', 'invoiceNumber', sortCXC)}</th>
+          <th onclick="onSortCXC('customerName')" style="cursor:pointer;user-select:none;">${ui.sortHeader('Cliente', 'customerName', sortCXC)}</th>
+          <th onclick="onSortCXC('issueDate')" style="cursor:pointer;user-select:none;">${ui.sortHeader('Emitida', 'issueDate', sortCXC)}</th>
+          <th onclick="onSortCXC('dueDate')" style="cursor:pointer;user-select:none;">${ui.sortHeader('Vence', 'dueDate', sortCXC)}</th>
+          <th onclick="onSortCXC('total')" style="cursor:pointer;user-select:none;text-align:right;">${ui.sortHeader('Total', 'total', sortCXC)}</th>
+          <th onclick="onSortCXC('paidAmount')" style="cursor:pointer;user-select:none;text-align:right;">${ui.sortHeader('Cobrado', 'paidAmount', sortCXC)}</th>
+          <th onclick="onSortCXC('remaining')" style="cursor:pointer;user-select:none;text-align:right;">${ui.sortHeader('Pendiente', 'remaining', sortCXC)}</th>
+          <th onclick="onSortCXC('status')" style="cursor:pointer;user-select:none;">${ui.sortHeader('Estado', 'status', sortCXC)}</th>
+          <th style="text-align:right;width:280px;">Acciones</th>
+        </tr></thead>
         <tbody>${pending.map(d => {
           const remaining = d.total - (d.paidAmount||0);
           const overdue = d.dueDate && d.dueDate < today;
@@ -318,6 +356,8 @@ const _doSearchRender = ui.debounce(() => ui.preserveFocus(() => render()), 250)
 function onSearch(v) { searchTerm = v; _doSearchRender(); }
 function onTypeFilter(v) { typeFilter = v; render(); }
 function onDeliveryFilter(v) { deliveryFilter = v; render(); }
+function onSortDocs(key) { sortDocs = ui.toggleSort(sortDocs, key); render(); }
+function onSortCXC(key) { sortCXC = ui.toggleSort(sortCXC, key); render(); }
 
 // ====== CREAR ======
 
@@ -3296,6 +3336,8 @@ Object.assign(window, {
   onSearch: typeof onSearch !== 'undefined' ? onSearch : undefined,
   onTypeFilter: typeof onTypeFilter !== 'undefined' ? onTypeFilter : undefined,
   onDeliveryFilter: typeof onDeliveryFilter !== 'undefined' ? onDeliveryFilter : undefined,
+  onSortDocs: typeof onSortDocs !== 'undefined' ? onSortDocs : undefined,
+  onSortCXC: typeof onSortCXC !== 'undefined' ? onSortCXC : undefined,
   newDoc: typeof newDoc !== 'undefined' ? newDoc : undefined,
   renderCreate: typeof renderCreate !== 'undefined' ? renderCreate : undefined,
   renderVenSummary: typeof renderVenSummary !== 'undefined' ? renderVenSummary : undefined,
