@@ -201,10 +201,10 @@ function renderCreate() {
           <td style="text-align:right;"><span class="td-mono">${r.max!==''&&r.max!==null?r.max:'—'}</span></td>
           <td><span class="text-muted" style="font-size:12px;">${ui.escape(r.method||'—')}</span></td>
           <td style="text-align:right;">
-            <input class="input" style="text-align:right;font-family:var(--font-mono);${r._status==='fail'?'border-color:var(--danger);':r._status==='ok'?'border-color:var(--success);':''}" value="${r.value??''}" oninput="updateResult(${idx},'value',this.value)" placeholder="—">
+            <input id="qc-value-${idx}" class="input" style="text-align:right;font-family:var(--font-mono);${r._status==='fail'?'border-color:var(--danger);':r._status==='ok'?'border-color:var(--success);':''}" value="${r.value??''}" oninput="updateResult(${idx},'value',this.value)" placeholder="—">
           </td>
           <td style="text-align:center;">${statusIcon}</td>
-          <td><input class="input" value="${ui.escape(r.observation||'')}" oninput="updateResult(${idx},'observation',this.value)" placeholder="Opcional"></td>
+          <td><input id="qc-obs-${idx}" class="input" value="${ui.escape(r.observation||'')}" oninput="updateResult(${idx},'observation',this.value)" placeholder="Opcional"></td>
         </tr>`;
       }).join('')}</tbody>
     </table>
@@ -253,9 +253,12 @@ function renderCreate() {
   });
 }
 
+// Debounced render para que el botón "Aprobar lote" se actualice al
+// completar resultados, sin perder el foco del input que está siendo editado.
+const _debouncedRender = ui.debounce(() => ui.preserveFocus(() => render()), 250);
+
 function updateResult(idx, field, val) {
   creating.results[idx][field] = val;
-  // Sin render() para no perder foco en el input.
   // Recalcular el indicador de status del lado:
   if (field === 'value') {
     const r = creating.results[idx];
@@ -275,6 +278,9 @@ function updateResult(idx, field, val) {
       }
     }
   }
+  // Rerender debounced para que los botones de la action-bar (Aprobar lote,
+  // Aprobar con obs, Rechazar) se habiliten/deshabiliten según corresponda.
+  _debouncedRender();
 }
 function onAnalystChange(uid) {
   creating.analystId = uid;
