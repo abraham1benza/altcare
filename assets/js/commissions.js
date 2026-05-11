@@ -89,7 +89,10 @@ const commissions = {
    * @param {object} salesOrder - documento de venta tipo FACTURA
    */
   registerSaleCommission(salesOrder) {
-    if (!salesOrder || salesOrder.type !== 'FACTURA') return null;
+    if (!salesOrder) return null;
+    // Comisión por venta aplica a FACTURAS y a NOTAS DE ENTREGA. Ambos
+    // documentos representan ventas reales (con o sin IVA) y generan deuda.
+    if (salesOrder.type !== 'FACTURA' && salesOrder.type !== 'NOTA_ENTREGA') return null;
     if (!salesOrder.salespersonId) return null; // sin vendedor asignado, sin comisión
 
     const userCfg = this.getUserConfig(salesOrder.salespersonId);
@@ -139,7 +142,9 @@ const commissions = {
    */
   registerCollectionCommission(payment, salesOrder) {
     if (!payment || payment.direction !== 'IN') return null;
-    if (!salesOrder || salesOrder.type !== 'FACTURA') return null;
+    // Comisión por cobranza aplica a FACTURAS y a NOTAS DE ENTREGA (ambos
+    // representan ventas reales que generan deuda del cliente).
+    if (!salesOrder || (salesOrder.type !== 'FACTURA' && salesOrder.type !== 'NOTA_ENTREGA')) return null;
     if (!salesOrder.salespersonId) return null;
 
     const userCfg = this.getUserConfig(salesOrder.salespersonId);
@@ -238,9 +243,12 @@ const commissions = {
     const weekAgo = new Date(today.getTime() - 7 * 24 * 60 * 60 * 1000).toISOString().slice(0,10);
     const monthAgo = new Date(today.getFullYear(), today.getMonth(), 1).toISOString().slice(0,10);
 
-    // VENTAS realizadas por este vendedor (facturas no anuladas)
+    // VENTAS realizadas por este vendedor (facturas + NEs no anuladas).
+    // Incluimos NEs porque también generan comisiones (ventas con o sin IVA).
     const myInvoices = db.query(db.COLLECTIONS.salesOrders, d =>
-      d.salespersonId === userId && d.type === 'FACTURA' && !d.cancelled
+      d.salespersonId === userId
+      && (d.type === 'FACTURA' || d.type === 'NOTA_ENTREGA')
+      && !d.cancelled
     );
     const totalSold = myInvoices.reduce((s, d) => s + this._toUSD(d.total, d.currency), 0);
     const weekSold = myInvoices.filter(d => (d.issueDate||'') >= weekAgo)
