@@ -569,14 +569,26 @@ function mapHeaders(headers, tab) {
       //   "RAZON SOCIAL" / "cliente" / "nombre"
       //   "Nº NOTA DE ENTREGA" / "nota_entrega" / "nota"
       //   "Nº FACTURA" / "numero_factura" / "factura"
-      //   "MONTO NOTA FULL  $" / "monto_total" / "total"
+      //   "MONTO NOTA FULL  $" / "monto_total" / "total" → este es el autoritativo
+      //   "MONTO FACTURA CON IVA" → solo se usa como fallback si no hay NOTA FULL
       //   "SALDO PENDIENTE" / "pendiente" / "por_cobrar"
+      //
+      // OJO con el orden: "MONTO NOTA FULL" tiene la palabra "nota" pero NO es
+      // un campo de nota — es un monto. Por eso reconocemos primero las
+      // columnas de monto, ANTES de mirar si parece nota.
       if (/^fecha|^date/.test(lower)) map.fecha = idx;
       else if (/^(razon|cliente|nombre|descripcion)/.test(lower)) map.razon_social = idx;
-      else if (/nota.*entrega|n.*nota|^nota$/.test(lower)) map.nota_entrega = idx;
-      else if (/factura/.test(lower) && !/monto/.test(lower)) map.numero_factura = idx;
+      // PRIORIDAD 1: "MONTO NOTA FULL" — autoritativo. Se chequea ANTES que nota.
+      else if (/(monto.*nota.*full|monto.*nota|nota.*full)/.test(lower)) map.monto_total = idx;
+      // Saldo pendiente
       else if (/saldo|pendiente|por.*cobrar/.test(lower)) map.saldo_pendiente = idx;
-      else if (map.monto_total === undefined && /(monto|total)/.test(lower)) map.monto_total = idx;
+      // Nota de entrega: la palabra "entrega" o explícitamente "n. nota" sin "monto"
+      else if (!/monto/.test(lower) && /nota.*entrega|n.*nota|^nota$/.test(lower)) map.nota_entrega = idx;
+      // Número de factura (no "monto factura")
+      else if (/factura/.test(lower) && !/monto/.test(lower)) map.numero_factura = idx;
+      // FALLBACK del monto: cualquier otra columna con "monto" o "total"
+      // (típicamente "MONTO FACTURA CON IVA") — solo si todavía no tenemos monto.
+      else if (map.monto_total === undefined && /(monto|total)/.test(lower)) map.monto_total_fallback = idx;
     }
   });
   return map;
@@ -993,12 +1005,17 @@ function parseExcelCobranzas(dataRows, colMap) {
     parseErrors.push('Elegí la vendedora primero (paso 1) antes de subir el Excel');
     return;
   }
+  // Determinar el índice de columna del monto autoritativo:
+  // 1) Si el Excel tiene "MONTO NOTA FULL" (autoritativo) → usar esa.
+  // 2) Sino, fallback a "MONTO FACTURA CON IVA" o cualquier otro monto.
+  const montoIdx = colMap.monto_total !== undefined ? colMap.monto_total : colMap.monto_total_fallback;
+
   // Validar que existan las columnas mínimas
-  if (colMap.fecha === undefined || colMap.razon_social === undefined || colMap.monto_total === undefined) {
+  if (colMap.fecha === undefined || colMap.razon_social === undefined || montoIdx === undefined) {
     const missing = [];
     if (colMap.fecha === undefined) missing.push('fecha');
     if (colMap.razon_social === undefined) missing.push('razón social / cliente');
-    if (colMap.monto_total === undefined) missing.push('monto total');
+    if (montoIdx === undefined) missing.push('monto total (ej. "MONTO NOTA FULL")');
     parseErrors.push('Faltan columnas obligatorias en el Excel: ' + missing.join(', '));
     return;
   }
@@ -1018,7 +1035,7 @@ function parseExcelCobranzas(dataRows, colMap) {
     const razon     = getCell(row, colMap.razon_social);
     const notaEnt   = getCell(row, colMap.nota_entrega);
     const facturaN  = getCell(row, colMap.numero_factura);
-    const montoRaw  = getCell(row, colMap.monto_total);
+    const montoRaw  = getCell(row, montoIdx);
     const saldoRaw  = getCell(row, colMap.saldo_pendiente);
 
     // Filas completamente vacías o de totales (sin razón social ni fecha) se ignoran silenciosamente
