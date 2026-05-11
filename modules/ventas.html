@@ -92,15 +92,16 @@ function renderList() {
 
   // Aplicar orden por columna seleccionada por el usuario (sobrescribe el default).
   docs = ui.sortRows(docs, sortDocs, {
-    code:           d => d.code,
-    invoiceNumber:  d => d.invoiceNumber,
-    customerName:   d => (d.customerName || '').toLowerCase(),
-    issueDate:      d => d.issueDate,
-    dueDate:        d => d.dueDate,
-    total:          d => d.total,
-    type:           d => d.type,
-    deliveryStatus: d => d.deliveryStatus || '',
-    status:         d => d.status
+    code:             d => d.code,
+    invoiceNumber:    d => d.invoiceNumber,
+    customerName:     d => (d.customerName || '').toLowerCase(),
+    salespersonName:  d => (d.salespersonName || '').toLowerCase(),
+    issueDate:        d => d.issueDate,
+    dueDate:          d => d.dueDate,
+    total:            d => d.total,
+    type:             d => d.type,
+    deliveryStatus:   d => d.deliveryStatus || '',
+    status:           d => d.status
   });
 
   // Stats
@@ -152,6 +153,7 @@ function renderList() {
       <th onclick="onSortDocs('code')" style="cursor:pointer;user-select:none;">${ui.sortHeader('Código', 'code', sortDocs)}</th>
       <th onclick="onSortDocs('invoiceNumber')" style="cursor:pointer;user-select:none;">${ui.sortHeader('N° Factura', 'invoiceNumber', sortDocs)}</th>
       <th onclick="onSortDocs('customerName')" style="cursor:pointer;user-select:none;">${ui.sortHeader('Cliente', 'customerName', sortDocs)}</th>
+      <th onclick="onSortDocs('salespersonName')" style="cursor:pointer;user-select:none;">${ui.sortHeader('Vendedor', 'salespersonName', sortDocs)}</th>
       <th onclick="onSortDocs('issueDate')" style="cursor:pointer;user-select:none;">${ui.sortHeader('Fecha', 'issueDate', sortDocs)}</th>
       <th onclick="onSortDocs('dueDate')" style="cursor:pointer;user-select:none;">${ui.sortHeader('Vence', 'dueDate', sortDocs)}</th>
       <th onclick="onSortDocs('total')" style="cursor:pointer;user-select:none;text-align:right;">${ui.sortHeader('Total ' + (isGerencial ? 'USD' : 'Bs'), 'total', sortDocs)}</th>
@@ -185,6 +187,9 @@ function renderList() {
         <td><span class="td-mono td-strong">${d.code}</span></td>
         <td>${d.invoiceNumber ? `<span class="td-mono">${d.invoiceNumber}</span><div class="text-muted" style="font-size:11px;">Ctrl: ${d.controlNumber||'—'}</div>` : '<span class="td-muted">—</span>'}</td>
         <td><div class="td-strong">${ui.escape(d.customerName)}</div><div class="text-muted" style="font-size:11px;">${ui.escape(d.customerRif||'')}</div></td>
+        <td>${d.salespersonName
+          ? `<span style="font-size:12px;">${ui.escape(d.salespersonName)}</span>`
+          : '<span class="td-muted" style="font-size:11px;">—</span>'}</td>
         <td><span class="text-muted">${ui.formatDate(d.issueDate)}</span></td>
         <td>${d.dueDate ? `<span class="${overdue?'badge badge-danger':'text-muted'}">${ui.formatDate(d.dueDate)}</span>` : '<span class="td-muted">—</span>'}</td>
         <td style="text-align:right;">

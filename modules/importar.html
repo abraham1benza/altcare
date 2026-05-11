@@ -1549,9 +1549,10 @@ function importCobranza(row, customerCache) {
     invoiceNumber: row.numero_factura || null,
     controlNumber: row.nota_entrega || null,
 
-    // Vendedor asignado:
-    salesRepUserId: cobranzasVendorId,
-    salesRepName: vendor.fullName || vendor.username || '',
+    // Vendedor asignado (campos correctos del módulo de ventas: salespersonId/salespersonName,
+    // que son los que mira commissions.js para registrar comisiones).
+    salespersonId: cobranzasVendorId,
+    salespersonName: vendor.fullName || vendor.username || '',
 
     // ===== MARCAS DE CARGA INICIAL =====
     isInitialLoad: true,
@@ -1559,8 +1560,14 @@ function importCobranza(row, customerCache) {
     createdFrom: 'IMPORT_LEGACY_AR',
     notes: 'Carga inicial migrada del sistema anterior. No afecta inventario ni libros fiscales.',
 
-    // Sin entrega (es histórico)
-    deliveryStatus: 'NO_APLICA',
+    // Para los documentos migrados:
+    //  - Ya se entregó la mercancía físicamente (por eso hay saldo pendiente),
+    //    así que marcamos como ENTREGADO. Esto hace que cuenten como "por cobrar"
+    //    en el helper sales.isReceivable().
+    //  - lotsAssigned: true para que el sistema no pida asignar lotes
+    //    (el inventario actual ya refleja la realidad — esta carga es solo financiera).
+    deliveryStatus: 'ENTREGADO',
+    lotsAssigned: true,
 
     createdAt: new Date().toISOString()
   };
