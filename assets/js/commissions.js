@@ -279,6 +279,34 @@ const commissions = {
     const myLoans = db.query(db.COLLECTIONS.loans, l => l.userId === userId && l.status === 'OPEN');
     const loansBalance = myLoans.reduce((s, l) => s + this._toUSD(l.balance, l.currency), 0);
 
+    // PROYECCIÓN: comisión por cobranza que se va a devengar cuando el vendedor
+    // cobre todo lo pendiente. Recorre los docs cobrables (helper sales.isReceivable
+    // si está disponible; sino usa la misma lógica inline) y calcula el 5% (o lo
+    // que tenga configurado) sobre el subtotal proporcional del saldo pendiente.
+    const userCfg = this.getUserConfig(userId);
+    let projectedCollection = 0;
+    let projectedPendingUSD = 0;
+    if (userCfg && userCfg.enabled) {
+      myInvoices.forEach(d => {
+        // Saldo pendiente del doc en su moneda
+        const remaining = (d.total || 0) - (d.paidAmount || 0);
+        if (remaining <= 0.01) return;
+        // Solo NEs entregadas/despachadas cuentan (las pendientes de entrega no son cobrables aún)
+        if (d.type === 'NOTA_ENTREGA' && d.deliveryStatus !== 'DESPACHADO' && d.deliveryStatus !== 'ENTREGADO') return;
+        // Aplicar la misma lógica que registerCollectionCommission:
+        // si la base es SUBTOTAL, "extraer" la proporción subtotal/total
+        let base = remaining;
+        if (userCfg.base === 'SUBTOTAL' && d.total > 0) {
+          const subtotalRatio = (d.subtotal || d.total) / d.total;
+          base = remaining * subtotalRatio;
+        }
+        const baseUSD = this._toUSD(base, d.currency);
+        const remainingUSD = this._toUSD(remaining, d.currency);
+        projectedCollection += baseUSD * userCfg.rateCollection / 100;
+        projectedPendingUSD += remainingUSD;
+      });
+    }
+
     // SALDO NETO
     // Positivo = se le debe al vendedor
     // Negativo = el vendedor debe a la empresa
@@ -299,6 +327,9 @@ const commissions = {
       totalCommission: Math.round(totalCommission * 100) / 100,
       saleEventsCount: saleEvents.length,
       collectionEventsCount: collectionEvents.length,
+      // Proyección (lo que se va a devengar cuando cobren lo pendiente)
+      projectedCollection: Math.round(projectedCollection * 100) / 100,
+      projectedPendingUSD: Math.round(projectedPendingUSD * 100) / 100,
       // Pagos
       totalPaid: Math.round(totalPaid * 100) / 100,
       paymentsCount: myPayments.length,
