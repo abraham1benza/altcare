@@ -255,6 +255,7 @@ function renderCXCTable(docs) {
         <td><span class="badge ${d.currency==='USD'?'badge-accent':'badge-plain'}">${d.currency}</span></td>
         <td class="td-actions" style="display:flex;gap:4px;justify-content:flex-end;">
           <a href="${notifyUrl}" class="btn ${hasPhone?'btn-secondary':'btn-ghost'} btn-sm" title="${btnTitle}" style="font-size:11px;padding:4px 8px;${!hasPhone?'opacity:0.5;':''}">📱 Avisar</a>
+          <button class="btn btn-secondary btn-sm" onclick="openAdjustment('${d.id}')" title="Ajuste de saldo (positivo o negativo)" style="font-size:11px;padding:4px 8px;">± Ajustar</button>
           <button class="btn btn-primary btn-sm" onclick="newPaymentForDoc('${d.id}')">Registrar cobro</button>
         </td>
       </tr>`;
@@ -262,20 +263,46 @@ function renderCXCTable(docs) {
 }
 
 function renderHistoryTable(payments) {
-  if (!payments.length) return '<div class="empty-state"><div class="empty-state-title">Sin pagos registrados</div></div>';
+  if (!payments.length) return '<div class="empty-state"><div class="empty-state-title">Sin movimientos registrados</div></div>';
   return `<div class="table-wrap"><table>
-    <thead><tr><th>Código</th><th>Tipo</th><th>Fecha</th><th>Contraparte</th><th>Documento</th><th>Método</th><th>Cuenta</th><th style="text-align:right;">Monto</th><th>Referencia</th></tr></thead>
-    <tbody>${payments.map(p => `<tr>
+    <thead><tr><th>Código</th><th>Tipo</th><th>Fecha</th><th>Contraparte</th><th>Documento</th><th>Motivo / Método</th><th>Cuenta</th><th style="text-align:right;">Monto</th><th>Referencia</th></tr></thead>
+    <tbody>${payments.map(p => {
+      // Para distinguir visualmente:
+      //   - Cobros normales (direction='IN')         → verde, badge "Cobro"
+      //   - Pagos normales (direction='OUT')         → rojo, badge "Pago"
+      //   - Ajuste negativo (direction='ADJUSTMENT_IN')  → badge "Ajuste −" amarillo (reduce saldo)
+      //   - Ajuste positivo (direction='ADJUSTMENT_OUT') → badge "Ajuste +" amarillo (aumenta saldo)
+      const isAdj = p.isAdjustment === true || p.direction === 'ADJUSTMENT_IN' || p.direction === 'ADJUSTMENT_OUT';
+      let typeBadge, sign, color;
+      if (p.direction === 'ADJUSTMENT_IN') {
+        typeBadge = '<span class="badge" style="background:#fef3c7;color:#854d0e;border:1px solid #fcd34d;">Ajuste −</span>';
+        sign = '−'; color = '#a16207';
+      } else if (p.direction === 'ADJUSTMENT_OUT') {
+        typeBadge = '<span class="badge" style="background:#fef3c7;color:#854d0e;border:1px solid #fcd34d;">Ajuste +</span>';
+        sign = '+'; color = '#a16207';
+      } else if (p.direction === 'IN') {
+        typeBadge = '<span class="badge badge-paid">Cobro</span>';
+        sign = '+'; color = 'var(--success)';
+      } else {
+        typeBadge = '<span class="badge badge-overdue">Pago</span>';
+        sign = '−'; color = 'var(--danger)';
+      }
+      // En la columna Método mostramos el motivo del ajuste si aplica, sino el método de pago
+      const methodCell = isAdj
+        ? `<span style="font-size:12px;">${ui.escape(p.adjustmentReasonLabel || 'Ajuste')}</span>`
+        : ui.escape(p.paymentMethodName||'—');
+      return `<tr ${isAdj ? 'style="background:#fefce8;"' : ''}>
       <td><span class="td-mono td-strong">${p.code}</span></td>
-      <td><span class="badge ${p.direction==='IN'?'badge-paid':'badge-overdue'}">${p.direction==='IN'?'Cobro':'Pago'}</span></td>
+      <td>${typeBadge}</td>
       <td><span class="text-muted">${ui.formatDate(p.date)}</span></td>
       <td>${ui.escape(p.counterpartyName||'—')}</td>
       <td><span class="td-mono">${ui.escape(p.relatedDocCode||'—')}</span></td>
-      <td>${ui.escape(p.paymentMethodName||'—')}</td>
+      <td>${methodCell}</td>
       <td><span class="text-muted" style="font-size:12px;">${p.bankAccountId ? ui.escape(db.getById(db.COLLECTIONS.bankAccounts, p.bankAccountId)?.name||'—') : '—'}</span></td>
-      <td style="text-align:right;"><span class="td-mono td-strong" style="color:${p.direction==='IN'?'var(--success)':'var(--danger)'};">${p.direction==='IN'?'+':'−'}${currency.format(p.amount, p.currency)}</span>${p.amountInDocCurrency !== p.amount ? `<div class="text-muted" style="font-size:11px;">≈ ${currency.format(p.amountInDocCurrency, p.docCurrency)}</div>` : ''}</td>
-      <td><span class="text-muted" style="font-size:12px;">${ui.escape(p.reference||'—')}</span></td>
-    </tr>`).join('')}</tbody></table></div>`;
+      <td style="text-align:right;"><span class="td-mono td-strong" style="color:${color};">${sign}${currency.format(p.amount, p.currency)}</span>${p.amountInDocCurrency !== p.amount ? `<div class="text-muted" style="font-size:11px;">≈ ${currency.format(p.amountInDocCurrency, p.docCurrency)}</div>` : ''}</td>
+      <td><span class="text-muted" style="font-size:12px;">${ui.escape(p.reference||p.notes||'—')}</span></td>
+    </tr>`;
+    }).join('')}</tbody></table></div>`;
 }
 
 // ====== CREAR PAGO ======
@@ -814,6 +841,255 @@ render();
 try { Object.defineProperty(window, 'tab', { get: () => tab, set: (val) => { tab = val; }, configurable: true }); } catch(e) {}
 try { Object.defineProperty(window, 'creating', { get: () => creating, set: (val) => { creating = val; }, configurable: true }); } catch(e) {}
 
+// =============================================================================
+// AJUSTES DE SALDO (± Ajustar)
+// =============================================================================
+//
+// Caso 1 — Ajuste negativo (reduce el saldo del doc):
+//   "El cliente me pagó en Zelle a precio especial; quiero perdonar la
+//    diferencia para que el saldo cuadre."
+//   El monto del ajuste se suma al paidAmount como si fuera un cobro,
+//   pero queda marcado como ajuste para distinguirlo en reportes.
+//   Puede o no afectar banco (típicamente NO afecta).
+//
+// Caso 2 — Ajuste positivo (aumenta el saldo del doc):
+//   "El cliente me pagó $12 sobre una deuda de $10; quiero registrar
+//    los $2 como saldo a favor del cliente o subir la deuda."
+//   Aquí SÍ entra dinero al banco normalmente. El sobrante puede:
+//     - quedar como crédito a favor (creditBalance del cliente), o
+//     - aumentar el total del doc (caso menos común).
+
+/** Motivos predefinidos para el dropdown del modal */
+const ADJUSTMENT_REASONS = {
+  DISCOUNT_ZELLE:   { label: 'Diferencia tasa Zelle/efectivo',  signs: ['NEG'] },
+  DISCOUNT_OTHER:   { label: 'Descuento al cliente',            signs: ['NEG'] },
+  ROUNDING:         { label: 'Redondeo',                        signs: ['NEG','POS'] },
+  OVERPAY:          { label: 'Cliente pagó de más',             signs: ['POS'] },
+  RECARGO:          { label: 'Recargo / interés',               signs: ['POS'] },
+  ERROR_CORRECTION: { label: 'Corrección de error',             signs: ['NEG','POS'] },
+  OTHER:            { label: 'Otro motivo',                     signs: ['NEG','POS'] }
+};
+
+function openAdjustment(docId) {
+  const d = db.getById(db.COLLECTIONS.salesOrders, docId);
+  if (!d) { ui.toast('Documento no encontrado', 'error'); return; }
+  const remaining = (d.total || 0) - (d.paidAmount || 0);
+  const customer = db.getById(db.COLLECTIONS.customers, d.customerId);
+
+  ui.openModal({
+    size: 'md',
+    title: '± Ajuste de saldo',
+    subtitle: `${d.invoiceNumber || d.code}${d.controlNumber ? ' · Ctrl '+d.controlNumber : ''} · ${d.customerName || ''}`,
+    body: `
+      <div style="font-size:12.5px;color:var(--ink-2);line-height:1.5;margin-bottom:14px;padding:10px 14px;background:var(--surface-2);border-radius:6px;">
+        Saldo actual pendiente: <strong>${currency.format(remaining, d.currency)}</strong>
+        · Total: ${currency.format(d.total, d.currency)}
+        · Pagado: ${currency.format(d.paidAmount || 0, d.currency)}
+      </div>
+
+      <form id="adj-form" onsubmit="saveAdjustment(event, '${docId}')">
+
+        <!-- Signo del ajuste (radio buttons grandes) -->
+        <div class="field" style="margin-bottom:14px;">
+          <label class="field-label">Tipo de ajuste *</label>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
+            <label class="radio-card" style="border:2px solid var(--border);border-radius:8px;padding:12px 14px;cursor:pointer;display:flex;gap:10px;align-items:flex-start;">
+              <input type="radio" name="direction" value="ADJUSTMENT_IN" checked onchange="onAdjustDirectionChange()" style="margin-top:3px;">
+              <div>
+                <div style="font-weight:600;color:#15803d;font-size:13px;">− Negativo (reducir saldo)</div>
+                <div class="text-muted" style="font-size:11px;line-height:1.4;margin-top:2px;">Ej: cliente pagó en Zelle a precio especial, le perdono la diferencia.</div>
+              </div>
+            </label>
+            <label class="radio-card" style="border:2px solid var(--border);border-radius:8px;padding:12px 14px;cursor:pointer;display:flex;gap:10px;align-items:flex-start;">
+              <input type="radio" name="direction" value="ADJUSTMENT_OUT" onchange="onAdjustDirectionChange()" style="margin-top:3px;">
+              <div>
+                <div style="font-weight:600;color:#854d0e;font-size:13px;">+ Positivo (aumentar saldo)</div>
+                <div class="text-muted" style="font-size:11px;line-height:1.4;margin-top:2px;">Ej: recargo, intereses por mora, error de cálculo.</div>
+              </div>
+            </label>
+          </div>
+        </div>
+
+        <div class="form-grid form-grid-2" style="margin-bottom:14px;">
+          <div class="field">
+            <label class="field-label">Monto del ajuste *</label>
+            <div style="display:flex;gap:6px;">
+              <input class="input" type="number" step="0.01" min="0.01" name="amount" required
+                     style="text-align:right;font-family:var(--font-mono);" autofocus>
+              <select class="select" name="currency" style="max-width:90px;">
+                <option value="${d.currency}" selected>${d.currency}</option>
+                <option value="USD">USD</option>
+                <option value="VES">VES</option>
+              </select>
+            </div>
+            <div class="field-hint">En la moneda del documento (${d.currency}).</div>
+          </div>
+          <div class="field">
+            <label class="field-label">Fecha</label>
+            <input class="input" type="date" name="date" value="${new Date().toISOString().slice(0,10)}">
+          </div>
+        </div>
+
+        <div class="field" style="margin-bottom:14px;">
+          <label class="field-label">Motivo *</label>
+          <select class="select" name="reason" required onchange="onAdjustReasonChange()" id="adj-reason-select">
+            <!-- Se llena dinámicamente según el signo elegido -->
+          </select>
+        </div>
+
+        <!-- ¿Afecta banco? -->
+        <div class="field" style="margin-bottom:14px;">
+          <label class="field-label">¿Hubo movimiento bancario asociado?</label>
+          <div style="display:flex;gap:14px;align-items:center;flex-wrap:wrap;">
+            <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:13px;">
+              <input type="radio" name="affectsBank" value="no" checked onchange="onAdjustBankChange()">
+              No (solo ajuste administrativo)
+            </label>
+            <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:13px;">
+              <input type="radio" name="affectsBank" value="yes" onchange="onAdjustBankChange()">
+              Sí (entra/sale dinero real)
+            </label>
+          </div>
+        </div>
+
+        <!-- Cuenta bancaria (solo si afectsBank=yes) -->
+        <div class="field" id="adj-bank-field" style="display:none;margin-bottom:14px;">
+          <label class="field-label">Cuenta bancaria *</label>
+          <select class="select" name="bankAccountId">
+            <option value="">— Elegir cuenta —</option>
+            ${db.getAll(db.COLLECTIONS.bankAccounts).filter(a => a.active).map(a => `
+              <option value="${a.id}">${ui.escape(a.name)} · ${a.currency}</option>
+            `).join('')}
+          </select>
+        </div>
+
+        <!-- Qué hacer con el sobrante (solo si ADJUSTMENT_IN sin banco) -->
+        <div class="field" id="adj-excess-field" style="display:none;margin-bottom:14px;">
+          <label class="field-label">¿Qué hacer con el sobrante?</label>
+          <select class="select" name="excessAction">
+            <option value="CREDIT_BALANCE" selected>Sumar al saldo a favor del cliente${customer && customer.creditBalance ? ` (actual: ${currency.format(customer.creditBalance, customer.creditBalanceCurrency || 'USD')})` : ''}</option>
+            <option value="INCREASE_DEBT">Solo aumentar la deuda del documento</option>
+          </select>
+        </div>
+
+        <div class="field" style="margin-bottom:0;">
+          <label class="field-label">Notas (opcional)</label>
+          <textarea class="textarea" name="notes" rows="2" placeholder="Ej: cobrado por Zelle a $4.35 por unidad, diferencia perdonada"></textarea>
+        </div>
+      </form>
+    `,
+    footer: `
+      <button class="btn btn-secondary" onclick="ui.closeModal()">Cancelar</button>
+      <button class="btn btn-primary" onclick="document.getElementById('adj-form').requestSubmit()">${ui.icon('check')||'✓'} Guardar ajuste</button>
+    `
+  });
+
+  // Inicializar opciones del select de motivos
+  onAdjustReasonChange();
+}
+
+/** Actualiza el dropdown de motivos según signo elegido */
+function onAdjustDirectionChange() {
+  const dir = document.querySelector('input[name="direction"]:checked')?.value;
+  const select = document.getElementById('adj-reason-select');
+  if (!select) return;
+  const signKey = dir === 'ADJUSTMENT_OUT' ? 'POS' : 'NEG';
+  select.innerHTML = Object.entries(ADJUSTMENT_REASONS)
+    .filter(([k, r]) => r.signs.includes(signKey))
+    .map(([k, r]) => `<option value="${k}">${r.label}</option>`)
+    .join('');
+  // El campo "sobrante" solo aparece para ADJUSTMENT_IN (negativo/reduce saldo)
+  onAdjustBankChange();
+}
+
+function onAdjustReasonChange() {
+  // Reservado para validaciones futuras según motivo
+  onAdjustDirectionChange();
+}
+
+/** Muestra/oculta el campo de cuenta bancaria y el de sobrante */
+function onAdjustBankChange() {
+  const affectsBank = document.querySelector('input[name="affectsBank"]:checked')?.value === 'yes';
+  const dir = document.querySelector('input[name="direction"]:checked')?.value;
+  const bankField = document.getElementById('adj-bank-field');
+  const excessField = document.getElementById('adj-excess-field');
+  if (bankField) bankField.style.display = affectsBank ? '' : 'none';
+  // El campo "sobrante" solo aplica a ADJUSTMENT_IN (reduce saldo) sin banco
+  // y solo si el monto del ajuste supera el saldo pendiente actual.
+  // Por simplicidad, lo mostramos siempre que sea ADJUSTMENT_IN sin banco.
+  if (excessField) excessField.style.display = (!affectsBank && dir === 'ADJUSTMENT_IN') ? '' : 'none';
+}
+
+/** Guarda el ajuste llamando a payments.createAdjustment */
+function saveAdjustment(e, docId) {
+  e.preventDefault();
+  const formData = ui.formData(e.target);
+  const d = db.getById(db.COLLECTIONS.salesOrders, docId);
+  if (!d) { ui.toast('Documento no encontrado', 'error'); return; }
+
+  const direction = formData.direction;
+  const amount = parseFloat(formData.amount);
+  if (!amount || amount <= 0) { ui.toast('Monto inválido', 'error'); return; }
+
+  const affectsBank = formData.affectsBank === 'yes';
+  if (affectsBank && !formData.bankAccountId) {
+    ui.toast('Falta elegir la cuenta bancaria', 'error');
+    return;
+  }
+
+  const reasonKey = formData.reason || 'OTHER';
+  const reasonObj = ADJUSTMENT_REASONS[reasonKey] || ADJUSTMENT_REASONS.OTHER;
+
+  // Si la moneda elegida coincide con la del doc, amountInDocCurrency = amount.
+  // Si no, convertimos vía tasa BCV (simple — el usuario sabe lo que está haciendo).
+  let amountInDocCurrency = amount;
+  if (formData.currency !== d.currency) {
+    const rate = currency.getRate('BCV_USD')?.value;
+    if (rate) {
+      if (formData.currency === 'USD' && d.currency === 'VES') amountInDocCurrency = amount * rate;
+      else if (formData.currency === 'VES' && d.currency === 'USD') amountInDocCurrency = amount / rate;
+    }
+    amountInDocCurrency = Math.round(amountInDocCurrency * 100) / 100;
+  }
+
+  const bankAccountId = affectsBank ? formData.bankAccountId : null;
+  let paymentMethodName = null;
+  if (bankAccountId) {
+    // Tomar la primera forma de pago activa como default (igual que createPayment)
+    const account = db.getById(db.COLLECTIONS.bankAccounts, bankAccountId);
+    paymentMethodName = account ? `Ajuste · ${account.name}` : 'Ajuste';
+  }
+
+  try {
+    payments.createAdjustment({
+      direction,
+      counterpartyId: d.customerId,
+      counterpartyName: d.customerName,
+      relatedDocId: docId,
+      relatedDocCode: d.invoiceNumber || d.code,
+      amount,
+      currency: formData.currency,
+      docCurrency: d.currency,
+      amountInDocCurrency,
+      reason: reasonKey,
+      reasonLabel: reasonObj.label,
+      bankAccountId,
+      paymentMethodName,
+      excessAction: formData.excessAction || null,
+      date: formData.date,
+      notes: formData.notes || ''
+    });
+    ui.closeModal();
+    const signLabel = direction === 'ADJUSTMENT_IN' ? 'negativo (saldo reducido)' : 'positivo (saldo aumentado)';
+    ui.toast(`✓ Ajuste ${signLabel} de ${currency.format(amount, formData.currency)} aplicado`, 'success', 4000);
+    render();
+  } catch (err) {
+    ui.toast('Error: ' + err.message, 'error', 5000);
+    console.error(err);
+  }
+}
+
+
 Object.assign(window, {
   render: typeof render !== 'undefined' ? render : undefined,
   renderList: typeof renderList !== 'undefined' ? renderList : undefined,
@@ -835,6 +1111,12 @@ Object.assign(window, {
   cancelCreate: typeof cancelCreate !== 'undefined' ? cancelCreate : undefined,
   savePayment: typeof savePayment !== 'undefined' ? savePayment : undefined,
   recalcStatuses: typeof recalcStatuses !== 'undefined' ? recalcStatuses : undefined,
+  // Ajustes de saldo (± Ajustar)
+  openAdjustment: typeof openAdjustment !== 'undefined' ? openAdjustment : undefined,
+  onAdjustDirectionChange: typeof onAdjustDirectionChange !== 'undefined' ? onAdjustDirectionChange : undefined,
+  onAdjustReasonChange: typeof onAdjustReasonChange !== 'undefined' ? onAdjustReasonChange : undefined,
+  onAdjustBankChange: typeof onAdjustBankChange !== 'undefined' ? onAdjustBankChange : undefined,
+  saveAdjustment: typeof saveAdjustment !== 'undefined' ? saveAdjustment : undefined,
 });
 });
 </script>

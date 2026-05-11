@@ -1441,7 +1441,11 @@ function renderDetail() {
   const sLabel = d.cancelled ? 'Anulada' : (sales.STATUS[d.status]?.label || d.status);
   const tBadge = sales.STATUS[d.type]?.color || 'badge-plain';
   const remaining = d.total - (d.paidAmount||0);
-  const paymentsForDoc = payments.getPaymentsForDoc('IN', d.id);
+  // Cobros: incluye cobros normales (IN) y ajustes negativos (ADJUSTMENT_IN) que reducen el saldo
+  const paymentsForDoc = db.query(db.COLLECTIONS.payments, p =>
+    p.relatedDocId === d.id &&
+    (p.direction === 'IN' || p.direction === 'ADJUSTMENT_IN' || p.direction === 'ADJUSTMENT_OUT')
+  );
   const isGerencial = (typeof auth !== 'undefined' && auth.getActiveMode() === 'gerencial');
 
   // Tasa congelada o actual
@@ -1591,26 +1595,40 @@ function renderDetail() {
         </div>
 
         <div class="card">
-          <div class="card-header"><div class="card-title">Cobros (${paymentsForDoc.length})</div></div>
+          <div class="card-header"><div class="card-title">Cobros y ajustes (${paymentsForDoc.length})</div></div>
           ${paymentsForDoc.length ? paymentsForDoc.map(p => {
             const payAcc = p.bankAccountId ? db.getById(db.COLLECTIONS.bankAccounts, p.bankAccountId) : null;
             const isPersonal = payAcc?.countsForFiscal === false;
             const hasCrossConv = p.currency !== d.currency;
+            const isAdjIn  = p.direction === 'ADJUSTMENT_IN';
+            const isAdjOut = p.direction === 'ADJUSTMENT_OUT';
+            const isAdj    = isAdjIn || isAdjOut;
+            // Etiqueta principal: para ajustes mostramos el motivo, para cobros el método
+            const mainLabel = isAdj
+              ? `${isAdjIn ? '−' : '+'} ${ui.escape(p.adjustmentReasonLabel || 'Ajuste')}`
+              : ui.escape(p.paymentMethodName || '—');
+            // Color del monto: ajuste negativo en ámbar (no es cobro real); ajuste positivo en rojo (deuda subió)
+            const amountColor = isAdjIn ? '#a16207' : (isAdjOut ? 'var(--danger)' : 'inherit');
+            const rowBg = isAdj ? 'background:#fefce8;' : '';
             return `
-            <div class="list-row" style="grid-template-columns:1fr auto;padding:10px 0;border-bottom:1px solid var(--border);">
+            <div class="list-row" style="grid-template-columns:1fr auto;padding:10px;border-bottom:1px solid var(--border);${rowBg}">
               <div>
-                <div class="td-strong" style="font-size:13px;">${ui.escape(p.paymentMethodName)}${isPersonal?' · 👤 personal':''}</div>
-                <div class="text-muted" style="font-size:11px;">${ui.formatDate(p.date)} · ${ui.escape(p.reference||'')}${p.rateAtPayment?` · BCV ${p.rateAtPayment.toLocaleString('es-VE',{maximumFractionDigits:2})} 🔒`:''}</div>
+                <div class="td-strong" style="font-size:13px;">
+                  ${mainLabel}
+                  ${isAdj ? `<span class="badge" style="background:#fef3c7;color:#854d0e;border:1px solid #fcd34d;font-size:9.5px;margin-left:4px;">Ajuste</span>` : ''}
+                  ${isPersonal && !isAdj ? ' · 👤 personal' : ''}
+                </div>
+                <div class="text-muted" style="font-size:11px;">${ui.formatDate(p.date)}${p.reference ? ' · ' + ui.escape(p.reference) : ''}${p.notes && isAdj ? ' · ' + ui.escape(p.notes) : ''}${p.rateAtPayment ? ` · BCV ${p.rateAtPayment.toLocaleString('es-VE',{maximumFractionDigits:2})} 🔒` : ''}</div>
               </div>
               <div style="text-align:right;">
-                <div class="td-mono td-strong">${currency.format(p.amountInDocCurrency, d.currency)}</div>
-                ${hasCrossConv ? `<div class="text-muted" style="font-size:10px;">${currency.format(p.amount, p.currency)} → ${p.conversionRateLabel||''}</div>` : ''}
+                <div class="td-mono td-strong" style="color:${amountColor};">${isAdjIn ? '−' : (isAdjOut ? '+' : '')}${currency.format(p.amountInDocCurrency, d.currency)}</div>
+                ${hasCrossConv ? `<div class="text-muted" style="font-size:10px;">${currency.format(p.amount, p.currency)}${p.conversionRateLabel ? ` → ${p.conversionRateLabel}` : ''}</div>` : ''}
               </div>
             </div>
-          `}).join('') : '<div class="text-muted" style="font-size:13px;padding:16px 0;">Sin cobros registrados</div>'}
+          `}).join('') : '<div class="text-muted" style="font-size:13px;padding:16px 0;">Sin cobros ni ajustes registrados</div>'}
           ${d.paidAmount > 0 ? `
             <div style="margin-top:12px;padding:10px;background:var(--surface-2);border-radius:6px;font-size:12px;">
-              Cobrado: <strong>${currency.format(d.paidAmount, d.currency)}</strong> de ${currency.format(d.total, d.currency)} (${d.paidPercent.toFixed(1)}%)
+              Cobrado: <strong>${currency.format(d.paidAmount, d.currency)}</strong> de ${currency.format(d.total, d.currency)} (${(d.paidPercent || 0).toFixed(1)}%)
             </div>
           ` : ''}
         </div>
