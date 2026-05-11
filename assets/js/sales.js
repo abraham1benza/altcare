@@ -26,6 +26,31 @@ const sales = {
   // COTIZACION NO descuenta (es solo un presupuesto)
   STOCK_AFFECTING_TYPES: ['PEDIDO', 'NOTA_ENTREGA', 'FACTURA'],
 
+  /**
+   * Determina si un documento de venta cuenta como "por cobrar" — o sea,
+   * representa dinero que el cliente le debe al negocio.
+   *
+   * Reglas:
+   *   - NO si está anulado
+   *   - NO si no tiene saldo pendiente (total - paidAmount <= 0.01)
+   *   - SÍ si es FACTURA y tiene saldo
+   *   - SÍ si es NOTA_ENTREGA con saldo Y ya está despachada o entregada
+   *     (notas pendientes de despacho NO cuentan: nada se entregó todavía)
+   *   - NO en cualquier otro caso (pedidos, cotizaciones, NEs sin despachar)
+   */
+  isReceivable(doc) {
+    if (!doc) return false;
+    if (doc.cancelled) return false;
+    const remaining = (doc.total || 0) - (doc.paidAmount || 0);
+    if (remaining <= 0.01) return false;
+    if (doc.type === 'FACTURA') return true;
+    if (doc.type === 'NOTA_ENTREGA') {
+      // Solo si efectivamente se entregó la mercancía
+      return doc.deliveryStatus === 'DESPACHADO' || doc.deliveryStatus === 'ENTREGADO';
+    }
+    return false;
+  },
+
   // ====== HELPERS DE STOCK (FEFO + RESERVAS) ======
 
   /**
