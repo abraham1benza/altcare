@@ -28,6 +28,9 @@ let importing = false;
 // Para el tab "cobranzas" la vendedora se elige ANTES de subir el Excel.
 // Todas las filas del archivo se asignan a este usuario.
 let cobranzasVendorId = '';
+// Días de crédito por default para calcular fecha de vencimiento (fecha + N días).
+// Editable desde el paso 1 antes de subir el Excel.
+let cobranzasCreditDays = 30;
 
 const IMPORTERS = {
   pt: {
@@ -435,7 +438,12 @@ function onExcelFileChange(event) {
   reader.onload = (e) => {
     try {
       const data = new Uint8Array(e.target.result);
-      const wb = XLSX.read(data, { type: 'array' });
+      // IMPORTANTE: cellDates:true hace que XLSX entregue las celdas con
+      // formato de fecha como Date objects de JavaScript en lugar de strings
+      // formateados como los muestra Excel. Esto evita ambigüedad con
+      // formatos regionales (ej. "2/11/2026" puede ser 2-nov o 11-feb según
+      // si es M/D o D/M).
+      const wb = XLSX.read(data, { type: 'array', cellDates: true });
       // Tomar primera hoja con datos
       let sheet = null;
       for (const sheetName of wb.SheetNames) {
@@ -901,43 +909,59 @@ function renderCobranzasVendorPicker() {
 
   return `
     <div class="card mb-24" style="background:#fef3c7;border:1px solid #fcd34d;padding:14px 18px;">
-      <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap;">
+      <div style="display:flex;align-items:flex-start;gap:14px;flex-wrap:wrap;">
         <div style="flex:1;min-width:240px;">
-          <div style="font-weight:600;font-size:13px;color:#78350f;margin-bottom:4px;">👤 Paso 1: Elegí la vendedora</div>
+          <div style="font-weight:600;font-size:13px;color:#78350f;margin-bottom:4px;">👤 Paso 1: Configurá la importación</div>
           <div class="text-muted" style="font-size:12px;line-height:1.5;color:#92400e;">
-            Todas las filas del Excel se asignan a esta persona como vendedora,
-            y los clientes nuevos que se creen quedan vinculados a ella.
-            Si tu Excel tiene hojas separadas por vendedora, importá una por una
-            cambiando esta selección entre cargas.
+            Todas las filas del Excel se asignan a esta vendedora, y los clientes
+            nuevos que se creen quedan vinculados a ella. La fecha de vencimiento
+            de cada documento se calcula como <strong>fecha de emisión + días de crédito</strong>.
           </div>
         </div>
-        <select class="select" style="max-width:300px;" onchange="setCobranzasVendor(this.value)">
-          <option value="">— Elegir usuario —</option>
-          ${users.map(u => {
-            // Mostrar rol legible (no la clave interna)
-            const roleLabels = { admin:'admin', gerente:'gerente', contador:'contador', ventas:'ventas', compras:'compras', produccion:'producción', almacen:'almacén', calidad:'calidad' };
-            const roleLabel = roleLabels[u.role] || u.role || '—';
-            const name = u.fullName || u.username || '—';
-            return `<option value="${u.id}" ${u.id===cobranzasVendorId?'selected':''}>${ui.escape(name)} (${ui.escape(roleLabel)})</option>`;
-          }).join('')}
-        </select>
+        <div style="display:flex;flex-direction:column;gap:6px;min-width:220px;">
+          <label class="field-label" style="font-size:11px;color:#78350f;margin-bottom:0;">Vendedora</label>
+          <select class="select" style="font-size:13px;" onchange="setCobranzasVendor(this.value)">
+            <option value="">— Elegir usuario —</option>
+            ${users.map(u => {
+              const roleLabels = { admin:'admin', gerente:'gerente', contador:'contador', ventas:'ventas', compras:'compras', produccion:'producción', almacen:'almacén', calidad:'calidad' };
+              const roleLabel = roleLabels[u.role] || u.role || '—';
+              const name = u.fullName || u.username || '—';
+              return `<option value="${u.id}" ${u.id===cobranzasVendorId?'selected':''}>${ui.escape(name)} (${ui.escape(roleLabel)})</option>`;
+            }).join('')}
+          </select>
+        </div>
+        <div style="display:flex;flex-direction:column;gap:6px;min-width:130px;">
+          <label class="field-label" style="font-size:11px;color:#78350f;margin-bottom:0;">Días de crédito</label>
+          <input class="input" type="number" min="0" max="365" value="${cobranzasCreditDays}"
+                 oninput="setCobranzasCreditDays(this.value)"
+                 style="font-size:13px;text-align:right;font-family:var(--font-mono);">
+        </div>
       </div>
       ${selected ? `<div style="margin-top:10px;padding:8px 12px;background:white;border-radius:6px;font-size:12px;color:#065f46;border:1px solid #6ee7b7;">
-        ✓ Asignar todas las filas a <strong>${ui.escape(selected.fullName || selected.username)}</strong>. Ya podés subir el Excel.
+        ✓ Asignar todas las filas a <strong>${ui.escape(selected.fullName || selected.username)}</strong>
+        con vencimiento a <strong>${cobranzasCreditDays} día${cobranzasCreditDays !== 1 ? 's' : ''}</strong> de cada fecha de emisión. Ya podés subir el Excel.
       </div>` : ''}
     </div>
   `;
 }
 
+/** Cambia los días de crédito por default. Refresca el preview si ya hay filas. */
+function setCobranzasCreditDays(val) {
+  const n = parseInt(val, 10);
+  cobranzasCreditDays = isNaN(n) || n < 0 ? 30 : n;
+  // No descartamos el preview — solo se recalcula al importar.
+}
+
 /**
  * Parsea fechas en múltiples formatos. Devuelve YYYY-MM-DD o null.
  * Soporta: Date object, número Excel (días desde 1899-12-30),
- * ISO YYYY-MM-DD, DD/MM/YYYY, DD-MM-YYYY.
+ * ISO YYYY-MM-DD, DD/MM/YYYY, DD-MM-YYYY, M/D/YYYY (con detección heurística).
  */
 function parseFechaCobranza(raw) {
   if (raw == null || raw === '') return null;
   if (raw instanceof Date) {
-    // Usamos UTC slice para evitar timezone drift (Venezuela UTC-4)
+    // Usamos componentes locales (no UTC) — el Date ya viene en hora local
+    // del browser y queremos preservar el día visible.
     const y = raw.getFullYear(), m = raw.getMonth()+1, d = raw.getDate();
     return `${y}-${String(m).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
   }
@@ -952,14 +976,31 @@ function parseFechaCobranza(raw) {
   // ISO YYYY-MM-DD (puede traer tiempo pegado)
   const isoMatch = s.match(/^(\d{4})-(\d{2})-(\d{2})/);
   if (isoMatch) return `${isoMatch[1]}-${isoMatch[2]}-${isoMatch[3]}`;
-  // DD/MM/YYYY o DD-MM-YYYY
-  const eu = s.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})/);
-  if (eu) {
-    const dd = eu[1].padStart(2,'0');
-    const mm = eu[2].padStart(2,'0');
-    let yy = eu[3];
+  // Formato X/Y/YYYY o X-Y-YYYY donde X e Y pueden ser día o mes ambiguamente.
+  // Detección heurística:
+  //   - Si X > 12 → seguro X=día, Y=mes (formato europeo D/M/Y)
+  //   - Si Y > 12 → seguro Y=día, X=mes (formato americano M/D/Y)
+  //   - Si ambos ≤ 12 → asumimos D/M/Y (default venezolano/europeo)
+  const slashMatch = s.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})/);
+  if (slashMatch) {
+    let a = parseInt(slashMatch[1], 10);
+    let b = parseInt(slashMatch[2], 10);
+    let yy = slashMatch[3];
     if (yy.length === 2) yy = '20' + yy;
-    return `${yy}-${mm}-${dd}`;
+    let day, month;
+    if (a > 12 && b <= 12) {
+      // Sin duda D/M/Y
+      day = a; month = b;
+    } else if (b > 12 && a <= 12) {
+      // Sin duda M/D/Y (americano)
+      month = a; day = b;
+    } else {
+      // Ambiguo (ambos ≤ 12): asumir D/M/Y por defecto regional venezolano
+      day = a; month = b;
+    }
+    // Validar rangos básicos
+    if (day < 1 || day > 31 || month < 1 || month > 12) return null;
+    return `${yy}-${String(month).padStart(2,'0')}-${String(day).padStart(2,'0')}`;
   }
   return null;
 }
@@ -1457,6 +1498,16 @@ function importCobranza(row, customerCache) {
   const codePrefix = row.docType === 'FACTURA' ? 'V' : 'NE';
   const code = db.nextCode(db.COLLECTIONS.salesOrders, codePrefix);
 
+  // Calcular fecha de vencimiento = issueDate + N días de crédito (default 30).
+  // Si el usuario puso 0, vence el mismo día.
+  let dueDateStr = row.fecha;
+  if (cobranzasCreditDays > 0) {
+    const [y, m, d] = row.fecha.split('-').map(n => parseInt(n, 10));
+    const dt = new Date(y, m - 1, d);
+    dt.setDate(dt.getDate() + cobranzasCreditDays);
+    dueDateStr = `${dt.getFullYear()}-${String(dt.getMonth()+1).padStart(2,'0')}-${String(dt.getDate()).padStart(2,'0')}`;
+  }
+
   const doc = {
     code,
     type: row.docType,               // FACTURA o NOTA_ENTREGA
@@ -1464,9 +1515,9 @@ function importCobranza(row, customerCache) {
     customerId,
     customerName,
     issueDate: row.fecha,
-    dueDate: row.fecha,              // sin info de vencimiento → fecha de salida
+    dueDate: dueDateStr,             // = fecha de emisión + cobranzasCreditDays
     dueDateAuto: false,              // no recalcular automáticamente
-    paymentTerms: '',
+    paymentTerms: cobranzasCreditDays > 0 ? `${cobranzasCreditDays} días` : 'Contado',
     currency: 'USD',
     // Una línea sintética que representa el saldo migrado. NO toca inventario
     // porque no apunta a ninguna fórmula ni lote.
@@ -1521,7 +1572,7 @@ render();
 
 Object.assign(window, {
   setTab, onCsvChange, clearCsv, parseCsv, confirmImport, onExcelFileChange,
-  setCobranzasVendor,
+  setCobranzasVendor, setCobranzasCreditDays,
   openCustomerPickerForRow, closeCustomerPicker, onCustomerPickerSearch,
   assignCustomerToRow, clearCustomerAssignment
 });
