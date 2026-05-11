@@ -455,8 +455,14 @@ function onExcelFileChange(event) {
         ui.toast('El archivo no tiene hojas con datos', 'error');
         return;
       }
-      // Convertir a array de arrays (sin header — lo detectamos manualmente)
-      const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '', raw: false });
+      // Convertir a array de arrays (sin header — lo detectamos manualmente).
+      // Para cobranzas usamos raw:true para que las fechas lleguen como Date
+      // objects (combinado con cellDates:true en read). Con raw:false las
+      // fechas se formatean según el regional del Excel y la ambigüedad
+      // M/D vs D/M arruina el parseo. Para los otros tabs mantenemos raw:false
+      // que preserva el comportamiento histórico de strings formateados.
+      const useRaw = (activeTab === 'cobranzas');
+      const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '', raw: useRaw });
       processExcelRows(rows);
     } catch (err) {
       ui.toast('Error leyendo Excel: ' + err.message, 'error');
@@ -1083,15 +1089,21 @@ function parseExcelCobranzas(dataRows, colMap) {
   dataRows.forEach((row, i) => {
     const lineNum = i + 1;
 
-    const fechaRaw  = getCell(row, colMap.fecha);
+    // Para la fecha leemos el valor crudo (sin stringificar) porque XLSX con
+    // cellDates:true entrega Date objects. Si lo pasamos por String(),
+    // perdemos el tipo y queda "Fri Apr 10 2026 00:00:00 GMT-0400..." que es
+    // ambiguo de re-parsear según regional.
+    const fechaRaw  = (colMap.fecha === undefined ? '' : (row[colMap.fecha] != null ? row[colMap.fecha] : ''));
     const razon     = getCell(row, colMap.razon_social);
     const notaEnt   = getCell(row, colMap.nota_entrega);
     const facturaN  = getCell(row, colMap.numero_factura);
     const montoRaw  = getCell(row, montoIdx);
     const saldoRaw  = getCell(row, colMap.saldo_pendiente);
 
+    // Para los checks de "fila vacía" comparamos sin importar el tipo
+    const fechaIsEmpty = fechaRaw === '' || fechaRaw == null;
     // Filas completamente vacías o de totales (sin razón social ni fecha) se ignoran silenciosamente
-    if (!razon && !fechaRaw) return;
+    if (!razon && fechaIsEmpty) return;
     // Si solo tiene saldo (fila TOTAL al final), ignorar
     if (!razon && !notaEnt && !facturaN && !montoRaw) return;
 
