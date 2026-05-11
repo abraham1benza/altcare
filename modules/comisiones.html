@@ -53,6 +53,7 @@ function renderList() {
   const totalPagado = summaries.reduce((s, x) => s + x.totalPaid, 0);
   const totalPrestamos = summaries.reduce((s, x) => s + x.loansBalance, 0);
   const totalSaldo = summaries.reduce((s, x) => s + x.netBalance, 0);
+  const totalProyectado = summaries.reduce((s, x) => s + (x.projectedCollection || 0), 0);
 
   const cards = filtered.map(s => renderUserCard(s)).join('');
 
@@ -104,6 +105,11 @@ function renderList() {
             <div class="kpi-label">Saldo neto a pagar</div>
             <div class="kpi-value" style="font-size:26px;color:${totalSaldo>=0?'var(--success)':'var(--danger)'};">${currency.format(Math.abs(totalSaldo), 'USD')}</div>
             <div class="kpi-value-sub">${totalSaldo>=0?'se les debe':'deben a la empresa'}</div>
+            ${totalProyectado > 0.01 ? `
+              <div style="font-size:11px;color:#854d0e;margin-top:6px;padding-top:6px;border-top:1px dashed #fcd34d;">
+                🔮 + ${currency.format(totalProyectado, 'USD')} si cobran todo lo pendiente
+              </div>
+            ` : ''}
           </div>
         </div>
 
@@ -173,6 +179,24 @@ function renderUserCard(s) {
           <div class="text-muted" style="font-size:10px;color:#14532d;">${s.collectionEventsCount} cobro${s.collectionEventsCount!==1?'s':''}</div>
         </div>
       </div>
+
+      ${s.projectedCollection > 0.01 ? `
+      <!-- Proyección: comisión que se va a devengar cuando cobre lo pendiente -->
+      <div style="padding:14px 20px;border-bottom:1px solid var(--border);background:#fefce8;">
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap;">
+          <div style="flex:1;min-width:140px;">
+            <div class="text-muted" style="font-size:9px;text-transform:uppercase;letter-spacing:0.08em;font-weight:600;color:#854d0e;">🔮 Proyección por cobranza</div>
+            <div class="text-muted" style="font-size:10.5px;color:#92400e;line-height:1.4;margin-top:3px;">
+              Estimado de lo que se va a generar de comisión cuando cobre los <strong>${currency.format(s.projectedPendingUSD, 'USD')}</strong> pendientes.
+            </div>
+          </div>
+          <div style="text-align:right;">
+            <div class="td-mono" style="font-size:16px;font-weight:600;color:#854d0e;line-height:1.1;">+${currency.format(s.projectedCollection, 'USD')}</div>
+            <div class="text-muted" style="font-size:10px;color:#a16207;margin-top:2px;">si cobra todo</div>
+          </div>
+        </div>
+      </div>
+      ` : ''}
 
       <!-- Pagado / Préstamos -->
       <div style="padding:14px 20px;display:grid;grid-template-columns:1fr 1fr;gap:8px;border-bottom:1px solid var(--border);">
