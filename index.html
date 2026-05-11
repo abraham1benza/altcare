@@ -320,10 +320,10 @@ function renderDashboard() {
     );
   };
 
-  // Cuentas por cobrar (facturas venta pendientes)
+  // Cuentas por cobrar (facturas + NEs entregadas/despachadas con saldo)
   const cxcPending = filterByVisibility(
     db.getAll(db.COLLECTIONS.salesOrders)
-      .filter(d => !d.cancelled && d.type === 'FACTURA' && (d.total - (d.paidAmount||0)) > 0.01)
+      .filter(d => sales.isReceivable(d))
   );
   const cxcOverdue = cxcPending.filter(d => d.dueDate && d.dueDate < today);
 
@@ -407,11 +407,11 @@ function renderDashboard() {
 
   if (cxcOverdue.length > 0) alerts.push({
     severity: 'danger',
-    text: `${cxcOverdue.length} factura(s) de venta vencidas sin cobrar`,
+    text: `${cxcOverdue.length} documento(s) de venta vencidos sin cobrar`,
     link: 'modules/pagos.html',
     items: truncate(cxcOverdue.map(d => ({
       code: d.invoiceNumber || d.code,
-      detail: `${d.customerName || '—'} · ${currency.format(d.total - (d.paidAmount||0), d.currency)}${d.dueDate ? ' · venció '+ui.formatDate(d.dueDate) : ''}`
+      detail: `${d.type === 'NOTA_ENTREGA' ? 'NE · ' : ''}${d.customerName || '—'} · ${currency.format(d.total - (d.paidAmount||0), d.currency)}${d.dueDate ? ' · venció '+ui.formatDate(d.dueDate) : ''}`
     }))),
     totalCount: cxcOverdue.length
   });
@@ -565,7 +565,7 @@ function renderDashboard() {
     <div class="grid grid-4 mb-24">
       <a href="modules/pagos.html?tab=cxc" class="kpi kpi-clickable" style="text-decoration:none;color:inherit;cursor:pointer;display:block;">
         <div class="kpi-label">Por cobrar</div>${renderMultiKPI(cxcByCcy, 'var(--accent-ink)')}
-        <div class="kpi-value-sub">${cxcPending.length} factura${cxcPending.length!==1?'s':''}${cxcOverdue.length?` · <span style="color:var(--danger);">${cxcOverdue.length} vencida${cxcOverdue.length!==1?'s':''}</span>`:''}</div>
+        <div class="kpi-value-sub">${cxcPending.length} documento${cxcPending.length!==1?'s':''}${cxcOverdue.length?` · <span style="color:var(--danger);">${cxcOverdue.length} vencido${cxcOverdue.length!==1?'s':''}</span>`:''}</div>
         <div class="kpi-action">Ir a cobrar →</div>
       </a>
       ${isAdminUser ? `
