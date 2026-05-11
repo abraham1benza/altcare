@@ -389,6 +389,172 @@ const payments = {
     return saved;
   },
 
+  /**
+   * Crea un AJUSTE de saldo sobre un documento de venta o compra.
+   *
+   * Diferencias con createPayment:
+   *  - direction: 'ADJUSTMENT_IN'  → reduce el saldo pendiente del documento
+   *               'ADJUSTMENT_OUT' → aumenta el saldo pendiente del documento
+   *  - Puede o no tener cuenta bancaria asociada (data.bankAccountId opcional).
+   *  - Tiene reason y reasonLabel para trazabilidad.
+   *  - Para ajuste positivo sin banco: se puede pedir que el sobrante se
+   *    acredite al cliente como saldo a favor (creditBalance).
+   *
+   * @param {object} data
+   *   direction         'ADJUSTMENT_IN' | 'ADJUSTMENT_OUT'
+   *   counterpartyId    id del cliente o proveedor
+   *   counterpartyName
+   *   relatedDocId      id del salesOrder / purchaseInvoice
+   *   relatedDocCode
+   *   amount            número positivo (el signo lo da el direction)
+   *   currency          'USD' | 'VES' | 'EUR'
+   *   docCurrency       moneda del doc relacionado
+   *   amountInDocCurrency  monto convertido a la moneda del doc
+   *   reason            código del motivo (DISCOUNT_ZELLE | OVERPAY | ROUNDING | OTHER)
+   *   reasonLabel       etiqueta human-readable
+   *   bankAccountId     opcional: si el ajuste tiene movimiento bancario
+   *   notes             texto libre
+   *   date              YYYY-MM-DD
+   *   excessAction      solo para ADJUSTMENT_IN positivo sin banco:
+   *                       'CREDIT_BALANCE' → sumar al saldo a favor del cliente
+   *                       'INCREASE_DEBT'  → solo subir el total del doc
+   */
+  createAdjustment(data) {
+    if (data.direction !== 'ADJUSTMENT_IN' && data.direction !== 'ADJUSTMENT_OUT') {
+      throw new Error('Dirección inválida para ajuste');
+    }
+    const amountAsNum = Math.abs(parseFloat(data.amount) || 0);
+    if (amountAsNum <= 0) throw new Error('El monto del ajuste debe ser mayor a cero');
+
+    const code = db.nextCode(db.COLLECTIONS.payments, 'AJ');
+    const today = data.date || new Date().toISOString().slice(0, 10);
+
+    // Tasa congelada (BCV del día)
+    const rateAtPayment = parseFloat(data.rateAtPayment) || (() => {
+      const r = currency.getRate('BCV_USD');
+      return r?.value || 0;
+    })();
+
+    // Equivalentes
+    let amountUSD = 0, amountVES = 0;
+    if (data.currency === 'USD') {
+      amountUSD = amountAsNum;
+      amountVES = rateAtPayment > 0 ? amountAsNum * rateAtPayment : 0;
+    } else if (data.currency === 'VES') {
+      amountVES = amountAsNum;
+      amountUSD = rateAtPayment > 0 ? amountAsNum / rateAtPayment : 0;
+    } else if (data.currency === 'EUR') {
+      const eurRate = currency.getRate('BCV_EUR');
+      amountVES = eurRate?.value ? amountAsNum * eurRate.value : 0;
+      amountUSD = rateAtPayment > 0 && amountVES ? amountVES / rateAtPayment : 0;
+    }
+
+    const adjustment = {
+      code,
+      // Mantenemos los mismos campos que un payment, pero con direction de ajuste
+      // para que el listado y los filtros funcionen sin código duplicado.
+      direction: data.direction,
+      isAdjustment: true,                        // bandera para diferenciar
+      counterpartyId: data.counterpartyId,
+      counterpartyName: data.counterpartyName,
+      relatedDocId: data.relatedDocId,
+      relatedDocCode: data.relatedDocCode,
+      amount: amountAsNum,
+      currency: data.currency,
+      docCurrency: data.docCurrency,
+      amountInDocCurrency: parseFloat(data.amountInDocCurrency) || amountAsNum,
+      rateAtPayment,
+      rateTypeAtPayment: data.rateTypeAtPayment || 'BCV_USD',
+      amountUSD: Math.round(amountUSD * 100) / 100,
+      amountVES: Math.round(amountVES * 100) / 100,
+      bankAccountId: data.bankAccountId || null,
+      paymentMethodId: data.paymentMethodId || null,
+      paymentMethodName: data.paymentMethodName || null,
+      reference: data.reference || '',
+      date: today,
+      notes: data.notes || '',
+      // Campos específicos de ajustes:
+      adjustmentReason: data.reason || 'OTHER',
+      adjustmentReasonLabel: data.reasonLabel || 'Otro motivo',
+      excessAction: data.excessAction || null,
+    };
+    const saved = db.save(db.COLLECTIONS.payments, adjustment);
+
+    // === Movimiento bancario (solo si tiene cuenta) ===
+    if (saved.bankAccountId) {
+      const account = db.getById(db.COLLECTIONS.bankAccounts, saved.bankAccountId);
+      let moveRate = null;
+      let moveRateType = null;
+      if (account && account.currency !== saved.currency && saved.rateAtPayment) {
+        moveRate = saved.rateAtPayment;
+        moveRateType = saved.rateTypeAtPayment || 'BCV_USD';
+      }
+      // ADJUSTMENT_IN = entra dinero (positivo) ; ADJUSTMENT_OUT = sale dinero (negativo)
+      this.registerBankMove({
+        accountId: saved.bankAccountId,
+        type: saved.direction === 'ADJUSTMENT_IN' ? 'ADJUSTMENT_IN' : 'ADJUSTMENT_OUT',
+        amount: saved.amount,
+        currency: saved.currency,
+        rate: moveRate,
+        rateType: moveRateType,
+        date: saved.date,
+        reference: `Ajuste ${saved.direction === 'ADJUSTMENT_IN' ? 'positivo' : 'negativo'} · ${saved.counterpartyName} · ${saved.relatedDocCode || ''} · ${saved.adjustmentReasonLabel}`,
+        paymentId: saved.id,
+        counterpartyName: saved.counterpartyName
+      });
+    }
+
+    // === Aplicar al documento relacionado ===
+    if (saved.relatedDocId) {
+      // Solo aplicamos a documentos de venta (compras se podrían soportar después)
+      const doc = db.getById(db.COLLECTIONS.salesOrders, saved.relatedDocId);
+      if (doc) {
+        if (saved.direction === 'ADJUSTMENT_IN') {
+          // Reduce el saldo pendiente: equivalente a sumar al paidAmount
+          sales.applyPayment(saved.relatedDocId, saved.id, saved.amountInDocCurrency, saved.rateAtPayment, saved.rateTypeAtPayment);
+          // Comisión por cobranza: el usuario configuró que los ajustes negativos
+          // también generen comisión (se considera "cobrado" para fines de la
+          // vendedora aunque el dinero no haya entrado físicamente).
+          if (typeof commissions !== 'undefined') {
+            try {
+              const refreshed = db.getById(db.COLLECTIONS.salesOrders, saved.relatedDocId);
+              if (refreshed) commissions.registerCollectionCommission(saved, refreshed);
+            } catch (e) { console.warn('[payments] Error comisión sobre ajuste:', e.message); }
+          }
+        } else {
+          // ADJUSTMENT_OUT: aumentar saldo pendiente.
+          // Lo más limpio es subir el total del doc en lugar de bajar paidAmount,
+          // porque bajar paidAmount podría dejarlo negativo si el doc estaba pagado.
+          // Subir el total preserva la auditabilidad: "el doc creció por ajuste".
+          doc.total = Math.round(((doc.total || 0) + saved.amountInDocCurrency) * 100) / 100;
+          doc.adjustments = doc.adjustments || [];
+          if (!doc.adjustments.includes(saved.id)) doc.adjustments.push(saved.id);
+          // Si la deuda total ahora supera lo pagado, volvió a estado pendiente
+          const remaining = (doc.total || 0) - (doc.paidAmount || 0);
+          if (remaining > 0.01 && doc.status === 'PAID') {
+            doc.status = doc.paidAmount > 0 ? 'PARTIAL' : 'EMITIDO';
+          }
+          doc.paidPercent = doc.total > 0 ? ((doc.paidAmount || 0) / doc.total) * 100 : 0;
+          db.save(db.COLLECTIONS.salesOrders, doc);
+        }
+      }
+
+      // === Crédito a favor del cliente (solo para ADJUSTMENT_IN con excessAction=CREDIT_BALANCE) ===
+      // Caso típico: cliente pagó $12 sobre una deuda de $10 → ajuste +$2 que va al saldo a favor.
+      // El ajuste "salda" el doc y el sobrante queda como crédito futuro.
+      if (saved.direction === 'ADJUSTMENT_IN' && saved.excessAction === 'CREDIT_BALANCE' && saved.counterpartyId) {
+        const customer = db.getById(db.COLLECTIONS.customers, saved.counterpartyId);
+        if (customer) {
+          customer.creditBalance = Math.round(((customer.creditBalance || 0) + saved.amountUSD) * 100) / 100;
+          customer.creditBalanceCurrency = 'USD';
+          db.save(db.COLLECTIONS.customers, customer);
+        }
+      }
+    }
+
+    return saved;
+  },
+
   /** Devuelve los pagos hechos a una factura específica */
   getPaymentsForDoc(direction, docId) {
     return db.query(db.COLLECTIONS.payments, p => p.direction === direction && p.relatedDocId === docId);

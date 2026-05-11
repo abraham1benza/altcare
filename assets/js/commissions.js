@@ -141,7 +141,10 @@ const commissions = {
    * @param {object} salesOrder - factura asociada
    */
   registerCollectionCommission(payment, salesOrder) {
-    if (!payment || payment.direction !== 'IN') return null;
+    // Aceptamos cobros normales ('IN') y ajustes negativos ('ADJUSTMENT_IN')
+    // porque ambos reducen el saldo pendiente. El usuario configuró que el
+    // ajuste negativo se considere cobrado para fines de comisión.
+    if (!payment || (payment.direction !== 'IN' && payment.direction !== 'ADJUSTMENT_IN')) return null;
     // Comisión por cobranza aplica a FACTURAS y a NOTAS DE ENTREGA (ambos
     // representan ventas reales que generan deuda del cliente).
     if (!salesOrder || (salesOrder.type !== 'FACTURA' && salesOrder.type !== 'NOTA_ENTREGA')) return null;
