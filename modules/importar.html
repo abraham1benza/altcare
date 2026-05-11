@@ -985,15 +985,26 @@ function parseMontoCobranza(raw) {
 }
 
 /**
- * Normaliza el nombre de un cliente para matching insensible a mayús/min,
- * espacios extra, y abreviaturas comunes (C.A. → CA, S.A. → SA).
+ * Normaliza el nombre de un cliente para matching insensible a:
+ *   - mayús/min y espacios extra
+ *   - comas y puntos
+ *   - sufijos legales al final del nombre (C.A., S.A., S.R.L., C. por A., etc.)
+ *
+ * Ejemplo:
+ *   "INVERSIONES CLADUAR 1011, C.A"  →  "inversiones claduar 1011"
+ *   "INVERSIONES CLADUAR 1011"        →  "inversiones claduar 1011"
+ *   (matchean — mismo cliente, no se duplica)
  */
 function normalizeCustomerNameForMatch(name) {
   return String(name || '').trim().toLowerCase()
-    .replace(/\s+/g, ' ')
-    .replace(/[,\.]/g, '')
-    .replace(/\bc\s*a\b/g, 'ca')
-    .replace(/\bs\s*a\b/g, 'sa');
+    .replace(/\s+/g, ' ')              // normalizar espacios múltiples
+    .replace(/[,\.]/g, '')             // quitar comas y puntos
+    // Eliminar sufijos de tipo de sociedad al final del nombre.
+    // Las letras pueden estar separadas por espacios después del replace de puntos
+    // (ej. "c a" o "s r l"). Hacemos varias pasadas para limpiar bien.
+    .replace(/\s+(c\s*a|s\s*a|s\s*r\s*l|r\s*l|s\s*a\s*s|c\s*por\s*a)$/i, '')
+    .replace(/\s+(c\s*a|s\s*a|s\s*r\s*l|r\s*l)$/i, '')  // segunda pasada por si quedó otro
+    .trim();
 }
 
 /**
@@ -1099,7 +1110,9 @@ function parseExcelCobranzas(dataRows, colMap) {
 function renderPreviewCobranzas() {
   const validRows = parsedRows.filter(r => !r._error);
   const invalidRows = parsedRows.filter(r => r._error);
-  const newCustomerNames = new Set(validRows.filter(r => r._customerIsNew).map(r => r.razon_social));
+  // Solo cuentan como "a crear" los que están realmente sin asignación manual
+  const newCustomerNames = new Set(validRows.filter(r => r._customerIsNew && !r._manuallyAssigned).map(r => r.razon_social));
+  const manuallyAssignedCount = validRows.filter(r => r._manuallyAssigned).length;
   const totalPending = validRows.reduce((s, r) => s + (r.saldo_pendiente || 0), 0);
   const totalAlreadyPaid = validRows.reduce((s, r) => s + (r.paid_amount || 0), 0);
 
@@ -1109,7 +1122,7 @@ function renderPreviewCobranzas() {
         <div>
           <div class="card-title">💰 Vista previa de cuentas por cobrar</div>
           <div class="text-muted" style="font-size:12px;margin-top:2px;">
-            ${validRows.length} documentos · ${newCustomerNames.size} cliente(s) nuevo(s) a crear${invalidRows.length > 0 ? ` · <span style="color:var(--danger);">${invalidRows.length} con errores</span>` : ''}
+            ${validRows.length} documentos · ${newCustomerNames.size} cliente(s) nuevo(s) a crear${manuallyAssignedCount > 0 ? ` · <span style="color:#6d28d9;">${manuallyAssignedCount} asignado(s) manualmente</span>` : ''}${invalidRows.length > 0 ? ` · <span style="color:var(--danger);">${invalidRows.length} con errores</span>` : ''}
           </div>
         </div>
         <div style="text-align:right;font-size:11px;">
@@ -1134,19 +1147,55 @@ function renderPreviewCobranzas() {
           </thead>
           <tbody>${parsedRows.map((r, idx) => {
             if (r._error) return `<tr style="background:#fee2e2;"><td>${idx+1}</td><td colspan="7"><span style="color:var(--danger);font-size:11px;">${ui.escape(r._error)}</span></td><td><span class="badge badge-danger" style="font-size:9.5px;">Error</span></td></tr>`;
-            const rowBg = r._customerIsNew ? 'background:#ecfdf5;' : '';
+            // Tres estados de cliente:
+            //   - _customerIsNew: false (matcheo automático) — gris, no clickeable
+            //   - _customerIsNew: true SIN _manuallyAssigned — verde, clickeable (asignar existente)
+            //   - _customerIsNew: false POR _manuallyAssigned — morado, clickeable (cambiar/quitar)
+            const rowBg = r._manuallyAssigned
+              ? 'background:#f5f3ff;'                  // morado claro: asignación manual
+              : r._customerIsNew
+                ? 'background:#ecfdf5;'                // verde claro: se va a crear
+                : '';                                  // sin fondo: matcheo automático
             const docRef = r.numero_factura
               ? `<span class="td-mono td-strong">${ui.escape(r.numero_factura)}</span>${r.nota_entrega?`<div class="text-muted" style="font-size:10px;">${ui.escape(r.nota_entrega)}</div>`:''}`
               : `<span class="td-mono">${ui.escape(r.nota_entrega || '—')}</span>`;
+
+            let customerCell;
+            if (r._manuallyAssigned) {
+              // Estado 3: asignación manual
+              customerCell = `
+                <div>
+                  <div style="text-decoration:line-through;color:var(--ink-3);font-size:11px;">${ui.escape(r.razon_social)}</div>
+                  <div style="display:flex;align-items:center;gap:6px;margin-top:2px;">
+                    <span class="td-strong" style="color:#6d28d9;">✓ ${ui.escape(r._customerName||'')}</span>
+                  </div>
+                  <div style="display:flex;gap:8px;margin-top:3px;">
+                    <a href="#" onclick="event.preventDefault();openCustomerPickerForRow(${idx});" style="font-size:10px;color:#6d28d9;text-decoration:underline;">cambiar</a>
+                    <a href="#" onclick="event.preventDefault();clearCustomerAssignment(${idx});" style="font-size:10px;color:var(--danger);text-decoration:underline;">deshacer (crear nuevo)</a>
+                  </div>
+                </div>
+              `;
+            } else if (r._customerIsNew) {
+              // Estado 2: cliente nuevo, clickeable para asignar existente
+              customerCell = `
+                <div>
+                  <span class="td-strong">${ui.escape(r.razon_social)}</span>
+                  <div style="font-size:10px;color:#065f46;font-weight:600;margin-top:2px;">➕ Cliente nuevo (se creará)</div>
+                  <a href="#" onclick="event.preventDefault();openCustomerPickerForRow(${idx});" style="font-size:10px;color:var(--accent-ink);text-decoration:underline;">¿ya existe en el sistema? click para asignar</a>
+                </div>
+              `;
+            } else {
+              // Estado 1: matcheo automático, no clickeable
+              customerCell = `
+                <span class="td-strong">${ui.escape(r.razon_social)}</span>
+                <div class="text-muted" style="font-size:10px;">${ui.escape(r._customerCode || '')}</div>
+              `;
+            }
+
             return `<tr style="${rowBg}">
               <td>${idx+1}</td>
               <td><span class="td-mono" style="font-size:11px;">${ui.formatDate(r.fecha)}</span></td>
-              <td>
-                <span class="td-strong">${ui.escape(r.razon_social)}</span>
-                ${r._customerIsNew
-                  ? `<div style="font-size:10px;color:#065f46;font-weight:600;">➕ Cliente nuevo (se creará)</div>`
-                  : `<div class="text-muted" style="font-size:10px;">${ui.escape(r._customerCode || '')}</div>`}
-              </td>
+              <td>${customerCell}</td>
               <td><span class="badge ${r.docType==='FACTURA'?'badge-accent':'badge-plain'}" style="font-size:9.5px;">${r.docType==='FACTURA'?'Factura':'Nota Ent.'}</span></td>
               <td>${docRef}</td>
               <td style="text-align:right;"><span class="td-mono">${currency.format(r.monto_total, 'USD')}</span></td>
@@ -1169,6 +1218,163 @@ function renderPreviewCobranzas() {
       </div>
     </div>
   `;
+}
+
+// =============================================================================
+// MODAL: ASIGNAR CLIENTE EXISTENTE A UNA FILA DEL PREVIEW
+// =============================================================================
+// Estado del picker — vive a nivel módulo. _pickerForRowIdx es el índice de
+// la fila que se está editando; _pickerQuery es lo que escribió el usuario.
+let _pickerForRowIdx = null;
+let _pickerQuery = '';
+
+/**
+ * Abre el modal de buscador de clientes para asignar uno a una fila del preview.
+ * Solo se permite desde celdas de cliente nuevo o ya asignadas manualmente.
+ */
+function openCustomerPickerForRow(idx) {
+  _pickerForRowIdx = idx;
+  _pickerQuery = '';
+  renderCustomerPickerModal();
+}
+
+/**
+ * Renderiza el modal con el buscador. Se llama tanto al abrir como cuando
+ * el usuario tipea (para refrescar la lista filtrada en vivo).
+ */
+function renderCustomerPickerModal() {
+  if (_pickerForRowIdx == null) return;
+  const row = parsedRows[_pickerForRowIdx];
+  if (!row) return;
+
+  const allCustomers = db.getAll(db.COLLECTIONS.customers) || [];
+  const q = _pickerQuery.trim().toLowerCase();
+  let filtered = allCustomers;
+  if (q) {
+    filtered = allCustomers.filter(c => {
+      const name = (c.name || '').toLowerCase();
+      const code = (c.code || '').toLowerCase();
+      const rif = (c.rif || '').toLowerCase();
+      return name.includes(q) || code.includes(q) || rif.includes(q);
+    });
+  }
+  // Limitar a 50 para no saturar el DOM
+  const limited = filtered.slice(0, 50);
+
+  ui.openModal({
+    size: 'md',
+    title: `Asignar cliente existente`,
+    subtitle: `Para la fila: "${row.razon_social}"`,
+    body: `
+      <div style="margin-bottom:14px;">
+        <input id="customer-picker-search" class="input" autofocus
+               placeholder="Buscar por nombre, código o RIF..."
+               value="${ui.escape(_pickerQuery)}"
+               oninput="onCustomerPickerSearch(this.value)"
+               style="font-size:13px;">
+      </div>
+      <div style="font-size:11.5px;color:var(--ink-3);margin-bottom:8px;">
+        ${filtered.length} cliente(s) encontrado(s)${filtered.length > 50 ? ` (mostrando primeros 50)` : ''}
+      </div>
+      <div style="max-height:340px;overflow-y:auto;border:1px solid var(--border);border-radius:6px;">
+        ${limited.length === 0 ? `
+          <div style="padding:24px;text-align:center;color:var(--ink-3);font-size:13px;">
+            ${q ? `Sin coincidencias para "<strong>${ui.escape(_pickerQuery)}</strong>"` : 'Sin clientes en el sistema'}
+          </div>
+        ` : limited.map(c => `
+          <div onclick="assignCustomerToRow('${c.id}')"
+               style="padding:10px 12px;cursor:pointer;border-bottom:1px solid var(--border);transition:background 0.1s;"
+               onmouseover="this.style.background='var(--surface-2)'"
+               onmouseout="this.style.background='white'">
+            <div style="display:flex;justify-content:space-between;gap:8px;align-items:center;">
+              <div style="flex:1;min-width:0;">
+                <div class="td-strong" style="font-size:13px;">${ui.escape(c.name)}</div>
+                <div class="text-muted" style="font-size:11px;margin-top:1px;">
+                  <span class="td-mono">${ui.escape(c.code || '')}</span>
+                  ${c.rif ? ` · RIF: ${ui.escape(c.rif)}` : ''}
+                  ${c.customerType ? ` · ${ui.escape(c.customerType)}` : ''}
+                </div>
+              </div>
+              <button class="btn btn-primary btn-sm" style="font-size:11px;padding:4px 10px;flex-shrink:0;pointer-events:none;">Asignar</button>
+            </div>
+          </div>
+        `).join('')}
+      </div>
+    `,
+    footer: `<button class="btn btn-secondary" onclick="closeCustomerPicker()">Cancelar</button>`
+  });
+}
+
+function onCustomerPickerSearch(val) {
+  _pickerQuery = val;
+  // Actualizar SOLO la lista, no el modal entero — así no perdemos foco del input
+  // Para mantenerlo simple, re-renderizamos todo el modal y autofocus se encarga.
+  // Pero queremos mantener la posición del cursor: usamos preserveFocus.
+  if (ui.preserveFocus) {
+    ui.preserveFocus(() => renderCustomerPickerModal());
+  } else {
+    renderCustomerPickerModal();
+  }
+}
+
+function closeCustomerPicker() {
+  _pickerForRowIdx = null;
+  _pickerQuery = '';
+  ui.closeModal();
+}
+
+/**
+ * Asigna un cliente existente a la fila actual del preview.
+ * Si hay otras filas en el Excel con el mismo nombre (razón social), también
+ * se les aplica la misma asignación — ahorra clicks.
+ */
+function assignCustomerToRow(customerId) {
+  if (_pickerForRowIdx == null) return;
+  const targetRow = parsedRows[_pickerForRowIdx];
+  if (!targetRow) return;
+  const customer = db.getById(db.COLLECTIONS.customers, customerId);
+  if (!customer) {
+    ui.toast('Cliente no encontrado', 'error');
+    return;
+  }
+  const targetNameLower = (targetRow.razon_social || '').toLowerCase().trim();
+
+  // Aplicar la asignación a TODAS las filas con la misma razón social que estén
+  // en estado "cliente nuevo" o ya asignadas manualmente. No tocamos filas con
+  // matcheo automático (el usuario no las marcó como problema).
+  let applied = 0;
+  parsedRows.forEach(r => {
+    if (r._error) return;
+    const rowNameLower = (r.razon_social || '').toLowerCase().trim();
+    if (rowNameLower !== targetNameLower) return;
+    // Solo modificar filas que estaban como nuevas o ya con asignación manual
+    if (!r._customerIsNew && !r._manuallyAssigned) return;
+    r._customerId = customer.id;
+    r._customerCode = customer.code;
+    r._customerName = customer.name;
+    r._customerIsNew = false;
+    r._manuallyAssigned = true;
+    applied++;
+  });
+
+  closeCustomerPicker();
+  ui.toast(`✓ Asignado "${customer.name}" a ${applied} fila(s)`, 'success', 3500);
+  render();
+}
+
+/**
+ * Deshace una asignación manual: la fila vuelve a estar como "cliente nuevo".
+ * Solo afecta a ESTA fila (no a las hermanas con el mismo nombre).
+ */
+function clearCustomerAssignment(idx) {
+  const row = parsedRows[idx];
+  if (!row || !row._manuallyAssigned) return;
+  row._customerId = null;
+  row._customerCode = null;
+  row._customerName = null;
+  row._customerIsNew = true;
+  row._manuallyAssigned = false;
+  render();
 }
 
 /**
@@ -1315,7 +1521,9 @@ render();
 
 Object.assign(window, {
   setTab, onCsvChange, clearCsv, parseCsv, confirmImport, onExcelFileChange,
-  setCobranzasVendor
+  setCobranzasVendor,
+  openCustomerPickerForRow, closeCustomerPicker, onCustomerPickerSearch,
+  assignCustomerToRow, clearCustomerAssignment
 });
 
 }); // end moduleInit
