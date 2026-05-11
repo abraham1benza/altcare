@@ -183,6 +183,17 @@ function renderList() {
         })()}</td>
         <td>${d.cancelled ? '<span class="badge badge-cancelled">Anulada</span>' : `<span class="badge ${sBadge}">${sales.STATUS[d.status]?.label || d.status}</span>`}</td>
         <td class="td-actions" onclick="event.stopPropagation()">
+          ${(() => {
+            // Botón "Cambiar vencimiento": solo si el doc está emitido, no anulado,
+            // es NE/FACTURA, y todavía tiene saldo pendiente.
+            const remaining = (d.total || 0) - (d.paidAmount || 0);
+            const isPending = !d.cancelled
+              && (d.type === 'NOTA_ENTREGA' || d.type === 'FACTURA')
+              && remaining > 0.01;
+            return isPending
+              ? `<button class="btn-icon" onclick="openChangeDueDate('${d.id}')" title="Cambiar fecha de vencimiento">📅</button>`
+              : '';
+          })()}
           <button class="btn-icon" onclick="openDetail('${d.id}')">${ui.icon('edit')}</button>
         </td>
       </tr>`;
@@ -1428,6 +1439,7 @@ function renderDetail() {
       actions += `<button class="btn btn-primary" onclick="convertTo('${d.id}','FACTURA')">${ui.icon('check')} Convertir a Factura</button>`;
       actions += `<button class="btn btn-secondary" onclick="printDoc('${d.id}')">${ui.icon('download')} Imprimir Nota</button>`;
       if (remaining > 0.01 && d.status !== 'PAID') {
+        actions += `<button class="btn btn-secondary" onclick="openChangeDueDate('${d.id}')" title="Cambiar fecha de vencimiento (días de gracia)">📅 Cambiar vencimiento</button>`;
         actions += `<a href="pagos.html?doc=${d.id}" class="btn btn-primary">${ui.icon('plus')} Registrar cobro</a>`;
       }
     } else if (d.type === 'FACTURA') {
@@ -1440,6 +1452,7 @@ function renderDetail() {
       }
       actions += `<button class="btn btn-secondary" onclick="printDoc('${d.id}')">${ui.icon('download')} Imprimir factura</button>`;
       if (remaining > 0.01 && d.status !== 'PAID') {
+        actions += `<button class="btn btn-secondary" onclick="openChangeDueDate('${d.id}')" title="Cambiar fecha de vencimiento (días de gracia)">📅 Cambiar vencimiento</button>`;
         actions += `<a href="pagos.html?doc=${d.id}" class="btn btn-primary">${ui.icon('plus')} Registrar cobro</a>`;
       }
       // Botón de Nota de Crédito (solo facturas no totalmente acreditadas)
@@ -2821,6 +2834,121 @@ function confirmCancelNC(e, noteId) {
   }
 }
 
+/**
+ * Abre un modal para cambiar la fecha de vencimiento de un documento.
+ * Útil cuando se le quiere dar días de gracia a un cliente sin tocar la
+ * fecha de emisión. Solo se llama desde la lista o detalle cuando el doc
+ * tiene saldo pendiente (la UI filtra el botón).
+ *
+ * Permite cambiar la fecha directamente o sumar N días al vencimiento actual.
+ */
+function openChangeDueDate(docId) {
+  const d = db.getById(db.COLLECTIONS.salesOrders, docId);
+  if (!d) { ui.toast('Documento no encontrado', 'error'); return; }
+
+  const today = new Date().toISOString().slice(0, 10);
+  const currentDue = d.dueDate || d.issueDate || today;
+
+  ui.openModal({
+    size: 'sm',
+    title: 'Cambiar fecha de vencimiento',
+    subtitle: `${d.code}${d.invoiceNumber ? ' · N° '+d.invoiceNumber : ''} · ${d.customerName || ''}`,
+    body: `
+      <div style="font-size:12.5px;color:var(--ink-2);line-height:1.5;margin-bottom:14px;">
+        Cambiá la fecha de vencimiento para darle días de gracia al cliente
+        sin modificar la fecha de emisión original. La nueva fecha queda fija
+        (no se recalcula automáticamente).
+      </div>
+
+      <div class="form-grid form-grid-2" style="margin-bottom:14px;">
+        <div class="field">
+          <label class="field-label">Vencimiento actual</label>
+          <div class="input" style="background:var(--surface-2);font-family:var(--font-mono);">${ui.formatDate(currentDue)}</div>
+        </div>
+        <div class="field">
+          <label class="field-label">Fecha de emisión</label>
+          <div class="input" style="background:var(--surface-2);font-family:var(--font-mono);">${ui.formatDate(d.issueDate)}</div>
+        </div>
+      </div>
+
+      <form id="dd-form" onsubmit="confirmChangeDueDate(event, '${docId}')">
+        <div class="field" style="margin-bottom:14px;">
+          <label class="field-label">Nueva fecha de vencimiento *</label>
+          <input class="input" type="date" name="newDueDate" required value="${currentDue}"
+                 oninput="document.getElementById('dd-add-days').value='';">
+          <div class="field-hint">O usá el atajo abajo para sumar días al vencimiento actual.</div>
+        </div>
+        <div class="field" style="margin-bottom:14px;">
+          <label class="field-label">Atajo: sumar días de gracia</label>
+          <div style="display:flex;gap:8px;align-items:center;">
+            <input id="dd-add-days" class="input" type="number" min="1" max="365" placeholder="ej. 15"
+                   style="max-width:120px;text-align:right;font-family:var(--font-mono);"
+                   oninput="ddRecalc('${currentDue}', this.value)">
+            <span style="font-size:12px;color:var(--ink-3);">días de gracia → suma al vencimiento actual</span>
+          </div>
+        </div>
+        <div class="field" style="margin-bottom:0;">
+          <label class="field-label">Motivo del cambio (opcional)</label>
+          <input class="input" name="reason" placeholder="ej. acordado por WhatsApp, problema de cobranza...">
+          <div class="field-hint">Queda registrado en las notas del documento para trazabilidad.</div>
+        </div>
+      </form>
+    `,
+    footer: `
+      <button class="btn btn-secondary" onclick="ui.closeModal()">Cancelar</button>
+      <button class="btn btn-primary" onclick="document.getElementById('dd-form').requestSubmit()">${ui.icon('check')||'✓'} Guardar nueva fecha</button>
+    `
+  });
+}
+
+/** Recalcula el input de fecha al cambiar el shortcut de "sumar días" */
+function ddRecalc(currentDueIso, daysVal) {
+  const n = parseInt(daysVal, 10);
+  if (isNaN(n) || n < 1) return;
+  const [y, m, d] = currentDueIso.split('-').map(x => parseInt(x, 10));
+  const dt = new Date(y, m - 1, d);
+  dt.setDate(dt.getDate() + n);
+  const newIso = `${dt.getFullYear()}-${String(dt.getMonth()+1).padStart(2,'0')}-${String(dt.getDate()).padStart(2,'0')}`;
+  const dateInput = document.querySelector('#dd-form input[name="newDueDate"]');
+  if (dateInput) dateInput.value = newIso;
+}
+
+/** Guarda la nueva fecha de vencimiento y registra el cambio en las notas. */
+function confirmChangeDueDate(e, docId) {
+  e.preventDefault();
+  const data = ui.formData(e.target);
+  if (!data.newDueDate) { ui.toast('Falta la nueva fecha', 'error'); return; }
+
+  const d = db.getById(db.COLLECTIONS.salesOrders, docId);
+  if (!d) { ui.toast('Documento no encontrado', 'error'); return; }
+
+  const oldDue = d.dueDate || '—';
+  const newDue = data.newDueDate;
+  if (oldDue === newDue) { ui.toast('La fecha no cambió', 'info'); ui.closeModal(); return; }
+
+  // Validación: no permitir vencimiento anterior a la emisión
+  if (d.issueDate && newDue < d.issueDate) {
+    ui.toast('El vencimiento no puede ser anterior a la fecha de emisión', 'error', 4000);
+    return;
+  }
+
+  // Aplicar cambio
+  d.dueDate = newDue;
+  d.dueDateAuto = false;  // marca para que sales._recalcDueDate no la toque
+
+  // Registrar el cambio en las notas con timestamp y motivo
+  const stamp = new Date().toISOString().slice(0, 16).replace('T', ' ');
+  const reason = (data.reason || '').trim();
+  const logLine = `[${stamp}] Vencimiento cambiado de ${oldDue} a ${newDue}${reason ? ' · Motivo: ' + reason : ''}`;
+  d.notes = d.notes ? (d.notes + '\n' + logLine) : logLine;
+
+  db.save(db.COLLECTIONS.salesOrders, d);
+  ui.closeModal();
+  ui.toast(`✓ Vencimiento actualizado a ${ui.formatDate(newDue)}`, 'success');
+  // Si estamos en la vista de detalle, refrescamos
+  if (typeof render === 'function') render();
+}
+
 function cancelDoc(docId) {
   const d = db.getById(db.COLLECTIONS.salesOrders, docId);
   const hasAllocations = (d.items || []).some(i => (i.allocations||[]).length > 0);
@@ -3571,6 +3699,9 @@ Object.assign(window, {
   confirmEditDelivery: typeof confirmEditDelivery !== 'undefined' ? confirmEditDelivery : undefined,
   confirmRevertDelivery: typeof confirmRevertDelivery !== 'undefined' ? confirmRevertDelivery : undefined,
   cancelDoc: typeof cancelDoc !== 'undefined' ? cancelDoc : undefined,
+  openChangeDueDate: typeof openChangeDueDate !== 'undefined' ? openChangeDueDate : undefined,
+  confirmChangeDueDate: typeof confirmChangeDueDate !== 'undefined' ? confirmChangeDueDate : undefined,
+  ddRecalc: typeof ddRecalc !== 'undefined' ? ddRecalc : undefined,
   confirmCancel: typeof confirmCancel !== 'undefined' ? confirmCancel : undefined,
   // Notas de Crédito
   renderCreditNotesSection: typeof renderCreditNotesSection !== 'undefined' ? renderCreditNotesSection : undefined,
