@@ -110,10 +110,23 @@ function renderList() {
     facturas: all.filter(d => d.type === 'FACTURA').length
   };
 
-  // Total facturado por moneda
+  const isGerencial = (typeof auth !== 'undefined' && auth.getActiveMode() === 'gerencial');
+
+  // Total facturado/vendido por moneda.
+  //   - En modo Gerencial: cuenta TODO lo vendido (NE despachadas/entregadas + Facturas)
+  //     porque es la visión real de cuánto se movió.
+  //   - En modo Contable: solo FACTURAS porque es lo que entra al libro fiscal.
   const billedByCcy = { VES: 0, USD: 0, EUR: 0 };
-  all.filter(d => d.type === 'FACTURA' && !d.cancelled).forEach(d => {
-    billedByCcy[d.currency] = (billedByCcy[d.currency] || 0) + d.total;
+  all.forEach(d => {
+    if (d.cancelled) return;
+    if (d.type === 'FACTURA') {
+      billedByCcy[d.currency] = (billedByCcy[d.currency] || 0) + (d.total || 0);
+    } else if (isGerencial && d.type === 'NOTA_ENTREGA') {
+      // En gerencial sumamos NE solo si efectivamente se despachó/entregó
+      if (d.deliveryStatus === 'DESPACHADO' || d.deliveryStatus === 'ENTREGADO') {
+        billedByCcy[d.currency] = (billedByCcy[d.currency] || 0) + (d.total || 0);
+      }
+    }
   });
   const fmtMulti = (byCcy) => {
     const parts = [];
@@ -123,8 +136,16 @@ function renderList() {
     return parts.length ? parts : ['0,00'];
   };
   const billedParts = fmtMulti(billedByCcy);
+  const billedLabel = isGerencial ? 'Total vendido' : 'Total facturado';
 
-  const isGerencial = (typeof auth !== 'undefined' && auth.getActiveMode() === 'gerencial');
+  // KPI: Notas pendientes (NE entregadas/despachadas con saldo > 0 sin anular).
+  // Usamos sales.isReceivable que ya filtra por todas las condiciones.
+  const pendingNotes = all.filter(d => d.type === 'NOTA_ENTREGA' && sales.isReceivable(d));
+  const pendingNotesAmount = { VES: 0, USD: 0, EUR: 0 };
+  pendingNotes.forEach(d => {
+    pendingNotesAmount[d.currency] = (pendingNotesAmount[d.currency] || 0) + ((d.total||0) - (d.paidAmount||0));
+  });
+  const pendingNotesParts = fmtMulti(pendingNotesAmount);
 
   const tableHtml = docs.length ? `<table>
     <thead><tr>
@@ -215,12 +236,19 @@ function renderList() {
         </div>
       </div>
 
-      <div class="grid grid-4 mb-24">
+      <div class="grid grid-5 mb-24">
         <div class="kpi"><div class="kpi-label">Pedidos abiertos</div><div class="kpi-value">${all.filter(d=>d.type==='PEDIDO'&&!d.cancelled).length}</div><div class="kpi-value-sub">en gestión</div></div>
         <div class="kpi"><div class="kpi-label">Cotizaciones</div><div class="kpi-value">${all.filter(d=>d.type==='COTIZACION'&&!d.cancelled).length}</div><div class="kpi-value-sub">enviadas</div></div>
         <div class="kpi"><div class="kpi-label">Facturas</div><div class="kpi-value">${all.filter(d=>d.type==='FACTURA'&&!d.cancelled).length}</div><div class="kpi-value-sub">emitidas</div></div>
         <div class="kpi">
-          <div class="kpi-label">Total facturado</div>
+          <div class="kpi-label">Notas pendientes</div>
+          <div class="kpi-value" style="color:${pendingNotes.length>0?'var(--warning, #c2410c)':'var(--ink-3)'};">${pendingNotes.length}</div>
+          ${pendingNotes.length > 0
+            ? `<div style="display:flex;flex-direction:column;gap:1px;margin-top:2px;">${pendingNotesParts.map(p => `<div style="font-family:var(--font-mono);font-size:11px;color:var(--ink-2);line-height:1.2;">${p}</div>`).join('')}</div>`
+            : `<div class="kpi-value-sub">sin pendientes</div>`}
+        </div>
+        <div class="kpi">
+          <div class="kpi-label">${billedLabel}</div>
           ${billedParts.length === 1
             ? `<div class="kpi-value" style="color:var(--accent-ink);font-size:22px;">${billedParts[0]}</div>`
             : `<div style="display:flex;flex-direction:column;gap:2px;margin-top:4px;">${billedParts.map(p => `<div style="font-family:var(--font-display);font-size:16px;letter-spacing:-0.02em;color:var(--accent-ink);line-height:1.2;">${p}</div>`).join('')}</div>`}
@@ -256,12 +284,11 @@ function renderList() {
   });
 }
 
-/** Cuadro de Cuentas por Cobrar: facturas con saldo pendiente, ordenadas por vencimiento */
+/** Cuadro de Cuentas por Cobrar: facturas Y NEs entregadas/despachadas con saldo pendiente */
 function renderCuentasPorCobrar(allDocs) {
   const today = new Date().toISOString().slice(0,10);
   let pending = allDocs
-    .filter(d => d.type === 'FACTURA' && !d.cancelled)
-    .filter(d => (d.total - (d.paidAmount||0)) > 0.01)
+    .filter(d => sales.isReceivable(d))
     .sort((a, b) => {
       if (!a.dueDate) return 1;
       if (!b.dueDate) return -1;
@@ -277,6 +304,7 @@ function renderCuentasPorCobrar(allDocs) {
     total:         d => d.total,
     paidAmount:    d => d.paidAmount || 0,
     remaining:     d => d.total - (d.paidAmount || 0),
+    type:          d => d.type,
     status:        d => d.status
   });
 
@@ -286,10 +314,17 @@ function renderCuentasPorCobrar(allDocs) {
         <div class="card-title" style="display:flex;align-items:center;gap:8px;">💰 Cuentas por cobrar</div>
       </div>
       <div style="padding:32px;text-align:center;color:var(--ink-3);">
-        ✓ No tenés facturas pendientes de cobro
+        ✓ No tenés documentos pendientes de cobro
       </div>
     </div>`;
   }
+
+  // Desglose: cuántas facturas y cuántas NEs hay
+  const facturasCount = pending.filter(d => d.type === 'FACTURA').length;
+  const notasCount = pending.filter(d => d.type === 'NOTA_ENTREGA').length;
+  const subtitleParts = [];
+  if (facturasCount > 0) subtitleParts.push(`${facturasCount} factura${facturasCount!==1?'s':''}`);
+  if (notasCount > 0) subtitleParts.push(`${notasCount} nota${notasCount!==1?'s':''} de entrega`);
 
   // Total por cobrar en USD
   const totalUSD = pending.reduce((s, d) => {
@@ -306,13 +341,14 @@ function renderCuentasPorCobrar(allDocs) {
     <div style="padding:18px 20px;border-bottom:1px solid var(--border);background:linear-gradient(180deg, #d1fae5 0%, transparent 100%);display:flex;justify-content:space-between;align-items:center;">
       <div>
         <div class="card-title" style="display:flex;align-items:center;gap:8px;">💰 Cuentas por cobrar</div>
-        <div class="text-muted" style="font-size:11px;margin-top:2px;">${pending.length} factura${pending.length!==1?'s':''} con saldo pendiente · Total: ${currency.format(totalUSD, 'USD')} aprox.</div>
+        <div class="text-muted" style="font-size:11px;margin-top:2px;">${subtitleParts.join(' · ')} · Total: ${currency.format(totalUSD, 'USD')} aprox.</div>
       </div>
     </div>
     <div class="table-wrap" style="border-radius:0;">
       <table>
         <thead><tr>
-          <th onclick="onSortCXC('invoiceNumber')" style="cursor:pointer;user-select:none;">${ui.sortHeader('Factura', 'invoiceNumber', sortCXC)}</th>
+          <th onclick="onSortCXC('invoiceNumber')" style="cursor:pointer;user-select:none;">${ui.sortHeader('Documento', 'invoiceNumber', sortCXC)}</th>
+          <th onclick="onSortCXC('type')" style="cursor:pointer;user-select:none;">${ui.sortHeader('Tipo', 'type', sortCXC)}</th>
           <th onclick="onSortCXC('customerName')" style="cursor:pointer;user-select:none;">${ui.sortHeader('Cliente', 'customerName', sortCXC)}</th>
           <th onclick="onSortCXC('issueDate')" style="cursor:pointer;user-select:none;">${ui.sortHeader('Emitida', 'issueDate', sortCXC)}</th>
           <th onclick="onSortCXC('dueDate')" style="cursor:pointer;user-select:none;">${ui.sortHeader('Vence', 'dueDate', sortCXC)}</th>
@@ -332,12 +368,14 @@ function renderCuentasPorCobrar(allDocs) {
             : `clientes.html`;
           const btnTitle = hasPhone ? 'Avisar al cliente por WhatsApp' : 'Sin WhatsApp · click para agregarlo';
           const s = sales.STATUS[d.status] || { label: d.status, color: 'badge-plain' };
+          const isNE = d.type === 'NOTA_ENTREGA';
 
           return `<tr ${overdue?'style="background:#fef2f2;"':''}>
             <td>
               <span class="td-mono td-strong">${d.invoiceNumber||d.code}</span>
               ${d.controlNumber ? `<div class="text-muted" style="font-size:11px;">Ctrl: ${d.controlNumber}</div>` : ''}
             </td>
+            <td><span class="badge ${isNE?'badge-plain':'badge-invoice'}" style="font-size:10px;">${isNE?'Nota Ent.':'Factura'}</span></td>
             <td>${ui.escape(d.customerName)}</td>
             <td><span class="text-muted" style="font-size:12px;">${ui.formatDate(d.issueDate)}</span></td>
             <td>

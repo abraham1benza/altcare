@@ -75,9 +75,9 @@ function renderList() {
         .sort((a,b) => (a.dueDate||a.issueDate||'').localeCompare(b.dueDate||b.issueDate||''))
     : []; // vendedores y demás: vacío
 
-  // Cuentas por cobrar (facturas venta pendientes) - filtradas por visibilidad
+  // Cuentas por cobrar (facturas + NEs despachadas/entregadas con saldo) - filtradas por visibilidad
   let salesDocs = db.getAll(db.COLLECTIONS.salesOrders)
-    .filter(d => !d.cancelled && d.type === 'FACTURA' && (d.total - (d.paidAmount||0)) > 0.01);
+    .filter(d => sales.isReceivable(d));
   if (!isAdmin) {
     salesDocs = salesDocs.filter(d =>
       (d.salespersonId && visibleUsers.includes(d.salespersonId)) ||
@@ -166,7 +166,7 @@ function renderList() {
         <div class="kpi">
           <div class="kpi-label">Por cobrar</div>
           ${renderMultiKPI(cxcByCcy, 'var(--accent-ink)')}
-          <div class="kpi-value-sub">${salesDocs.length} factura${salesDocs.length!==1?'s':''}${cxcOverdue?` · ${cxcOverdue} vencida${cxcOverdue!==1?'s':''}`:''}</div>
+          <div class="kpi-value-sub">${salesDocs.length} documento${salesDocs.length!==1?'s':''}${cxcOverdue?` · ${cxcOverdue} vencido${cxcOverdue!==1?'s':''}`:''}</div>
         </div>
         <div class="kpi">
           <div class="kpi-label">Disponible en bancos</div>
@@ -226,10 +226,10 @@ function renderCXPTable(invoices) {
 }
 
 function renderCXCTable(docs) {
-  if (!docs.length) return '<div class="empty-state"><div class="empty-state-title">Sin facturas por cobrar</div><div class="empty-state-text">Todas tus facturas de venta están cobradas.</div></div>';
+  if (!docs.length) return '<div class="empty-state"><div class="empty-state-title">Sin documentos por cobrar</div><div class="empty-state-text">Todas tus facturas y notas de entrega entregadas están cobradas.</div></div>';
   const today = new Date().toISOString().slice(0,10);
   return `<div class="table-wrap"><table>
-    <thead><tr><th>Factura</th><th>Cliente</th><th>Emitida</th><th>Vence</th><th style="text-align:right;">Total</th><th style="text-align:right;">Cobrado</th><th style="text-align:right;">Pendiente</th><th>Moneda</th><th style="text-align:right;width:240px;">Acciones</th></tr></thead>
+    <thead><tr><th>Documento</th><th>Tipo</th><th>Cliente</th><th>Emitida</th><th>Vence</th><th style="text-align:right;">Total</th><th style="text-align:right;">Cobrado</th><th style="text-align:right;">Pendiente</th><th>Moneda</th><th style="text-align:right;width:240px;">Acciones</th></tr></thead>
     <tbody>${docs.map(d => {
       const remaining = d.total - (d.paidAmount||0);
       const overdue = d.dueDate && d.dueDate < today;
@@ -242,8 +242,10 @@ function renderCXCTable(docs) {
         ? `notificaciones.html?quickSend=1&type=customer&id=${d.customerId}&template=COBRO_PENDIENTE_CLIENTE&docId=${d.id}`
         : `clientes.html`;
       const btnTitle = hasPhone ? 'Enviar recordatorio por WhatsApp' : 'Sin WhatsApp/teléfono guardado · click para agregarlo';
+      const isNE = d.type === 'NOTA_ENTREGA';
       return `<tr>
-        <td><span class="td-mono td-strong">${d.invoiceNumber||d.code}</span><div class="text-muted" style="font-size:11px;">Ctrl: ${d.controlNumber||'—'}</div></td>
+        <td><span class="td-mono td-strong">${d.invoiceNumber||d.code}</span>${d.controlNumber?`<div class="text-muted" style="font-size:11px;">Ctrl: ${d.controlNumber}</div>`:''}</td>
+        <td><span class="badge ${isNE?'badge-plain':'badge-invoice'}" style="font-size:10px;">${isNE?'Nota Ent.':'Factura'}</span></td>
         <td>${ui.escape(d.customerName)}</td>
         <td><span class="text-muted">${ui.formatDate(d.issueDate)}</span></td>
         <td>${d.dueDate ? `<span class="badge ${dueClass}">${ui.formatDate(d.dueDate)}</span>` : '<span class="td-muted">—</span>'}</td>
