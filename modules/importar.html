@@ -875,12 +875,15 @@ function setCobranzasVendor(uid) {
 
 /**
  * UI del picker de vendedora — paso 1 obligatorio antes de subir el Excel.
- * Muestra usuarios con rol vendedor/admin/gerente.
+ * Muestra todos los usuarios activos del sistema. La vendedora puede ser
+ * cualquier usuario — el rol real en este sistema se llama "ventas", no
+ * "vendedor", así que filtrar por rol específico dejaba afuera a quienes
+ * correspondía. Dejamos al usuario decidir.
  */
 function renderCobranzasVendorPicker() {
   const users = (db.getAll(db.COLLECTIONS.users) || []).filter(u => {
-    const role = (u.role || '').toLowerCase();
-    return role === 'vendedor' || role === 'admin' || role === 'gerente';
+    // Solo usuarios activos (si no tiene el campo, asumimos que sí está activo)
+    return u.active !== false;
   });
   const selected = users.find(u => u.id === cobranzasVendorId);
 
@@ -897,8 +900,14 @@ function renderCobranzasVendorPicker() {
           </div>
         </div>
         <select class="select" style="max-width:300px;" onchange="setCobranzasVendor(this.value)">
-          <option value="">— Elegir vendedora —</option>
-          ${users.map(u => `<option value="${u.id}" ${u.id===cobranzasVendorId?'selected':''}>${ui.escape(u.fullName || u.username || '—')} (${u.role})</option>`).join('')}
+          <option value="">— Elegir usuario —</option>
+          ${users.map(u => {
+            // Mostrar rol legible (no la clave interna)
+            const roleLabels = { admin:'admin', gerente:'gerente', contador:'contador', ventas:'ventas', compras:'compras', produccion:'producción', almacen:'almacén', calidad:'calidad' };
+            const roleLabel = roleLabels[u.role] || u.role || '—';
+            const name = u.fullName || u.username || '—';
+            return `<option value="${u.id}" ${u.id===cobranzasVendorId?'selected':''}>${ui.escape(name)} (${ui.escape(roleLabel)})</option>`;
+          }).join('')}
         </select>
       </div>
       ${selected ? `<div style="margin-top:10px;padding:8px 12px;background:white;border-radius:6px;font-size:12px;color:#065f46;border:1px solid #6ee7b7;">
