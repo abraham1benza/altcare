@@ -381,7 +381,13 @@ const reports = {
     const docs = db.getAll(db.COLLECTIONS.salesOrders)
       .filter(d => d.customerId === customerId && (d.type === 'FACTURA' || d.type === 'NOTA_ENTREGA') && !d.cancelled && this.inRange(d.issueDate, from, to))
       .sort((a,b) => (a.issueDate||'').localeCompare(b.issueDate||''));
-    const allPayments = db.query(db.COLLECTIONS.payments, p => p.direction === 'IN' && p.counterpartyId === customerId && this.inRange(p.date, from, to));
+    // Trae cobros normales (IN) y ajustes (ADJUSTMENT_IN reduce saldo, ADJUSTMENT_OUT aumenta saldo).
+    // Los ajustes están en la misma colección de payments con direction distinto.
+    const allPayments = db.query(db.COLLECTIONS.payments, p =>
+      (p.direction === 'IN' || p.direction === 'ADJUSTMENT_IN' || p.direction === 'ADJUSTMENT_OUT') &&
+      p.counterpartyId === customerId &&
+      this.inRange(p.date, from, to)
+    );
 
     // Movimientos: cargo (factura/NE) y abono (pago)
     const movements = [];
@@ -405,16 +411,46 @@ const reports = {
         const acc = db.getById(db.COLLECTIONS.bankAccounts, p.bankAccountId);
         if (acc) bankAccountIsCompany = acc.countsForFiscal !== false;
       }
+
+      // Distinguir entre cobro normal y ajuste
+      const isAdjIn  = p.direction === 'ADJUSTMENT_IN';
+      const isAdjOut = p.direction === 'ADJUSTMENT_OUT';
+      const isAdj    = isAdjIn || isAdjOut;
+
+      let type, description, debit, credit;
+      if (isAdjIn) {
+        // Ajuste negativo: reduce el saldo (igual que un cobro)
+        type = 'ADJUSTMENT_IN';
+        const reasonLbl = p.adjustmentReasonLabel || 'Ajuste';
+        description = `Ajuste − ${reasonLbl}${p.notes?' · '+p.notes:''}${p.relatedDocCode?' · ref '+p.relatedDocCode:''}`;
+        debit = 0;
+        credit = p.amountInDocCurrency || p.amount;
+      } else if (isAdjOut) {
+        // Ajuste positivo: aumenta el saldo
+        type = 'ADJUSTMENT_OUT';
+        const reasonLbl = p.adjustmentReasonLabel || 'Ajuste';
+        description = `Ajuste + ${reasonLbl}${p.notes?' · '+p.notes:''}${p.relatedDocCode?' · ref '+p.relatedDocCode:''}`;
+        debit = p.amountInDocCurrency || p.amount;
+        credit = 0;
+      } else {
+        // Cobro normal
+        type = 'PAYMENT';
+        description = `Cobro · ${p.paymentMethodName||''}${p.reference?' · '+p.reference:''}${!bankAccountIsCompany?' · 👤 cuenta personal':''}`;
+        debit = 0;
+        credit = p.amountInDocCurrency;
+      }
+
       movements.push({
         date: p.date,
-        type: 'PAYMENT',
+        type,
         ref: p.code,
-        description: `Cobro · ${p.paymentMethodName||''}${p.reference?' · '+p.reference:''}${!bankAccountIsCompany?' · 👤 cuenta personal':''}`,
-        debit: 0,
-        credit: p.amountInDocCurrency,
-        currency: p.docCurrency,
+        description,
+        debit,
+        credit,
+        currency: p.docCurrency || p.currency,
         paymentId: p.id,
-        bankAccountIsCompany
+        bankAccountIsCompany,
+        isAdjustment: isAdj
       });
     });
     movements.sort((a,b) => (a.date||'').localeCompare(b.date||''));
