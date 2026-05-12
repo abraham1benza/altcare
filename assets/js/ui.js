@@ -497,9 +497,20 @@ const ui = {
   formData(formEl) {
     const data = {};
     formEl.querySelectorAll('[name]').forEach(el => {
-      if (el.type === 'checkbox') data[el.name] = el.checked;
-      else if (el.type === 'number') data[el.name] = el.value === '' ? null : parseFloat(el.value);
-      else data[el.name] = el.value;
+      if (el.type === 'checkbox') {
+        data[el.name] = el.checked;
+      } else if (el.type === 'radio') {
+        // Para radios solo nos interesa el value del que esté checked.
+        // Como hay múltiples elementos con el mismo name, sin esta lógica
+        // el último procesado pisa al anterior y `data[name]` siempre queda
+        // con el value del último radio del grupo, no el seleccionado.
+        if (el.checked) data[el.name] = el.value;
+        else if (!(el.name in data)) data[el.name] = null;  // inicializamos si nunca vimos checked
+      } else if (el.type === 'number') {
+        data[el.name] = el.value === '' ? null : parseFloat(el.value);
+      } else {
+        data[el.name] = el.value;
+      }
     });
     return data;
   },
