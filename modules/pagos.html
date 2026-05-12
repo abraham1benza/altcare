@@ -984,8 +984,8 @@ function openAdjustment(docId) {
     `
   });
 
-  // Inicializar opciones del select de motivos
-  onAdjustReasonChange();
+  // Inicializar opciones del select de motivos según el signo por defecto
+  onAdjustDirectionChange();
 }
 
 /** Actualiza el dropdown de motivos según signo elegido */
@@ -1003,8 +1003,9 @@ function onAdjustDirectionChange() {
 }
 
 function onAdjustReasonChange() {
-  // Reservado para validaciones futuras según motivo
-  onAdjustDirectionChange();
+  // Reservado para validaciones futuras según motivo.
+  // IMPORTANTE: no llamar a onAdjustDirectionChange() acá — eso regenera
+  // el innerHTML del select y se pierde la selección del usuario.
 }
 
 /** Muestra/oculta el campo de cuenta bancaria y el de sobrante */
