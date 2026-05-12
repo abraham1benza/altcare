@@ -34,6 +34,11 @@ let searchTerm = '';
 // Estado de ordenamiento por columna. null = orden por defecto (fecha desc).
 let sortDocs = null;       // { key, dir } para la lista de documentos
 let sortCXC = null;        // { key, dir } para el cuadro de cuentas por cobrar
+// === FLUJO DE APROBACIÓN ===
+// Tab activa en la lista. Admin/gerente ven 3 pestañas; vendedor solo Pendientes y CXC.
+// Las cotizaciones aparecen en "ventas" (van directo, sin aprobación).
+let listTab = 'sales';     // sales | pending | cxc
+let pendingVendorFilter = '';  // filtro por vendedor para admin/gerente
 
 // Aplicar filtro inicial desde URL (?filter=PEDIDO viene del dashboard)
 (function applyUrlFilter() {
@@ -75,6 +80,36 @@ function renderList() {
   }
 
   const all = docs;
+
+  // === SEPARAR POR APROVAL STATUS ===
+  // Pendientes: docs creados por vendedor que aún no se aprobaron.
+  // El resto (APPROVED, REJECTED viejo, sin approvalStatus = legacy) son "ventas".
+  // Cotizaciones (COTIZACION) van siempre a "ventas" — no necesitan aprobación.
+  const allPending = all.filter(d =>
+    d.approvalStatus === 'PENDING' &&
+    (d.type === 'PEDIDO' || d.type === 'NOTA_ENTREGA')
+  );
+  // Los rechazados (auditoría) también caen a "Pendientes" para que el vendedor pueda
+  // re-editarlos. Los "Ventas" son todo lo que NO esté pendiente ni rechazado.
+  const allRejected = all.filter(d =>
+    d.approvalStatus === 'REJECTED' &&
+    (d.type === 'PEDIDO' || d.type === 'NOTA_ENTREGA')
+  );
+  const pendingPlusRejected = [...allPending, ...allRejected];
+  const allSales = all.filter(d => !pendingPlusRejected.includes(d));
+
+  // Según pestaña, restringimos `docs` a uno de los dos universos.
+  // (CXC se renderiza aparte, no usa `docs` directamente).
+  if (listTab === 'pending') {
+    docs = pendingPlusRejected;
+    // Filtro adicional por vendedor (solo admin/gerente puede usarlo)
+    if (pendingVendorFilter && auth.canApproveSales && auth.canApproveSales()) {
+      docs = docs.filter(d => d.salespersonId === pendingVendorFilter);
+    }
+  } else if (listTab === 'sales') {
+    docs = allSales;
+  }
+
   if (typeFilter) docs = docs.filter(d => d.type === typeFilter || d.status === typeFilter);
   if (deliveryFilter) {
     docs = docs.filter(d => {
@@ -227,6 +262,66 @@ function renderList() {
       `<div class="empty-state"><div class="empty-state-icon">${ui.icon('flask')}</div><div class="empty-state-title">Sin documentos de venta</div><div class="empty-state-text">Crea tu primer pedido. Después podrás convertirlo en cotización o factura.</div></div>`
       : '<div class="empty-state"><div class="empty-state-title">Sin resultados</div></div>');
 
+  // === PESTAÑAS: Ventas / Pendientes / Cuentas por cobrar ===
+  // Conteos para los badges de las pestañas
+  const pendingCount = pendingPlusRejected.length;
+  const cxcCount = all.filter(d => sales.isReceivable(d)).length;
+  const canApprove = auth.canApproveSales && auth.canApproveSales();
+  const isSellerOnly = auth.isSeller && auth.isSeller();
+
+  // Lista de vendedores con docs pendientes (para filtro en pestaña Pendientes)
+  const pendingVendors = (() => {
+    if (!canApprove) return [];
+    const ids = new Set();
+    pendingPlusRejected.forEach(d => { if (d.salespersonId) ids.add(d.salespersonId); });
+    return Array.from(ids)
+      .map(id => db.getById(db.COLLECTIONS.users, id))
+      .filter(Boolean)
+      .sort((a, b) => (a.fullName||a.username||'').localeCompare(b.fullName||b.username||''));
+  })();
+
+  const tabsHtml = `
+    <div style="display:flex;border-bottom:1px solid var(--border);margin-bottom:20px;gap:0;">
+      <button class="btn btn-ghost" style="border-radius:0;border-bottom:2px solid ${listTab==='sales'?'var(--ink)':'transparent'};color:${listTab==='sales'?'var(--ink)':'var(--ink-3)'};font-weight:${listTab==='sales'?'600':'400'};" onclick="setListTab('sales')">Ventas (${allSales.length})</button>
+      <button class="btn btn-ghost" style="border-radius:0;border-bottom:2px solid ${listTab==='pending'?'var(--ink)':'transparent'};color:${listTab==='pending'?'var(--ink)':'var(--ink-3)'};font-weight:${listTab==='pending'?'600':'400'};" onclick="setListTab('pending')">⏳ Pendientes de aprobación${pendingCount>0?` <span class="badge badge-warning" style="margin-left:6px;font-size:10px;">${pendingCount}</span>`:''}</button>
+      <button class="btn btn-ghost" style="border-radius:0;border-bottom:2px solid ${listTab==='cxc'?'var(--ink)':'transparent'};color:${listTab==='cxc'?'var(--ink)':'var(--ink-3)'};font-weight:${listTab==='cxc'?'600':'400'};" onclick="setListTab('cxc')">💰 Cuentas por cobrar${cxcCount>0?` <span class="badge badge-plain" style="margin-left:6px;font-size:10px;">${cxcCount}</span>`:''}</button>
+    </div>
+  `;
+
+  // Render condicional según pestaña:
+  let mainContent;
+  if (listTab === 'cxc') {
+    mainContent = renderCuentasPorCobrar(all);
+  } else if (listTab === 'pending') {
+    mainContent = renderPendingTable(docs, pendingVendors, canApprove);
+  } else {
+    // Pestaña Ventas: tabla con toolbar de filtros (búsqueda, tipo, entrega)
+    mainContent = `
+      <div class="table-wrap">
+        <div class="table-toolbar">
+          <div class="search-box">${ui.icon('search')}<input id="search-input" class="input" type="search" placeholder="Buscar por código, factura o cliente..." value="${ui.escape(searchTerm)}" oninput="onSearch(this.value)"></div>
+          <select class="select" style="max-width:200px;" onchange="onTypeFilter(this.value)">
+            <option value="">Todos los tipos</option>
+            <option value="PEDIDO" ${typeFilter==='PEDIDO'?'selected':''}>Pedidos</option>
+            <option value="COTIZACION" ${typeFilter==='COTIZACION'?'selected':''}>Cotizaciones</option>
+            <option value="NOTA_ENTREGA" ${typeFilter==='NOTA_ENTREGA'?'selected':''}>Notas de Entrega</option>
+            <option value="FACTURA" ${typeFilter==='FACTURA'?'selected':''}>Facturas</option>
+            <option value="PAID" ${typeFilter==='PAID'?'selected':''}>Pagadas</option>
+            <option value="PARTIAL" ${typeFilter==='PARTIAL'?'selected':''}>Pago parcial</option>
+            <option value="CANCELLED" ${typeFilter==='CANCELLED'?'selected':''}>Anuladas</option>
+          </select>
+          <select class="select" style="max-width:190px;" onchange="onDeliveryFilter(this.value)">
+            <option value="">Todas las entregas</option>
+            <option value="PENDIENTE" ${deliveryFilter==='PENDIENTE'?'selected':''}>📦 Pendientes de despacho</option>
+            <option value="DESPACHADO" ${deliveryFilter==='DESPACHADO'?'selected':''}>🚚 Despachadas (sin entregar)</option>
+            <option value="ENTREGADO" ${deliveryFilter==='ENTREGADO'?'selected':''}>✅ Entregadas</option>
+          </select>
+        </div>
+        ${tableHtml}
+      </div>
+    `;
+  }
+
   ui.renderLayout({
     activeModule: 'ventas', pageEyebrow: 'Comercial', pageTitle: 'Ventas',
     contentHtml: `
@@ -260,34 +355,80 @@ function renderList() {
         </div>
       </div>
 
-      <div class="table-wrap">
-        <div class="table-toolbar">
-          <div class="search-box">${ui.icon('search')}<input id="search-input" class="input" type="search" placeholder="Buscar por código, factura o cliente..." value="${ui.escape(searchTerm)}" oninput="onSearch(this.value)"></div>
-          <select class="select" style="max-width:200px;" onchange="onTypeFilter(this.value)">
-            <option value="">Todos los tipos</option>
-            <option value="PEDIDO" ${typeFilter==='PEDIDO'?'selected':''}>Pedidos</option>
-            <option value="COTIZACION" ${typeFilter==='COTIZACION'?'selected':''}>Cotizaciones</option>
-            <option value="NOTA_ENTREGA" ${typeFilter==='NOTA_ENTREGA'?'selected':''}>Notas de Entrega</option>
-            <option value="FACTURA" ${typeFilter==='FACTURA'?'selected':''}>Facturas</option>
-            <option value="PAID" ${typeFilter==='PAID'?'selected':''}>Pagadas</option>
-            <option value="PARTIAL" ${typeFilter==='PARTIAL'?'selected':''}>Pago parcial</option>
-            <option value="CANCELLED" ${typeFilter==='CANCELLED'?'selected':''}>Anuladas</option>
-          </select>
-          <select class="select" style="max-width:190px;" onchange="onDeliveryFilter(this.value)">
-            <option value="">Todas las entregas</option>
-            <option value="PENDIENTE" ${deliveryFilter==='PENDIENTE'?'selected':''}>📦 Pendientes de despacho</option>
-            <option value="DESPACHADO" ${deliveryFilter==='DESPACHADO'?'selected':''}>🚚 Despachadas (sin entregar)</option>
-            <option value="ENTREGADO" ${deliveryFilter==='ENTREGADO'?'selected':''}>✅ Entregadas</option>
-          </select>
-        </div>
-        ${tableHtml}
-      </div>
+      ${tabsHtml}
 
-      <!-- Cuadro: Cuentas por cobrar -->
-      ${renderCuentasPorCobrar(all)}
+      ${mainContent}
     `
   });
 }
+
+/**
+ * Tabla de pestaña "Pendientes de aprobación".
+ * - Vendedor: solo ve sus docs (ya filtrado por visibilidad)
+ * - Admin/Gerente: ven todos y pueden filtrar por vendedor
+ * Botones Aprobar / Rechazar solo aparecen para admin/gerente.
+ */
+function renderPendingTable(docs, pendingVendors, canApprove) {
+  const filterBar = canApprove && pendingVendors.length > 0 ? `
+    <div class="table-toolbar" style="gap:10px;">
+      <span class="text-muted" style="font-size:12px;">Filtrar por vendedor:</span>
+      <select class="select" style="max-width:240px;" onchange="setPendingVendorFilter(this.value)">
+        <option value="">Todos los vendedores</option>
+        ${pendingVendors.map(u => `<option value="${u.id}" ${pendingVendorFilter===u.id?'selected':''}>${ui.escape(u.fullName||u.username||'—')}</option>`).join('')}
+      </select>
+    </div>
+  ` : '';
+
+  if (!docs.length) {
+    return `<div class="table-wrap">${filterBar}
+      <div class="empty-state">
+        <div class="empty-state-icon">⏳</div>
+        <div class="empty-state-title">Sin pedidos pendientes de aprobación</div>
+        <div class="empty-state-text">Los pedidos y notas de entrega que carguen los vendedores van a aparecer acá hasta que se aprueben.</div>
+      </div>
+    </div>`;
+  }
+
+  return `<div class="table-wrap">${filterBar}
+    <table>
+      <thead><tr>
+        <th>Código</th>
+        <th>Tipo</th>
+        <th>Cliente</th>
+        <th>Vendedor</th>
+        <th>Fecha</th>
+        <th style="text-align:right;">Total</th>
+        <th>Estado</th>
+        <th style="text-align:right;width:220px;">Acciones</th>
+      </tr></thead>
+      <tbody>${docs.map(d => {
+        const isRejected = d.approvalStatus === 'REJECTED';
+        const rowBg = isRejected ? 'background:#fee2e2;' : 'background:#fef3c7;';
+        return `<tr style="${rowBg}cursor:pointer;" onclick="openDetail('${d.id}')">
+          <td><span class="td-mono td-strong">${d.code}</span></td>
+          <td><span class="badge ${d.type==='PEDIDO'?'badge-plain':'badge-accent'}" style="font-size:10px;">${d.type==='PEDIDO'?'Pedido':'Nota Ent.'}</span></td>
+          <td>${ui.escape(d.customerName||'—')}</td>
+          <td><span style="font-size:12px;">${ui.escape(d.salespersonName||'—')}</span></td>
+          <td><span class="text-muted">${ui.formatDate(d.issueDate)}</span></td>
+          <td style="text-align:right;"><span class="td-mono td-strong">${currency.format(d.total, d.currency)}</span></td>
+          <td>
+            ${isRejected
+              ? `<span class="badge badge-danger" style="font-size:10px;">❌ Rechazado</span>${d.rejectionReason?`<div class="text-muted" style="font-size:10px;margin-top:2px;">${ui.escape(d.rejectionReason)}</div>`:''}`
+              : `<span class="badge badge-warning" style="font-size:10px;">⏳ Pendiente</span>`}
+          </td>
+          <td class="td-actions" onclick="event.stopPropagation()" style="display:flex;gap:4px;justify-content:flex-end;">
+            ${canApprove && !isRejected ? `
+              <button class="btn btn-primary btn-sm" onclick="approveDoc('${d.id}')" style="font-size:11px;padding:4px 10px;">✓ Aprobar</button>
+              <button class="btn btn-secondary btn-sm" onclick="openRejectModal('${d.id}')" style="font-size:11px;padding:4px 10px;">✕ Rechazar</button>
+            ` : ''}
+            <button class="btn-icon" onclick="openDetail('${d.id}')" title="Ver detalle">${ui.icon('edit')}</button>
+          </td>
+        </tr>`;
+      }).join('')}</tbody>
+    </table>
+  </div>`;
+}
+
 
 /** Cuadro de Cuentas por Cobrar: facturas Y NEs entregadas/despachadas con saldo pendiente */
 function renderCuentasPorCobrar(allDocs) {
@@ -1473,6 +1614,44 @@ function renderDetail() {
 
   // Acciones según tipo y estado
   let actions = '';
+
+  // === BANNER Y BOTONES DE APROBACIÓN ===
+  // Si el doc está pendiente o rechazado, mostramos un banner explicativo
+  // y los botones Aprobar/Rechazar (solo admin/gerente).
+  const _isPending = d.approvalStatus === 'PENDING';
+  const _isRejected = d.approvalStatus === 'REJECTED';
+  const _canApprove = auth.canApproveSales && auth.canApproveSales();
+  let approvalBanner = '';
+  if (_isPending) {
+    approvalBanner = `<div style="padding:14px 18px;background:#fef3c7;border:1px solid #fcd34d;border-radius:8px;margin-bottom:16px;display:flex;justify-content:space-between;align-items:center;gap:14px;flex-wrap:wrap;">
+      <div style="flex:1;min-width:240px;">
+        <div style="font-weight:600;font-size:13px;color:#78350f;">⏳ Pendiente de aprobación</div>
+        <div class="text-muted" style="font-size:11.5px;color:#92400e;margin-top:2px;">
+          Creado por ${ui.escape(d.createdByName || d.salespersonName || '—')}. El stock está reservado.
+          ${_canApprove ? 'Aprobá para descontar el stock real y generar comisión por venta.' : 'Esperá la aprobación del administrador o gerente.'}
+        </div>
+      </div>
+      ${_canApprove ? `<div style="display:flex;gap:8px;">
+        <button class="btn btn-primary" onclick="approveDoc('${d.id}')">✓ Aprobar</button>
+        <button class="btn btn-secondary" onclick="openRejectModal('${d.id}')">✕ Rechazar</button>
+      </div>` : ''}
+    </div>`;
+  } else if (_isRejected) {
+    approvalBanner = `<div style="padding:14px 18px;background:#fee2e2;border:1px solid #fca5a5;border-radius:8px;margin-bottom:16px;">
+      <div style="font-weight:600;font-size:13px;color:#991b1b;">❌ Pedido rechazado</div>
+      <div class="text-muted" style="font-size:11.5px;color:#7f1d1d;margin-top:2px;">
+        Rechazado por ${ui.escape(d.rejectedByName || '—')} el ${ui.formatDate(d.rejectedAt?.slice(0,10) || '')}.
+        ${d.rejectionReason ? `<br>Motivo: ${ui.escape(d.rejectionReason)}` : ''}
+      </div>
+    </div>`;
+  }
+
+  // Si está pendiente o rechazado, no mostramos las acciones normales (anular, NC, ND, etc.)
+  // Solo se permite editar el pedido (botón ya disponible) o las acciones del banner.
+  if (_isPending || _isRejected) {
+    // El botón "Editar" sigue disponible (es la acción principal en este estado)
+    // No agregamos más acciones a la barra; el banner ya tiene los CTAs principales.
+  } else
   if (!d.cancelled) {
     if (d.type === 'PEDIDO') {
       actions += `<button class="btn btn-secondary" onclick="convertTo('${d.id}','COTIZACION')">→ Cotización</button>`;
@@ -1502,12 +1681,16 @@ function renderDetail() {
         actions += `<button class="btn btn-secondary" onclick="openChangeDueDate('${d.id}')" title="Cambiar fecha de vencimiento (días de gracia)">📅 Cambiar vencimiento</button>`;
         actions += `<a href="pagos.html?doc=${d.id}" class="btn btn-primary">${ui.icon('plus')} Registrar cobro</a>`;
       }
+      // Botones de NC/ND solo para admin/gerente (vendedor no puede emitirlos).
+      const _canEmitNotes = !(auth.isSeller && auth.isSeller());
       // Botón de Nota de Crédito (solo facturas no totalmente acreditadas)
-      if (!d.fullyCredited) {
+      if (_canEmitNotes && !d.fullyCredited) {
         actions += `<button class="btn btn-secondary" onclick="openCreditNoteForm('${d.id}')" title="Emitir nota de crédito">📝 Emitir NC</button>`;
       }
       // Botón de Nota de Débito (siempre disponible para facturas activas)
-      actions += `<button class="btn btn-secondary" onclick="openDebitNoteForm('${d.id}')" title="Emitir nota de débito (mora, recargo, ajuste, gastos extras)">📈 Emitir ND</button>`;
+      if (_canEmitNotes) {
+        actions += `<button class="btn btn-secondary" onclick="openDebitNoteForm('${d.id}')" title="Emitir nota de débito (mora, recargo, ajuste, gastos extras)">📈 Emitir ND</button>`;
+      }
     }
     actions += `<button class="btn btn-danger" onclick="cancelDoc('${d.id}')">${ui.icon('x')} Anular</button>`;
   }
@@ -1562,6 +1745,8 @@ function renderDetail() {
           </div>
         </div>
       ` : ''}
+
+      ${approvalBanner}
 
       ${rateBanner}
 
@@ -3704,7 +3889,106 @@ function formatMoney(amount, ccy) {
 render();
 
 
-// Exponer funciones a window (para que onclick="" del HTML pueda llamarlas)
+// === PESTAÑAS Y FLUJO DE APROBACIÓN ===
+
+function setListTab(t) {
+  listTab = t;
+  // Al cambiar de pestaña limpiamos filtros que pertenecen solo a "sales"
+  if (t !== 'sales') {
+    // (no tocamos searchTerm/typeFilter para que vuelvan al estado anterior si se quedan)
+  }
+  render();
+}
+
+function setPendingVendorFilter(uid) {
+  pendingVendorFilter = uid;
+  render();
+}
+
+function approveDoc(docId) {
+  const d = db.getById(db.COLLECTIONS.salesOrders, docId);
+  if (!d) { ui.toast('Documento no encontrado', 'error'); return; }
+  ui.confirm(
+    `¿Aprobar ${d.code} de ${d.customerName || '—'} por ${currency.format(d.total, d.currency)}?`,
+    () => {
+      try {
+        const me = auth._profile;
+        sales.approveSale(docId, me?.id, me?.fullName || me?.username || '');
+        ui.toast(`✓ ${d.code} aprobado`, 'success');
+        render();
+      } catch (err) {
+        ui.toast('Error: ' + err.message, 'error', 5000);
+        console.error(err);
+      }
+    },
+    { confirmLabel: 'Aprobar' }
+  );
+}
+
+function openRejectModal(docId) {
+  const d = db.getById(db.COLLECTIONS.salesOrders, docId);
+  if (!d) { ui.toast('Documento no encontrado', 'error'); return; }
+  ui.openModal({
+    size: 'sm',
+    title: 'Rechazar pedido',
+    subtitle: `${d.code} · ${d.customerName || '—'} · ${currency.format(d.total, d.currency)}`,
+    body: `
+      <div style="font-size:12.5px;color:var(--ink-2);line-height:1.5;margin-bottom:14px;">
+        Elegí cómo rechazar este pedido. En cualquier caso, las reservas de stock se liberan.
+      </div>
+
+      <form id="reject-form" onsubmit="confirmRejectDoc(event, '${docId}')">
+        <div class="field" style="margin-bottom:14px;">
+          <label class="field-label">Acción *</label>
+          <div style="display:flex;flex-direction:column;gap:8px;">
+            <label style="display:flex;gap:10px;align-items:flex-start;padding:10px;border:1px solid var(--border);border-radius:6px;cursor:pointer;">
+              <input type="radio" name="rejectAction" value="AUDIT" checked style="margin-top:3px;">
+              <div>
+                <div style="font-weight:600;font-size:13px;">Marcar como rechazado (auditoría)</div>
+                <div class="text-muted" style="font-size:11px;line-height:1.4;margin-top:2px;">El pedido queda visible para el vendedor con tu motivo. Puede editarlo y reenviarlo. Útil para corregir y reenviar.</div>
+              </div>
+            </label>
+            <label style="display:flex;gap:10px;align-items:flex-start;padding:10px;border:1px solid var(--border);border-radius:6px;cursor:pointer;">
+              <input type="radio" name="rejectAction" value="DELETE" style="margin-top:3px;">
+              <div>
+                <div style="font-weight:600;font-size:13px;color:var(--danger);">Borrar definitivamente</div>
+                <div class="text-muted" style="font-size:11px;line-height:1.4;margin-top:2px;">El pedido desaparece del sistema. Esto no se puede deshacer.</div>
+              </div>
+            </label>
+          </div>
+        </div>
+
+        <div class="field" style="margin-bottom:0;">
+          <label class="field-label">Motivo (recomendado)</label>
+          <textarea class="textarea" name="reason" rows="2" placeholder="Ej: cliente solicitó cambio de cantidad, error en precios, falta de stock real..."></textarea>
+        </div>
+      </form>
+    `,
+    footer: `
+      <button class="btn btn-secondary" onclick="ui.closeModal()">Cancelar</button>
+      <button class="btn btn-primary" onclick="document.getElementById('reject-form').requestSubmit()">${ui.icon('check')||'✓'} Confirmar</button>
+    `
+  });
+}
+
+function confirmRejectDoc(e, docId) {
+  e.preventDefault();
+  const data = ui.formData(e.target);
+  const action = data.rejectAction;
+  const reason = (data.reason || '').trim();
+  try {
+    const me = auth._profile;
+    sales.rejectSale(docId, action, reason, me?.id, me?.fullName || me?.username || '');
+    ui.closeModal();
+    ui.toast(action === 'DELETE' ? '✓ Pedido eliminado' : '✓ Pedido rechazado (queda para auditoría)', 'success');
+    render();
+  } catch (err) {
+    ui.toast('Error: ' + err.message, 'error', 5000);
+    console.error(err);
+  }
+}
+
+
 
 // Sincronizar variables de estado del módulo con window
 try { Object.defineProperty(window, 'view', { get: () => view, set: (val) => { view = val; }, configurable: true }); } catch(e) {}
@@ -3717,6 +4001,12 @@ Object.assign(window, {
   render: typeof render !== 'undefined' ? render : undefined,
   renderList: typeof renderList !== 'undefined' ? renderList : undefined,
   renderCuentasPorCobrar: typeof renderCuentasPorCobrar !== 'undefined' ? renderCuentasPorCobrar : undefined,
+  renderPendingTable: typeof renderPendingTable !== 'undefined' ? renderPendingTable : undefined,
+  setListTab: typeof setListTab !== 'undefined' ? setListTab : undefined,
+  setPendingVendorFilter: typeof setPendingVendorFilter !== 'undefined' ? setPendingVendorFilter : undefined,
+  approveDoc: typeof approveDoc !== 'undefined' ? approveDoc : undefined,
+  openRejectModal: typeof openRejectModal !== 'undefined' ? openRejectModal : undefined,
+  confirmRejectDoc: typeof confirmRejectDoc !== 'undefined' ? confirmRejectDoc : undefined,
   onSearch: typeof onSearch !== 'undefined' ? onSearch : undefined,
   onTypeFilter: typeof onTypeFilter !== 'undefined' ? onTypeFilter : undefined,
   onDeliveryFilter: typeof onDeliveryFilter !== 'undefined' ? onDeliveryFilter : undefined,
