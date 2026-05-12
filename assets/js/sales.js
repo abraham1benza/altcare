@@ -183,6 +183,196 @@ const sales = {
   },
 
   /**
+   * RESERVA lotes FEFO sin descontar del balance.
+   * Se usa cuando un pedido queda "pendiente de aprobación": el stock se aparta
+   * para que nadie más lo venda, pero no se descuenta del inventario real
+   * hasta que se apruebe.
+   *
+   * Diferencia con allocateLotsAndConsume:
+   *   - allocateLotsAndConsume: hace `lot.balance -= take` (descuenta de verdad)
+   *   - reserveLots:           hace `lot.reserved += take` (solo aparta)
+   *
+   * El stock "disponible" en cualquier punto del sistema se calcula como
+   * `balance - reserved` (ver inventory.totalAvailable), así que reservar
+   * impide que otro vendedor lo agarre sin afectar el balance real.
+   */
+  reserveLots(docId, reference) {
+    const doc = db.getById(db.COLLECTIONS.salesOrders, docId);
+    if (!doc) throw new Error('Documento no encontrado');
+
+    doc.items.forEach((item, idx) => {
+      if (!item.formulaId && !item.fgLotId) return;
+      // Si ya tiene allocations (porque se aprobó antes o se reservó), no rehacer
+      if (item.allocations && item.allocations.length > 0) return;
+
+      let lots;
+      if (item.fgLotId) {
+        const lot = db.getById(db.COLLECTIONS.finishedGoods, item.fgLotId);
+        // Tiene que estar liberado y con stock disponible (balance - reserved > 0)
+        const avail = lot ? (lot.balance - (lot.reserved || 0)) : 0;
+        lots = (lot && lot.status === 'LIBERADO' && avail > 0) ? [lot] : [];
+      } else {
+        // FEFO sobre todos los lotes de la fórmula con disponible > 0
+        lots = db.query(db.COLLECTIONS.finishedGoods, l =>
+          l.formulaId === item.formulaId &&
+          l.status === 'LIBERADO' &&
+          (l.balance - (l.reserved || 0)) > 0
+        );
+        lots.sort((a, b) => (a.expiryDate || '9999-12-31').localeCompare(b.expiryDate || '9999-12-31'));
+      }
+
+      const allocations = [];
+      let remaining = parseFloat(item.quantity) || 0;
+
+      for (const lot of lots) {
+        if (remaining <= 0.0001) break;
+        const avail = lot.balance - (lot.reserved || 0);
+        const take = Math.min(remaining, avail);
+        if (take <= 0) continue;
+
+        // RESERVAR (no descontar balance)
+        lot.reserved = round((lot.reserved || 0) + take);
+        db.save(db.COLLECTIONS.finishedGoods, lot);
+
+        // Registrar movimiento de RESERVA (no consume, solo aparta)
+        if (typeof inventory !== 'undefined' && inventory.registerMove) {
+          inventory.registerMove({
+            type: 'SALE_RESERVE_PENDING',
+            itemKind: 'PT',
+            itemId: lot.formulaId,
+            itemCode: lot.code,
+            itemName: lot.formulaName || item.formulaName,
+            lotId: lot.id,
+            lotCode: lot.code,
+            quantity: 0,    // no afecta balance — solo info
+            unit: lot.unit,
+            unitCost: lot.unitCost,
+            costCurrency: lot.costCurrency,
+            warehouseId: lot.warehouseId,
+            reference: reference || `Reserva pendiente ${doc.code}`,
+            notes: `Reservado ${take} para aprobación de ${doc.code}`
+          });
+        }
+
+        allocations.push({
+          lotId: lot.id,
+          lotCode: lot.code,
+          quantity: take,
+          expiryDate: lot.expiryDate,
+          _reservedOnly: true  // marca para diferenciar de allocations consumidas
+        });
+        remaining = round(remaining - take);
+      }
+
+      item.allocations = allocations;
+      item.missing = remaining > 0.0001 ? round(remaining) : 0;
+    });
+
+    doc.lotsAssigned = true;
+    doc.lotsReservedOnly = true;  // bandera: las allocations son reservas, no consumos
+    return db.save(db.COLLECTIONS.salesOrders, doc);
+  },
+
+  /**
+   * Libera las reservas de un documento (resta del lot.reserved).
+   * Se llama cuando se rechaza un pedido pendiente o se aprueba (antes de
+   * descontar de verdad).
+   */
+  releaseReservations(docId, reference) {
+    const doc = db.getById(db.COLLECTIONS.salesOrders, docId);
+    if (!doc || !doc.lotsReservedOnly) return;
+
+    doc.items.forEach(item => {
+      if (!item.allocations) return;
+      item.allocations.forEach(a => {
+        if (!a._reservedOnly) return;
+        const lot = db.getById(db.COLLECTIONS.finishedGoods, a.lotId);
+        if (!lot) return;
+        lot.reserved = round(Math.max(0, (lot.reserved || 0) - (a.quantity || 0)));
+        db.save(db.COLLECTIONS.finishedGoods, lot);
+      });
+      // Limpiar allocations para que approveSale o cancel puedan re-asignar
+      item.allocations = [];
+    });
+
+    doc.lotsAssigned = false;
+    doc.lotsReservedOnly = false;
+    return db.save(db.COLLECTIONS.salesOrders, doc);
+  },
+
+  /**
+   * Aprueba un pedido pendiente:
+   *   1) Libera las reservas
+   *   2) Descuenta stock real (allocateLotsAndConsume)
+   *   3) Marca approvalStatus='APPROVED'
+   *   4) Dispara comisión por venta (si aplica)
+   */
+  approveSale(docId, approverUserId, approverName) {
+    const doc = db.getById(db.COLLECTIONS.salesOrders, docId);
+    if (!doc) throw new Error('Documento no encontrado');
+    if (doc.approvalStatus !== 'PENDING') throw new Error('El documento no está pendiente de aprobación');
+
+    // 1) Liberar reservas
+    this.releaseReservations(docId, `Aprobación de ${doc.code}`);
+
+    // 2) Descontar stock de verdad
+    this.allocateLotsAndConsume(docId, `Venta aprobada ${doc.code}`);
+
+    // 3) Marcar como aprobado
+    const refreshed = db.getById(db.COLLECTIONS.salesOrders, docId);
+    refreshed.approvalStatus = 'APPROVED';
+    refreshed.approvedAt = new Date().toISOString();
+    refreshed.approvedByUserId = approverUserId || null;
+    refreshed.approvedByName = approverName || '';
+    // Log en notas para auditoría
+    const stamp = new Date().toISOString().slice(0, 16).replace('T', ' ');
+    const logLine = `[${stamp}] Aprobado por ${approverName || approverUserId || '—'}`;
+    refreshed.notes = refreshed.notes ? (refreshed.notes + '\n' + logLine) : logLine;
+    db.save(db.COLLECTIONS.salesOrders, refreshed);
+
+    // 4) Disparar comisión por venta (ahora sí, recién al aprobar)
+    if (typeof commissions !== 'undefined' && refreshed.salespersonId) {
+      try { commissions.registerSaleCommission(refreshed); }
+      catch (e) { console.warn('[sales] Error comisión al aprobar:', e.message); }
+    }
+
+    return refreshed;
+  },
+
+  /**
+   * Rechaza un pedido pendiente.
+   *   - action='AUDIT'  → queda marcado como REJECTED para auditoría
+   *                       (visible para vendedor que puede re-editar)
+   *   - action='DELETE' → borra el documento definitivamente
+   * En ambos casos libera las reservas.
+   */
+  rejectSale(docId, action, reason, approverUserId, approverName) {
+    const doc = db.getById(db.COLLECTIONS.salesOrders, docId);
+    if (!doc) throw new Error('Documento no encontrado');
+    if (doc.approvalStatus !== 'PENDING') throw new Error('El documento no está pendiente');
+
+    // Liberar reservas siempre
+    this.releaseReservations(docId, `Rechazo de ${doc.code}`);
+
+    if (action === 'DELETE') {
+      db.remove(db.COLLECTIONS.salesOrders, docId);
+      return null;
+    }
+
+    // AUDIT: marcar como rechazado, el vendedor podrá re-editar
+    const refreshed = db.getById(db.COLLECTIONS.salesOrders, docId);
+    refreshed.approvalStatus = 'REJECTED';
+    refreshed.rejectedAt = new Date().toISOString();
+    refreshed.rejectedByUserId = approverUserId || null;
+    refreshed.rejectedByName = approverName || '';
+    refreshed.rejectionReason = reason || '';
+    const stamp = new Date().toISOString().slice(0, 16).replace('T', ' ');
+    const logLine = `[${stamp}] RECHAZADO por ${approverName || approverUserId || '—'}${reason ? ' · Motivo: ' + reason : ''}`;
+    refreshed.notes = refreshed.notes ? (refreshed.notes + '\n' + logLine) : logLine;
+    return db.save(db.COLLECTIONS.salesOrders, refreshed);
+  },
+
+  /**
    * Reverso: devuelve el stock asignado al inventario.
    * Se llama al cancelar un pedido/factura/NE.
    */
@@ -434,20 +624,43 @@ const sales = {
       notes: notes || ''
     };
 
+    // === FLUJO DE APROBACIÓN ===
+    // Si el creador es vendedor (rol 'ventas') y el doc es PEDIDO o NOTA_ENTREGA,
+    // se marca como PENDIENTE de aprobación. Las cotizaciones van directo (no
+    // afectan inventario ni generan comisión). Admin y gerente crean directo
+    // (entran a la lista de Ventas).
+    const isSellerUser = typeof auth !== 'undefined' && auth.isSeller && auth.isSeller();
+    const needsApproval = isSellerUser && (docType === 'PEDIDO' || docType === 'NOTA_ENTREGA');
+    if (needsApproval) {
+      doc.approvalStatus = 'PENDING';
+      doc.createdByUserId = auth._profile?.id || null;
+      doc.createdByName = auth._profile?.fullName || auth._profile?.username || '';
+    } else {
+      doc.approvalStatus = 'APPROVED';  // entra directo
+    }
+
     const saved = db.save(db.COLLECTIONS.salesOrders, doc);
 
-    // Si nace como FACTURA con vendedor asignado, generar comisión por venta
-    if (docType === 'FACTURA' && saved.salespersonId && typeof commissions !== 'undefined') {
+    // === COMISIÓN POR VENTA ===
+    // Solo dispara si el doc está APPROVED desde el saque. Si está PENDING
+    // (vendedor), la comisión se genera al aprobarlo (approveSale).
+    if (saved.approvalStatus === 'APPROVED' && docType === 'FACTURA' && saved.salespersonId && typeof commissions !== 'undefined') {
       try { commissions.registerSaleCommission(saved); } catch (e) { console.warn('[sales] Error comisión venta:', e.message); }
     }
 
-    // Si el tipo afecta stock (PEDIDO/NE/FACTURA), descontar inventario FEFO automáticamente
-    // COTIZACION no toca stock (es solo presupuesto)
+    // === STOCK ===
+    // Si el tipo afecta stock (PEDIDO/NE/FACTURA):
+    //   - Si está APPROVED: descontar inventario FEFO (allocateLotsAndConsume)
+    //   - Si está PENDING:  solo RESERVAR (reserveLots) — no afecta balance hasta aprobar
     if (this.STOCK_AFFECTING_TYPES.includes(docType)) {
       try {
-        this.allocateLotsAndConsume(saved.id, `Venta ${saved.code}`);
+        if (saved.approvalStatus === 'PENDING') {
+          this.reserveLots(saved.id, `Reserva pendiente ${saved.code}`);
+        } else {
+          this.allocateLotsAndConsume(saved.id, `Venta ${saved.code}`);
+        }
       } catch (err) {
-        console.warn('[sales] Error al asignar lotes:', err.message);
+        console.warn('[sales] Error al asignar/reservar lotes:', err.message);
       }
     }
 

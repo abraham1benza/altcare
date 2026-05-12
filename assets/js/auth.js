@@ -84,6 +84,16 @@ const auth = {
     return this._profile?.role === 'gerente';
   },
 
+  /** ¿El usuario actual es vendedor? Solo crea sus propios docs y no aprueba. */
+  isSeller() {
+    return this._profile?.role === 'ventas';
+  },
+
+  /** ¿Puede aprobar pedidos pendientes? Solo admin y gerente. */
+  canApproveSales() {
+    return this.isAdmin() || this.isManager();
+  },
+
   /**
    * Devuelve los UIDs de usuarios cuyos datos puede VER el usuario actual.
    * - Admin: null (significa "todos")
