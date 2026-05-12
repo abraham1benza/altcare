@@ -24,7 +24,7 @@
 moduleInit('pagos').then(async (ok) => {
 if (!ok) return;
 
-let tab = 'cxp';        // cxp | cxc | history
+let tab = 'cxc';        // cxp | cxc | history
 let creating = null;     // borrador de pago
 
 function render() {
@@ -150,7 +150,7 @@ function renderList() {
       <div class="action-bar">
         <div class="action-bar-left">
           <h2 class="action-bar-title">Pagos</h2>
-          <span class="action-bar-count">Cuentas por pagar y por cobrar</span>
+          <span class="action-bar-count">Cuentas por cobrar y por pagar</span>
         </div>
         <div class="action-bar-right">
           <button class="btn btn-secondary btn-sm" onclick="recalcStatuses()" title="Recalcula el estado de las facturas según los pagos reales registrados">${ui.icon('refresh')} Recalcular estados</button>
@@ -159,14 +159,14 @@ function renderList() {
 
       <div class="grid grid-4 mb-24">
         <div class="kpi">
-          <div class="kpi-label">Por pagar</div>
-          ${renderMultiKPI(cxpByCcy, 'var(--danger)')}
-          <div class="kpi-value-sub">${supplierInvoices.length} factura${supplierInvoices.length!==1?'s':''}${cxpOverdue?` · ${cxpOverdue} vencida${cxpOverdue!==1?'s':''}`:''}</div>
-        </div>
-        <div class="kpi">
           <div class="kpi-label">Por cobrar</div>
           ${renderMultiKPI(cxcByCcy, 'var(--accent-ink)')}
           <div class="kpi-value-sub">${salesDocs.length} documento${salesDocs.length!==1?'s':''}${cxcOverdue?` · ${cxcOverdue} vencido${cxcOverdue!==1?'s':''}`:''}</div>
+        </div>
+        <div class="kpi">
+          <div class="kpi-label">Por pagar</div>
+          ${renderMultiKPI(cxpByCcy, 'var(--danger)')}
+          <div class="kpi-value-sub">${supplierInvoices.length} factura${supplierInvoices.length!==1?'s':''}${cxpOverdue?` · ${cxpOverdue} vencida${cxpOverdue!==1?'s':''}`:''}</div>
         </div>
         <div class="kpi">
           <div class="kpi-label">Disponible en bancos</div>
@@ -181,8 +181,8 @@ function renderList() {
       </div>
 
       <div style="display:flex;border-bottom:1px solid var(--border);margin-bottom:24px;gap:0;">
-        <button class="btn btn-ghost" style="border-radius:0;border-bottom:2px solid ${tab==='cxp'?'var(--ink)':'transparent'};color:${tab==='cxp'?'var(--ink)':'var(--ink-3)'};" onclick="changeTab('cxp')">Por pagar (${supplierInvoices.length})</button>
         <button class="btn btn-ghost" style="border-radius:0;border-bottom:2px solid ${tab==='cxc'?'var(--ink)':'transparent'};color:${tab==='cxc'?'var(--ink)':'var(--ink-3)'};" onclick="changeTab('cxc')">Por cobrar (${salesDocs.length})</button>
+        <button class="btn btn-ghost" style="border-radius:0;border-bottom:2px solid ${tab==='cxp'?'var(--ink)':'transparent'};color:${tab==='cxp'?'var(--ink)':'var(--ink-3)'};" onclick="changeTab('cxp')">Por pagar (${supplierInvoices.length})</button>
         <button class="btn btn-ghost" style="border-radius:0;border-bottom:2px solid ${tab==='history'?'var(--ink)':'transparent'};color:${tab==='history'?'var(--ink)':'var(--ink-3)'};" onclick="changeTab('history')">Historial (${allPayments.length})</button>
       </div>
 
