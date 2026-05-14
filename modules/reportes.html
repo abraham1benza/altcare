@@ -94,6 +94,13 @@ const REPORTS = {
     icon: 'currency',
     category: 'Finanzas',
     color: '#a83232'
+  },
+  'perdida-cambiaria': {
+    title: 'Pérdida / Ganancia cambiaria',
+    subtitle: 'Diferencial BCV vs Binance al cobrar y depreciación de saldos en Bs',
+    icon: 'currency',
+    category: 'Finanzas',
+    color: '#a83232'
   }
 };
 
@@ -104,6 +111,8 @@ let customTo = '';
 let entityId = ''; // para reportes que requieren cliente/proveedor
 let inventoryFilter = 'all'; // all | MP | PT | OF (para inventario-valorizado)
 let salespersonFilter = ''; // userId del vendedor (para cliente-general)
+let compareRateType = 'BINANCE'; // para pérdida cambiaria: tasa contra la que comparamos BCV
+let customCompareRate = ''; // tasa personalizada (solo si compareRateType === 'CUSTOM')
 
 function render() {
   if (currentReport) return renderReport();
@@ -223,6 +232,7 @@ function renderReport() {
     case 'produccion':          body = renderProduccion(from, to); exportButtons = exportButtonsFor('produccion', from, to); break;
     case 'margenes':            body = renderMargenes(from, to); exportButtons = exportButtonsFor('margenes', from, to); break;
     case 'flujo-caja':          body = renderFlujoCaja(from, to); exportButtons = exportButtonsFor('flujo-caja', from, to); break;
+    case 'perdida-cambiaria':   body = renderPerdidaCambiaria(from, to); exportButtons = exportButtonsFor('perdida-cambiaria', from, to); break;
   }
 
   ui.renderLayout({
@@ -849,6 +859,234 @@ function renderMargenes(from, to) {
       </table>
     </div>
   `;
+}
+
+function renderPerdidaCambiaria(from, to) {
+  // Resolver la tasa de comparación (Binance/BCV/Personalizada)
+  let effectiveCompareType = compareRateType;
+  // Para tasa personalizada, mostramos un campo input; la lógica del reporte
+  // ignora 'CUSTOM' como tipo válido (no está en historicalRates), así que
+  // para la comparación, si el usuario eligió CUSTOM, la aplicamos uniforme
+  // a todos los movimientos del rango.
+  const isCustom = compareRateType === 'CUSTOM';
+  const customRate = parseFloat(customCompareRate) || 0;
+
+  // Selector de tasa (siempre arriba)
+  const allRates = currency.getRates().filter(r => r.value > 0);
+  const selectorHtml = `
+    <div class="card mb-24" style="padding:14px 18px;background:var(--surface-2);">
+      <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap;">
+        <div style="font-weight:600;font-size:13px;">Tasa para comparar contra BCV:</div>
+        <select class="select" style="max-width:260px;" onchange="onCompareRateChange(this.value)">
+          ${allRates.filter(r => r.type !== 'BCV_USD').map(r => `
+            <option value="${r.type}" ${compareRateType===r.type?'selected':''}>${ui.escape(r.label)} (${r.value.toLocaleString('es-VE',{maximumFractionDigits:4})})</option>
+          `).join('')}
+          <option value="CUSTOM" ${isCustom?'selected':''}>Personalizada…</option>
+        </select>
+        ${isCustom ? `
+          <input class="input" type="number" step="0.0001" placeholder="Ej: 38.5" style="max-width:140px;" value="${customCompareRate}" onchange="onCustomCompareRateChange(this.value)">
+        ` : ''}
+        <div class="text-muted" style="font-size:11.5px;">Se compara la tasa BCV del día del cobro contra esta tasa de mercado.</div>
+      </div>
+    </div>
+  `;
+
+  // Si es custom y no tiene valor, no calcular nada
+  if (isCustom && !customRate) {
+    return selectorHtml + `<div class="empty-state"><div class="empty-state-title">Ingresá una tasa personalizada para comparar</div></div>`;
+  }
+
+  // Patch temporal: si usuario eligió CUSTOM, inyectar como rate uniforme
+  // No queremos modificar la función del backend, así que reemplazamos
+  // localmente los rates llamando manualmente. Por simplicidad acá usamos
+  // BINANCE como fallback si CUSTOM no se puede aplicar uniformemente.
+  // (Mejor enfoque: agregamos overrideRate al backend, pero mantenemos
+  // mínimo el cambio. Si el usuario quiere CUSTOM, hacemos override
+  // monkeypatch.)
+  let result;
+  if (isCustom) {
+    // Monkeypatch temporal: getRateOnDate devolverá customRate para BINANCE
+    const original = currency.getRateOnDate.bind(currency);
+    currency.getRateOnDate = (date, type) => {
+      if (type === 'BINANCE') return { value: customRate, date, found: true, type };
+      return original(date, type);
+    };
+    try {
+      result = reports.perdidaCambiaria(from, to, 'BINANCE');
+      result.compareRateLabel = `Personalizada (${customRate.toLocaleString('es-VE',{maximumFractionDigits:4})})`;
+    } finally {
+      currency.getRateOnDate = original;
+    }
+  } else {
+    result = reports.perdidaCambiaria(from, to, effectiveCompareType);
+  }
+
+  const { movementRows, movementTotals, accountRows, accountTotals, netUSD, avgDiffPct, missingRateDates, compareRateLabel } = result;
+
+  if (!movementRows.length && !accountRows.length) {
+    return selectorHtml + `<div class="empty-state">
+      <div class="empty-state-title">Sin movimientos en Bs en este período</div>
+      <div class="empty-state-text">Este reporte solo considera cobros y pagos en bolívares. Probá ampliar el rango de fechas.</div>
+    </div>`;
+  }
+
+  // KPI resumen
+  const totalDiffColor = movementTotals.totalDiff < 0 ? 'var(--danger)' : 'var(--success)';
+  const totalDeprColor = accountTotals.totalDepreciation < 0 ? 'var(--danger)' : 'var(--success)';
+  const netColor       = netUSD < 0 ? 'var(--danger)' : 'var(--success)';
+
+  const kpiHtml = `
+    <div class="grid grid-4 mb-24">
+      <div class="kpi">
+        <div class="kpi-label">Diferencial al cobro</div>
+        <div class="kpi-value" style="color:${totalDiffColor};font-size:22px;">${movementTotals.totalDiff<0?'−':'+'}${currency.format(Math.abs(movementTotals.totalDiff),'USD')}</div>
+        <div class="kpi-value-sub">${movementTotals.countMovements} movimiento${movementTotals.countMovements!==1?'s':''} en Bs</div>
+      </div>
+      <div class="kpi">
+        <div class="kpi-label">Depreciación en cuentas</div>
+        <div class="kpi-value" style="color:${totalDeprColor};font-size:22px;">${accountTotals.totalDepreciation<0?'−':'+'}${currency.format(Math.abs(accountTotals.totalDepreciation),'USD')}</div>
+        <div class="kpi-value-sub">${accountRows.length} cuenta${accountRows.length!==1?'s':''} en Bs</div>
+      </div>
+      <div class="kpi">
+        <div class="kpi-label">Neto</div>
+        <div class="kpi-value" style="color:${netColor};font-size:24px;">${netUSD<0?'−':'+'}${currency.format(Math.abs(netUSD),'USD')}</div>
+        <div class="kpi-value-sub">${netUSD<0?'pérdida':'ganancia'} cambiaria total</div>
+      </div>
+      <div class="kpi">
+        <div class="kpi-label">Diferencial promedio</div>
+        <div class="kpi-value" style="font-size:22px;">${avgDiffPct.toFixed(2)}%</div>
+        <div class="kpi-value-sub">BCV vs ${ui.escape(compareRateLabel)}</div>
+      </div>
+    </div>
+  `;
+
+  // Aviso de fechas sin tasa cargada
+  const missingHtml = missingRateDates.length ? `
+    <div style="padding:10px 14px;background:#fef3c7;border:1px solid #fcd34d;border-radius:6px;font-size:11.5px;color:#92400e;margin-bottom:16px;">
+      ⚠️ <strong>${missingRateDates.length}</strong> tasa(s) faltante(s) para estas fechas (se usó la más reciente anterior):
+      <div style="margin-top:4px;font-family:var(--font-mono);font-size:10.5px;">${missingRateDates.slice(0,10).join(' · ')}${missingRateDates.length>10?` … +${missingRateDates.length-10}`:''}</div>
+    </div>
+  ` : '';
+
+  // Tabla de movimientos
+  const movementsHtml = movementRows.length ? `
+    <div class="card mb-24" style="padding:0;">
+      <div style="padding:14px 20px;border-bottom:1px solid var(--border);">
+        <div class="card-title">Diferencial BCV vs ${ui.escape(compareRateLabel)} al momento del cobro/pago</div>
+        <div class="text-muted" style="font-size:11px;margin-top:2px;">Cuánto USD "perdiste" o "ganaste" por usar tasa BCV cuando el mercado estaba a otra tasa.</div>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr>
+            <th>Fecha</th>
+            <th>Cód.</th>
+            <th>Tipo</th>
+            <th>Contraparte</th>
+            <th>Doc</th>
+            <th style="text-align:right;">Bs</th>
+            <th style="text-align:right;">BCV</th>
+            <th style="text-align:right;">USD@BCV</th>
+            <th style="text-align:right;">${ui.escape(compareRateLabel)}</th>
+            <th style="text-align:right;">USD@comp</th>
+            <th style="text-align:right;">Δ USD</th>
+            <th style="text-align:right;">Δ %</th>
+          </tr></thead>
+          <tbody>${movementRows.map(r => {
+            const isOut = r.direction === 'OUT';
+            // Para pagos salientes el signo se invierte conceptualmente:
+            // si pagaste con Bs depreciados es ganancia (visualmente "+")
+            const effectiveDiff = isOut ? -r.diffUSD : r.diffUSD;
+            const diffColor = effectiveDiff < 0 ? 'var(--danger)' : 'var(--success)';
+            const dirLabel = r.direction === 'IN' ? 'Cobro' : (r.direction === 'OUT' ? 'Pago' : 'Ajuste');
+            return `<tr>
+              <td><span class="text-muted">${ui.formatDate(r.date)}</span></td>
+              <td><span class="td-mono">${r.paymentCode}</span></td>
+              <td><span class="badge ${isOut?'badge-overdue':'badge-paid'}" style="font-size:10px;">${dirLabel}</span></td>
+              <td><span style="font-size:12px;">${ui.escape(r.counterpartyName)}</span></td>
+              <td><span class="td-mono" style="font-size:11px;">${ui.escape(r.relatedDocCode||'—')}</span></td>
+              <td style="text-align:right;"><span class="td-mono">${r.amountVES.toLocaleString('es-VE',{maximumFractionDigits:2})}</span></td>
+              <td style="text-align:right;"><span class="td-mono" style="font-size:11px;">${r.bcvRate.toLocaleString('es-VE',{maximumFractionDigits:2})}${!r.bcvRateFound?' ~':''}</span></td>
+              <td style="text-align:right;"><span class="td-mono">${currency.format(r.usdAtBCV,'USD')}</span></td>
+              <td style="text-align:right;"><span class="td-mono" style="font-size:11px;">${r.compareRate.toLocaleString('es-VE',{maximumFractionDigits:2})}${!r.compareRateFound?' ~':''}</span></td>
+              <td style="text-align:right;"><span class="td-mono">${currency.format(r.usdAtCompare,'USD')}</span></td>
+              <td style="text-align:right;"><span class="td-mono td-strong" style="color:${diffColor};">${effectiveDiff<0?'−':'+'}${currency.format(Math.abs(effectiveDiff),'USD')}</span></td>
+              <td style="text-align:right;"><span class="text-muted" style="font-size:11px;">${r.diffPct.toFixed(2)}%</span></td>
+            </tr>`;
+          }).join('')}</tbody>
+          <tfoot>
+            <tr style="background:var(--surface-2);font-weight:600;">
+              <td colspan="5">Totales</td>
+              <td style="text-align:right;"><span class="td-mono">${movementTotals.totalVES.toLocaleString('es-VE',{maximumFractionDigits:2})}</span></td>
+              <td></td>
+              <td style="text-align:right;"><span class="td-mono">${currency.format(movementTotals.totalUsdBCV,'USD')}</span></td>
+              <td></td>
+              <td style="text-align:right;"><span class="td-mono">${currency.format(movementTotals.totalUsdCompare,'USD')}</span></td>
+              <td style="text-align:right;"><span class="td-mono" style="color:${totalDiffColor};">${movementTotals.totalDiff<0?'−':'+'}${currency.format(Math.abs(movementTotals.totalDiff),'USD')}</span></td>
+              <td></td>
+            </tr>
+          </tfoot>
+        </table>
+      </div>
+    </div>
+  ` : '';
+
+  // Tabla de depreciación por cuenta
+  const accountsHtml = accountRows.length ? `
+    <div class="card mb-24" style="padding:0;">
+      <div style="padding:14px 20px;border-bottom:1px solid var(--border);">
+        <div class="card-title">Depreciación de saldos en Bs por cuenta</div>
+        <div class="text-muted" style="font-size:11px;margin-top:2px;">Saldo actual valorizado a BCV hoy vs el USD que valía al entrar la plata.</div>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr>
+            <th>Cuenta</th>
+            <th>Banco</th>
+            <th style="text-align:right;">Saldo Bs</th>
+            <th style="text-align:right;">USD hoy</th>
+            <th style="text-align:right;">USD al depositar</th>
+            <th style="text-align:right;">Δ USD</th>
+            <th style="text-align:right;">N° mov.</th>
+          </tr></thead>
+          <tbody>${accountRows.map(r => {
+            const color = r.depreciation < 0 ? 'var(--danger)' : 'var(--success)';
+            return `<tr>
+              <td><span class="td-strong">${ui.escape(r.accountName)}</span></td>
+              <td><span class="text-muted" style="font-size:12px;">${ui.escape(r.bankName||'—')}</span></td>
+              <td style="text-align:right;"><span class="td-mono">${r.balanceVES.toLocaleString('es-VE',{maximumFractionDigits:2})}</span></td>
+              <td style="text-align:right;"><span class="td-mono">${currency.format(r.valueUSDToday,'USD')}</span></td>
+              <td style="text-align:right;"><span class="td-mono">${currency.format(r.valueUSDAtDeposit,'USD')}</span></td>
+              <td style="text-align:right;"><span class="td-mono td-strong" style="color:${color};">${r.depreciation<0?'−':'+'}${currency.format(Math.abs(r.depreciation),'USD')}</span></td>
+              <td style="text-align:right;"><span class="text-muted">${r.movesCount}</span></td>
+            </tr>`;
+          }).join('')}</tbody>
+          <tfoot>
+            <tr style="background:var(--surface-2);font-weight:600;">
+              <td colspan="2">Totales</td>
+              <td style="text-align:right;"><span class="td-mono">${accountTotals.totalBalanceVES.toLocaleString('es-VE',{maximumFractionDigits:2})}</span></td>
+              <td style="text-align:right;"><span class="td-mono">${currency.format(accountTotals.totalValueUSDToday,'USD')}</span></td>
+              <td style="text-align:right;"><span class="td-mono">${currency.format(accountTotals.totalValueUSDAtDeposit,'USD')}</span></td>
+              <td style="text-align:right;"><span class="td-mono" style="color:${totalDeprColor};">${accountTotals.totalDepreciation<0?'−':'+'}${currency.format(Math.abs(accountTotals.totalDepreciation),'USD')}</span></td>
+              <td></td>
+            </tr>
+          </tfoot>
+        </table>
+      </div>
+    </div>
+  ` : '';
+
+  return selectorHtml + kpiHtml + missingHtml + movementsHtml + accountsHtml;
+}
+
+function onCompareRateChange(val) {
+  compareRateType = val;
+  if (val !== 'CUSTOM') customCompareRate = '';
+  render();
+}
+
+function onCustomCompareRateChange(val) {
+  customCompareRate = val;
+  render();
 }
 
 function renderFlujoCaja(from, to) {
@@ -1548,6 +1786,9 @@ Object.assign(window, {
   renderProduccion: typeof renderProduccion !== 'undefined' ? renderProduccion : undefined,
   renderMargenes: typeof renderMargenes !== 'undefined' ? renderMargenes : undefined,
   renderFlujoCaja: typeof renderFlujoCaja !== 'undefined' ? renderFlujoCaja : undefined,
+  renderPerdidaCambiaria: typeof renderPerdidaCambiaria !== 'undefined' ? renderPerdidaCambiaria : undefined,
+  onCompareRateChange: typeof onCompareRateChange !== 'undefined' ? onCompareRateChange : undefined,
+  onCustomCompareRateChange: typeof onCustomCompareRateChange !== 'undefined' ? onCustomCompareRateChange : undefined,
   exportCSV: typeof exportCSV !== 'undefined' ? exportCSV : undefined,
   exportPDF: typeof exportPDF !== 'undefined' ? exportPDF : undefined,
   pdfLibroCompras: typeof pdfLibroCompras !== 'undefined' ? pdfLibroCompras : undefined,

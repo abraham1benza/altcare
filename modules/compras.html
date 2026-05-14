@@ -859,7 +859,8 @@ function savePO() {
     try {
       const po = purchases.createPO({
         supplierId: e.supplierId, currency: e.currency, rateType: e.rateType,
-        items: e.items, notes: e.notes, expectedDate: e.expectedDate
+        items: e.items, notes: e.notes, expectedDate: e.expectedDate,
+        issueDate: e.issueDate
       });
       ui.toast('OC creada', 'success');
       selectedId = po.id; view = 'poDetail'; editing = null;

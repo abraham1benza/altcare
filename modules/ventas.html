@@ -843,6 +843,14 @@ function onIssueDateChange(val) {
   if (days > 0) {
     creating.dueDate = addDaysToDateStr(val, days);
   }
+  // Si es doc en moneda extranjera, mostrar info sobre la tasa BCV de ese día.
+  // El doc se va a guardar con la tasa histórica de esa fecha (no la de hoy).
+  if (creating.currency && creating.currency !== 'VES' && currency.getRateOnDate) {
+    const info = currency.getRateOnDate(val, creating.rateType || 'BCV_USD');
+    if (info?.value && !info.found && info.date) {
+      ui.toast(`Tasa BCV no cargada para ${val}. Se usará la del ${info.date} (${info.value.toLocaleString('es-VE',{maximumFractionDigits:4})}). Si querés otra, cargala en Tasas de Cambio.`, 'warning', 6500);
+    }
+  }
   render();
 }
 
@@ -1234,6 +1242,7 @@ function saveDoc() {
       notes: c.notes,
       paymentTerms: c.paymentTerms,
       dueDate: c.dueDate,
+      issueDate: c.issueDate,
       salespersonId: c.salespersonId || null,
       salespersonName: c.salespersonName || '',
       customerAddress: c.customerAddress || ''
