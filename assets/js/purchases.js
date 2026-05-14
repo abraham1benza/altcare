@@ -30,7 +30,7 @@ const purchases = {
   // ====== ÓRDENES DE COMPRA ======
 
   /** Crea OC. Cabecera + items con MP, cantidad, precio. */
-  createPO({ supplierId, currency: docCurrency, rateType, items, notes, expectedDate }) {
+  createPO({ supplierId, currency: docCurrency, rateType, items, notes, expectedDate, issueDate }) {
     const supplier = db.getById(db.COLLECTIONS.suppliers, supplierId);
     if (!supplier) throw new Error('Proveedor no encontrado');
     if (!items || !items.length) throw new Error('La OC debe tener al menos un ítem');
@@ -39,15 +39,26 @@ const purchases = {
     // Calcular totales
     const subtotal = items.reduce((s, it) => s + (it.quantity * it.unitPrice), 0);
 
+    // === Fecha y tasa histórica congelada ===
+    // Respetar la fecha que mandó el usuario; si no, hoy. La tasa se toma
+    // del BCV de esa fecha (no del actual), así una OC con fecha vieja queda
+    // con la tasa correcta del día.
+    const effectiveIssueDate = issueDate || new Date().toISOString().slice(0,10);
+    const effectiveRateType = rateType || 'BCV_USD';
+    const rateInfo = currency.getRateOnDate
+      ? currency.getRateOnDate(effectiveIssueDate, effectiveRateType)
+      : null;
+    const effectiveRateValue = rateInfo?.value || currency.getRate(effectiveRateType)?.value || 0;
+
     const po = {
       code,
       supplierId,
       supplierName: supplier.name,
       supplierRif: supplier.rif,
       currency: docCurrency || supplier.preferredCurrency || 'USD',
-      rateType: rateType || 'BCV_USD',
-      rateValue: currency.getRate(rateType || 'BCV_USD')?.value || 0,
-      issueDate: new Date().toISOString().slice(0,10),
+      rateType: effectiveRateType,
+      rateValue: effectiveRateValue,
+      issueDate: effectiveIssueDate,
       expectedDate: expectedDate || null,
       items: items.map(it => ({
         rawMaterialId: it.rawMaterialId,
@@ -187,6 +198,21 @@ const purchases = {
       islrRate: isNote ? 0 : (parseFloat(islrRate) || 0)
     });
 
+    // === Fecha y tasa histórica congelada ===
+    // Si el doc viene de una PO, heredar su tasa (la del día de la PO).
+    // Si no hay PO, tomar la tasa BCV del día de la factura (no la actual).
+    const effectiveIssueDate = issueDate || new Date().toISOString().slice(0,10);
+    const effectiveRateType = po?.rateType || 'BCV_USD';
+    let effectiveRateValue;
+    if (po?.rateValue) {
+      effectiveRateValue = po.rateValue;
+    } else {
+      const rateInfo = currency.getRateOnDate
+        ? currency.getRateOnDate(effectiveIssueDate, effectiveRateType)
+        : null;
+      effectiveRateValue = rateInfo?.value || currency.getActiveRate()?.value || 0;
+    }
+
     const invoice = {
       code,
       inventoryType: docType,             // 'FACTURA' | 'NOTA_ENTREGA'
@@ -197,11 +223,11 @@ const purchases = {
       supplierRif: supplier.rif,
       supplierInvoiceNumber: isNote ? '' : (supplierInvoiceNumber || ''),  // las NE no tienen número fiscal
       supplierInvoiceControl: isNote ? '' : (supplierInvoiceControl || ''),
-      issueDate: issueDate || new Date().toISOString().slice(0,10),
+      issueDate: effectiveIssueDate,
       dueDate: dueDate || null,
       currency: po?.currency || supplier.preferredCurrency || 'USD',
-      rateType: po?.rateType || 'BCV_USD',
-      rateValue: po?.rateValue || (currency.getActiveRate()?.value || 0),
+      rateType: effectiveRateType,
+      rateValue: effectiveRateValue,
       items: items.map(it => ({
         rawMaterialId: it.rawMaterialId,
         rawMaterialName: it.rawMaterialName,

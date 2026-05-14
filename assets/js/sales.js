@@ -518,12 +518,24 @@ const sales = {
    * Crea un documento de venta en estado inicial (PEDIDO por defecto).
    * Items: [{ formulaId, formulaName, fgLotId (opcional), quantity, unitPrice, unit, notes }]
    */
-  create({ customerId, currency: docCurrency, rateType, items, status, notes, paymentTerms, dueDate, salespersonId, salespersonName, customerAddress }) {
+  create({ customerId, currency: docCurrency, rateType, items, status, notes, paymentTerms, dueDate, salespersonId, salespersonName, customerAddress, issueDate }) {
     const customer = db.getById(db.COLLECTIONS.customers, customerId);
     if (!customer) throw new Error('Cliente no encontrado');
     if (!items || !items.length) throw new Error('Debe haber al menos un ítem');
 
     const cfg = db.getById(db.COLLECTIONS.config, 'main') || {};
+
+    // === Fecha y tasa congelada al día del documento ===
+    // Si no viene fecha, usar hoy. Si viene, respetarla y traer la tasa BCV
+    // de ese día (no la actual). Esto resuelve el caso: cargo hoy una factura
+    // con fecha de hace 3 días → debe quedar la tasa de hace 3 días, no la
+    // de hoy. Importante para libros SENIAT y para el totalVES correcto.
+    const effectiveIssueDate = issueDate || new Date().toISOString().slice(0,10);
+    const effectiveRateType = rateType || (cfg.defaultRateType || 'BCV_USD');
+    const rateInfo = currency.getRateOnDate
+      ? currency.getRateOnDate(effectiveIssueDate, effectiveRateType)
+      : null;
+    const effectiveRateValue = rateInfo?.value || currency.getRate(effectiveRateType)?.value || 0;
 
     // Normalizar items y calcular totales
     const normalizedItems = items.map(it => ({
@@ -575,13 +587,13 @@ const sales = {
       // Si nació como NE y luego se convirtió a Factura, guardamos el código original
       noteEntregaCode: isNotaEntrega ? code : null,
       // Fechas
-      issueDate: new Date().toISOString().slice(0,10),
+      issueDate: effectiveIssueDate,
       dueDate: dueDate || null,
       paymentTerms: paymentTerms || cfg.invoicePaymentTermsDefault || 'Contado',
       // Moneda
       currency: docCurrency || customer.preferredCurrency || 'VES',
-      rateType: rateType || (cfg.defaultRateType || 'BCV_USD'),
-      rateValue: currency.getRate(rateType || cfg.defaultRateType || 'BCV_USD')?.value || 0,
+      rateType: effectiveRateType,
+      rateValue: effectiveRateValue,
       // Items
       items: normalizedItems,
       // Totales
@@ -592,7 +604,7 @@ const sales = {
       ivaAmount: round(ivaAmount),
       total: round(total),
       // Equivalente en VES (para libros SENIAT cuando sea factura)
-      totalVES: docCurrency === 'VES' ? round(total) : round(total * (currency.getRate(rateType || cfg.defaultRateType || 'BCV_USD')?.value || 0)),
+      totalVES: docCurrency === 'VES' ? round(total) : round(total * effectiveRateValue),
       // Pago
       paidAmount: 0,
       paidPercent: 0,

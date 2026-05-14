@@ -883,6 +883,183 @@ const reports = {
     return { rows, totals };
   },
 
+  /**
+   * ===== REPORTE DE PÉRDIDA/GANANCIA CAMBIARIA =====
+   *
+   * Calcula dos tipos de exposición al riesgo cambiario, considerando solo
+   * movimientos en VES (los pagos en USD/EUR no tienen riesgo cambiario):
+   *
+   * 1. DIFERENCIAL al momento del cobro/pago (BCV vs tasa de mercado):
+   *    El cobro se valoró al BCV (lo que dice SENIAT) pero en el mercado real
+   *    esos Bs valían X% menos USD. Ese gap es la "pérdida invisible" del día
+   *    de la transacción.
+   *
+   * 2. DEPRECIACIÓN por permanencia en caja Bs:
+   *    Los Bs que entraron hace N días y siguen en banco hoy valen menos USD
+   *    (porque el dólar subió desde entonces). Se calcula contra el saldo
+   *    actual de las cuentas en Bs.
+   *
+   * @param {string} from - YYYY-MM-DD
+   * @param {string} to   - YYYY-MM-DD
+   * @param {string} compareRateType - 'BINANCE' (default) | 'BCV_USD' | etc.
+   */
+  perdidaCambiaria(from, to, compareRateType = 'BINANCE') {
+    // ====== 1) DIFERENCIAL POR MOVIMIENTO ======
+    // Para cada cobro/pago en VES: comparar lo que valía a BCV vs lo que valía
+    // a la tasa de comparación (Binance por default) ese mismo día.
+    const allPayments = db.query(db.COLLECTIONS.payments, p =>
+      p.currency === 'VES' &&
+      (p.direction === 'IN' || p.direction === 'OUT' || p.direction === 'ADJUSTMENT_IN' || p.direction === 'ADJUSTMENT_OUT') &&
+      this.inRange(p.date, from, to)
+    );
+
+    const movementRows = [];
+    allPayments.forEach(p => {
+      const bcvOnDate = currency.getRateOnDate
+        ? currency.getRateOnDate(p.date, 'BCV_USD')
+        : null;
+      const compareOnDate = currency.getRateOnDate
+        ? currency.getRateOnDate(p.date, compareRateType)
+        : null;
+      const bcvRate = bcvOnDate?.value || p.rateAtPayment || 0;
+      const compareRate = compareOnDate?.value || 0;
+      if (!bcvRate || !compareRate) return;
+
+      // USD que "vale" según cada tasa
+      const usdAtBCV     = p.amount / bcvRate;
+      const usdAtCompare = p.amount / compareRate;
+      // Diferencia: negativo si la tasa de comparación es mayor (Bs valen menos USD)
+      const diffUSD = Math.round((usdAtCompare - usdAtBCV) * 100) / 100;
+      const diffPct = compareRate > 0 ? ((compareRate - bcvRate) / compareRate) * 100 : 0;
+
+      movementRows.push({
+        date: p.date,
+        paymentCode: p.code,
+        direction: p.direction,
+        counterpartyName: p.counterpartyName || '',
+        relatedDocCode: p.relatedDocCode || '',
+        amountVES: p.amount,
+        bcvRate,
+        bcvRateFound: bcvOnDate?.found || false,
+        compareRate,
+        compareRateFound: compareOnDate?.found || false,
+        usdAtBCV: Math.round(usdAtBCV * 100) / 100,
+        usdAtCompare: Math.round(usdAtCompare * 100) / 100,
+        diffUSD,
+        diffPct: Math.round(diffPct * 100) / 100
+      });
+    });
+
+    // Totales del diferencial
+    const movementTotals = movementRows.reduce((t, r) => ({
+      countMovements: t.countMovements + 1,
+      totalVES: t.totalVES + r.amountVES,
+      totalUsdBCV: t.totalUsdBCV + r.usdAtBCV,
+      totalUsdCompare: t.totalUsdCompare + r.usdAtCompare,
+      // Pérdida total = suma de diffUSD negativos (cobros donde Bs valieron menos en compare)
+      // Para PAGOS salientes el signo se invierte: pagar con Bs depreciados es ganancia (pagaste menos USD reales)
+      totalDiff: t.totalDiff + (r.direction === 'OUT' ? -r.diffUSD : r.diffUSD)
+    }), { countMovements: 0, totalVES: 0, totalUsdBCV: 0, totalUsdCompare: 0, totalDiff: 0 });
+    movementTotals.totalUsdBCV     = Math.round(movementTotals.totalUsdBCV * 100) / 100;
+    movementTotals.totalUsdCompare = Math.round(movementTotals.totalUsdCompare * 100) / 100;
+    movementTotals.totalDiff       = Math.round(movementTotals.totalDiff * 100) / 100;
+
+    // ====== 2) DEPRECIACIÓN POR PERMANENCIA EN CUENTAS BS ======
+    // Para cada cuenta bancaria activa en VES: cuánto valor USD perdió/ganó
+    // su saldo actual respecto al BCV "promedio histórico" de los Bs depositados.
+    // Aproximación: tomamos el saldo actual en Bs y comparamos:
+    //   - cuánto USD vale hoy esa plata (al BCV de hoy)
+    //   - cuánto USD valía esa plata cuando fue entrando (promedio ponderado)
+    // Si la diferencia es negativa, hubo depreciación (la plata se devaluó).
+    const accounts = db.getAll(db.COLLECTIONS.bankAccounts).filter(a => a.active && a.currency === 'VES');
+    const bcvToday = currency.getRate('BCV_USD')?.value || 0;
+
+    const accountRows = [];
+    accounts.forEach(acc => {
+      const balanceVES = acc.balance || 0;
+      if (Math.abs(balanceVES) < 0.01) return;
+      const valueUSDToday = bcvToday > 0 ? balanceVES / bcvToday : 0;
+
+      // Buscar todos los movimientos de ENTRADA a esta cuenta dentro del rango
+      // y calcular el USD ponderado promedio que valía la plata al entrar.
+      const moves = db.query(db.COLLECTIONS.bankMoves, m =>
+        m.accountId === acc.id &&
+        m.amount > 0 &&
+        this.inRange(m.date, from, to)
+      );
+      let totalVESEntered = 0;
+      let totalUSDAtDeposit = 0;
+      moves.forEach(m => {
+        const rateAtDate = currency.getRateOnDate
+          ? currency.getRateOnDate(m.date, 'BCV_USD')
+          : null;
+        const r = rateAtDate?.value || m.rate || 0;
+        if (!r) return;
+        totalVESEntered += m.amount;
+        totalUSDAtDeposit += (m.amount / r);
+      });
+
+      // Valor USD que esos depósitos "valen" hoy al BCV actual (proporcional al saldo)
+      let valueUSDAtDeposit = 0;
+      if (totalVESEntered > 0 && balanceVES > 0) {
+        // Proporción del saldo actual sobre lo que entró → USD ponderado correspondiente
+        const proportion = Math.min(balanceVES / totalVESEntered, 1);
+        valueUSDAtDeposit = totalUSDAtDeposit * proportion;
+      }
+
+      const depreciation = Math.round((valueUSDToday - valueUSDAtDeposit) * 100) / 100;
+
+      accountRows.push({
+        accountId: acc.id,
+        accountName: acc.name,
+        bankName: acc.bank || '',
+        balanceVES,
+        valueUSDToday: Math.round(valueUSDToday * 100) / 100,
+        valueUSDAtDeposit: Math.round(valueUSDAtDeposit * 100) / 100,
+        depreciation,                       // negativo = perdió valor
+        bcvToday,
+        movesCount: moves.length,
+        totalVESEntered: Math.round(totalVESEntered * 100) / 100
+      });
+    });
+
+    const accountTotals = accountRows.reduce((t, r) => ({
+      totalBalanceVES: t.totalBalanceVES + r.balanceVES,
+      totalValueUSDToday: t.totalValueUSDToday + r.valueUSDToday,
+      totalValueUSDAtDeposit: t.totalValueUSDAtDeposit + r.valueUSDAtDeposit,
+      totalDepreciation: t.totalDepreciation + r.depreciation
+    }), { totalBalanceVES: 0, totalValueUSDToday: 0, totalValueUSDAtDeposit: 0, totalDepreciation: 0 });
+    Object.keys(accountTotals).forEach(k => {
+      accountTotals[k] = Math.round(accountTotals[k] * 100) / 100;
+    });
+
+    // ====== RESUMEN GLOBAL ======
+    const netUSD = Math.round((movementTotals.totalDiff + accountTotals.totalDepreciation) * 100) / 100;
+    const avgDiffPct = movementRows.length
+      ? Math.round((movementRows.reduce((s, r) => s + r.diffPct, 0) / movementRows.length) * 100) / 100
+      : 0;
+
+    // Fechas con tasa faltante (BCV o compareRate no encontrada exacta)
+    const missingDates = new Set();
+    movementRows.forEach(r => {
+      if (!r.bcvRateFound) missingDates.add(`${r.date} (BCV)`);
+      if (!r.compareRateFound) missingDates.add(`${r.date} (${compareRateType})`);
+    });
+
+    return {
+      from, to,
+      compareRateType,
+      compareRateLabel: currency.getRate(compareRateType)?.label || compareRateType,
+      movementRows,
+      movementTotals,
+      accountRows,
+      accountTotals,
+      netUSD,
+      avgDiffPct,
+      missingRateDates: Array.from(missingDates).sort()
+    };
+  },
+
   // ====== EXPORTACIÓN CSV ======
 
   /**
