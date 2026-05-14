@@ -378,9 +378,7 @@ const reports = {
 
   estadoCuentaCliente(customerId, from, to) {
     const customer = db.getById(db.COLLECTIONS.customers, customerId);
-    const docs = db.getAll(db.COLLECTIONS.salesOrders)
-      .filter(d => d.customerId === customerId && (d.type === 'FACTURA' || d.type === 'NOTA_ENTREGA') && !d.cancelled && this.inRange(d.issueDate, from, to))
-      .sort((a,b) => (a.issueDate||'').localeCompare(b.issueDate||''));
+
     // Trae cobros normales (IN) y ajustes (ADJUSTMENT_IN reduce saldo, ADJUSTMENT_OUT aumenta saldo).
     // Los ajustes están en la misma colección de payments con direction distinto.
     const allPayments = db.query(db.COLLECTIONS.payments, p =>
@@ -388,6 +386,17 @@ const reports = {
       p.counterpartyId === customerId &&
       this.inRange(p.date, from, to)
     );
+
+    // Para evitar saldos negativos huérfanos: si hay un pago/ajuste en el rango
+    // sobre un documento que cayó FUERA del rango, igualmente traemos ese doc
+    // para que el cargo original aparezca y el saldo cuadre. Sin esto, vemos
+    // -$157.50 cuando en realidad el cliente debe $19.70 porque la NE original
+    // (de febrero) queda invisible.
+    const docIdsReferencedByPayments = new Set(allPayments.map(p => p.relatedDocId).filter(Boolean));
+    const docs = db.getAll(db.COLLECTIONS.salesOrders)
+      .filter(d => d.customerId === customerId && (d.type === 'FACTURA' || d.type === 'NOTA_ENTREGA') && !d.cancelled)
+      .filter(d => this.inRange(d.issueDate, from, to) || docIdsReferencedByPayments.has(d.id))
+      .sort((a,b) => (a.issueDate||'').localeCompare(b.issueDate||''));
 
     // Movimientos: cargo (factura/NE) y abono (pago)
     const movements = [];
@@ -403,6 +412,30 @@ const reports = {
         currency: d.currency,
         docId: d.id
       });
+
+      // === COBRO INICIAL MIGRADO ===
+      // Si el doc viene de una importación (isInitialLoad) y trae paidAmount,
+      // ese monto NO existe como payment record separado: está embebido en el
+      // doc. Para que el reporte cuadre, lo mostramos como movimiento explícito.
+      // Calculamos cuánto del paidAmount NO viene de payments reales:
+      const paymentsForThisDoc = allPayments.filter(p => p.relatedDocId === d.id);
+      const fromExplicitPayments = paymentsForThisDoc.reduce((s, p) => {
+        if (p.direction === 'IN' || p.direction === 'ADJUSTMENT_IN') return s + (p.amountInDocCurrency || p.amount);
+        return s;
+      }, 0);
+      const initialMigratedPayment = Math.round(((d.paidAmount || 0) - fromExplicitPayments) * 100) / 100;
+      if (d.isInitialLoad && initialMigratedPayment > 0.01) {
+        movements.push({
+          date: d.issueDate,  // misma fecha que el doc (no sabemos la real)
+          type: 'INITIAL_PAYMENT',
+          ref: d.code,
+          description: 'Cobro inicial migrado del sistema anterior',
+          debit: 0,
+          credit: initialMigratedPayment,
+          currency: d.currency,
+          docId: d.id
+        });
+      }
     });
     allPayments.forEach(p => {
       // ¿La cuenta donde entró el pago es de la empresa (fiscal) o personal?
