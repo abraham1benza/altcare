@@ -323,9 +323,14 @@ function newPaymentForInvoice(invoiceId) {
     docTotal: inv.totalToPay,
     docPaid: inv.paidAmount || 0,
     docRemaining: remaining,
-    currency: inv.currency,
-    amount: remaining,
-    amountInDocCurrency: remaining,
+    // === Moneda vacía al arranque ===
+    // Forzamos al usuario a elegir explícitamente la moneda del pago para
+    // evitar confusiones cuando se paga en Bs algo facturado en USD (caso
+    // común: la pantalla por default asumía USD y aceptaba "100" como USD
+    // cuando en realidad eran 100 Bs).
+    currency: '',
+    amount: 0,
+    amountInDocCurrency: 0,
     rateUsed: null,
     // === Tasa congelada del pago (BCV de hoy) ===
     rateAtPayment: bcv?.value || 0,
@@ -361,9 +366,11 @@ function newPaymentForDoc(docId) {
     docTotal: doc.total,
     docPaid: doc.paidAmount || 0,
     docRemaining: remaining,
-    currency: doc.currency,
-    amount: remaining,
-    amountInDocCurrency: remaining,
+    // === Moneda vacía al arranque ===
+    // Forzamos al usuario a elegir explícitamente la moneda del cobro.
+    currency: '',
+    amount: 0,
+    amountInDocCurrency: 0,
     rateUsed: null,
     rateAtPayment: bcv?.value || 0,
     rateTypeAtPayment: 'BCV_USD',
@@ -381,8 +388,142 @@ function newPaymentForDoc(docId) {
   render();
 }
 
+/**
+ * Pantalla previa al modal de pago: forzar al usuario a elegir la moneda del
+ * cobro/pago antes de mostrar el resto del formulario. Evita el bug de cobrar
+ * 100 pensando en Bs y que el sistema lo interprete como USD.
+ */
+function renderCurrencyPicker() {
+  const c = creating;
+  const isPayment = c.direction === 'OUT';
+  return ui.renderLayout({
+    activeModule: 'pagos',
+    pageEyebrow: isPayment ? 'Registrar pago' : 'Registrar cobro',
+    pageTitle: c.relatedDocLabel,
+    contentHtml: `
+      <div class="grid grid-4 mb-24">
+        <div class="kpi"><div class="kpi-label">${isPayment?'Proveedor':'Cliente'}</div><div class="kpi-value" style="font-size:18px;">${ui.escape(c.counterpartyName)}</div></div>
+        <div class="kpi"><div class="kpi-label">Total factura</div><div class="kpi-value" style="font-size:20px;">${currency.formatCompact(c.docTotal, c.docCurrency)}</div></div>
+        <div class="kpi"><div class="kpi-label">Ya ${isPayment?'pagado':'cobrado'}</div><div class="kpi-value" style="font-size:20px;">${currency.formatCompact(c.docPaid, c.docCurrency)}</div></div>
+        <div class="kpi"><div class="kpi-label">Pendiente</div><div class="kpi-value" style="color:var(--accent-ink);">${currency.formatCompact(c.docRemaining, c.docCurrency)}</div></div>
+      </div>
+
+      <div class="card mb-24" style="max-width:680px;">
+        <div class="card-header"><div class="card-title">Paso 1 — ¿En qué moneda ${isPayment?'pagaste':'cobraste'}?</div></div>
+        <div style="padding:8px 4px 4px;font-size:13px;color:var(--ink-2);line-height:1.5;margin-bottom:14px;">
+          Esto es importante porque la factura está en <strong>${c.docCurrency}</strong>. Si ${isPayment?'pagaste':'cobraste'} en otra moneda, vas a poder elegir la tasa de conversión en el paso siguiente.
+        </div>
+        <div style="display:flex;flex-direction:column;gap:10px;">
+          <button class="btn btn-secondary" style="justify-content:flex-start;padding:14px 18px;font-size:14px;" onclick="pickPaymentCurrency('${c.docCurrency}')">
+            ${c.docCurrency} <span class="text-muted" style="font-weight:400;font-size:12px;margin-left:8px;">— misma moneda que la factura</span>
+          </button>
+          ${['VES','USD','EUR'].filter(cc => cc !== c.docCurrency).map(cc => `
+            <button class="btn btn-secondary" style="justify-content:flex-start;padding:14px 18px;font-size:14px;" onclick="pickPaymentCurrency('${cc}')">${cc}</button>
+          `).join('')}
+        </div>
+        <div style="margin-top:18px;display:flex;justify-content:flex-end;">
+          <button class="btn btn-ghost" onclick="creating=null; render();">Cancelar</button>
+        </div>
+      </div>
+    `
+  });
+}
+
+/**
+ * Llamada desde el picker de moneda. Setea la moneda elegida, inicializa
+ * el monto al pendiente (en la moneda correcta convertido), y renderiza
+ * el modal completo.
+ */
+function pickPaymentCurrency(ccy) {
+  const c = creating;
+  c.currency = ccy;
+  // Inicializar el monto pendiente en la moneda elegida.
+  if (ccy === c.docCurrency) {
+    c.amount = c.docRemaining;
+    c.amountInDocCurrency = c.docRemaining;
+  } else {
+    // Conversión cruzada: convertir el pendiente a la nueva moneda usando
+    // la tasa histórica del día del pago (o la actual si no hay).
+    const rateInfo = currency.getRateOnDate(c.date, 'BCV_USD');
+    const rate = rateInfo?.value || 0;
+    if (rate > 0) {
+      // pendiente en docCurrency → pasar a ccy vía VES como pivot
+      let pendingInVES = 0;
+      if (c.docCurrency === 'VES') pendingInVES = c.docRemaining;
+      else if (c.docCurrency === 'USD') pendingInVES = c.docRemaining * rate;
+      else if (c.docCurrency === 'EUR') {
+        const eurRate = currency.getRate('BCV_EUR');
+        pendingInVES = eurRate?.value ? c.docRemaining * eurRate.value : 0;
+      }
+      let pendingInCcy = pendingInVES;
+      if (ccy === 'USD') pendingInCcy = pendingInVES / rate;
+      else if (ccy === 'EUR') {
+        const eurRate = currency.getRate('BCV_EUR');
+        pendingInCcy = eurRate?.value ? pendingInVES / eurRate.value : 0;
+      }
+      c.amount = Math.round(pendingInCcy * 100) / 100;
+      c.amountInDocCurrency = c.docRemaining;
+    } else {
+      c.amount = 0;
+      c.amountInDocCurrency = 0;
+    }
+    // Configurar la tasa de conversión por defecto al BCV del día del pago
+    if (rateInfo?.value) {
+      c.conversionRate = rateInfo.value;
+      c.conversionRateType = 'BCV_USD';
+      c.conversionRateLabel = rateInfo.found
+        ? `BCV del ${rateInfo.date}`
+        : `BCV ${rateInfo.date ? 'al ' + rateInfo.date : 'actual'}`;
+      c.rateAtPayment = rateInfo.value;
+      c.rateTypeAtPayment = 'BCV_USD';
+    }
+  }
+  render();
+}
+
+/**
+ * Al cambiar la fecha del pago, si está cargada la tasa histórica del BCV
+ * para esa fecha, la trae automáticamente. Esto resuelve el caso: cobré 100
+ * USD en Bs hace 3 días → al BCV de hace 3 días equivale a X Bs, no al BCV
+ * de hoy. Si no hay tasa histórica para esa fecha, mantiene la actual y avisa.
+ */
+function updatePaymentDate(val) {
+  const c = creating;
+  c.date = val;
+  // Si es conversión cruzada con BCV_USD, intentar traer la tasa histórica
+  const needsRate = c.currency && c.currency !== c.docCurrency &&
+                    ((c.currency === 'USD' && c.docCurrency === 'VES') ||
+                     (c.currency === 'VES' && c.docCurrency === 'USD'));
+  if (needsRate && !c.useCustomRate) {
+    const info = currency.getRateOnDate(val, 'BCV_USD');
+    if (info?.value) {
+      c.conversionRate = info.value;
+      c.conversionRateType = 'BCV_USD';
+      c.conversionRateLabel = info.found
+        ? `BCV del ${info.date} ✓`
+        : `BCV ${info.date ? 'al ' + info.date + ' (más reciente)' : 'actual'}`;
+      c.rateAtPayment = info.value;
+      c.rateTypeAtPayment = 'BCV_USD';
+      if (!info.found) {
+        ui.toast(`No hay tasa BCV cargada para ${val}. Usando la del ${info.date}. Si la sabés, cárgala manualmente.`, 'warning', 6000);
+      }
+    }
+  }
+  render();
+}
+
+
 function renderCreate() {
   const c = creating;
+
+  // === PASO 1: ELEGIR MONEDA DEL PAGO ===
+  // Si todavía no se eligió la moneda, mostramos solo el selector.
+  // Esto previene el bug "puse 100 pensando en Bs pero el sistema lo
+  // interpretó como USD porque era la moneda default del documento".
+  if (!c.currency) {
+    return renderCurrencyPicker();
+  }
+
   const methods = db.getAll(db.COLLECTIONS.paymentMethods).filter(m => m.active !== false);
   const accounts = db.getAll(db.COLLECTIONS.bankAccounts).filter(a => a.active !== false);
   const selectedMethod = methods.find(m => m.id === c.paymentMethodId);
@@ -530,7 +671,8 @@ function renderCreate() {
           </div>
           <div class="field">
             <label class="field-label">Fecha *</label>
-            <input class="input" type="date" value="${c.date}" onchange="creating.date=this.value">
+            <input class="input" type="date" value="${c.date}" onchange="updatePaymentDate(this.value)">
+            ${c.currency && c.currency !== c.docCurrency ? `<div class="field-hint" style="color:var(--ink-3);">Al cambiar la fecha, se trae la tasa BCV de ese día si está cargada en sistema.</div>` : ''}
           </div>
           <div class="field">
             <label class="field-label">Método de pago *</label>
@@ -1101,6 +1243,9 @@ Object.assign(window, {
   newPaymentForInvoice: typeof newPaymentForInvoice !== 'undefined' ? newPaymentForInvoice : undefined,
   newPaymentForDoc: typeof newPaymentForDoc !== 'undefined' ? newPaymentForDoc : undefined,
   renderCreate: typeof renderCreate !== 'undefined' ? renderCreate : undefined,
+  renderCurrencyPicker: typeof renderCurrencyPicker !== 'undefined' ? renderCurrencyPicker : undefined,
+  pickPaymentCurrency: typeof pickPaymentCurrency !== 'undefined' ? pickPaymentCurrency : undefined,
+  updatePaymentDate: typeof updatePaymentDate !== 'undefined' ? updatePaymentDate : undefined,
   updateAmount: typeof updateAmount !== 'undefined' ? updateAmount : undefined,
   refreshAmountPreview: typeof refreshAmountPreview !== 'undefined' ? refreshAmountPreview : undefined,
   updateCurrency: typeof updateCurrency !== 'undefined' ? updateCurrency : undefined,
