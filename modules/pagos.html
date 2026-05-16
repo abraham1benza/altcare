@@ -601,7 +601,7 @@ function renderCreate() {
             <input type="radio" name="convrate" ${c.useCustomRate?'checked':''} onchange="useCustomRate()">
             <div style="flex:1;">
               <div style="font-weight:600;font-size:13px;">Personalizada</div>
-              ${c.useCustomRate ? `<input type="number" step="0.0001" class="input" style="margin-top:6px;" value="${c.conversionRate}" oninput="updateCustomRate(this.value)" placeholder="Ej: 35.5">` : `<div class="text-muted" style="font-size:11px;">Para Zelle, P2P privado, acuerdo especial...</div>`}
+              ${c.useCustomRate ? `<input type="number" step="0.0001" class="input" style="margin-top:8px;width:100%;max-width:280px;padding:10px 14px;font-size:15px;font-family:var(--font-mono);text-align:right;" value="${c.conversionRate}" oninput="updateCustomRate(this.value)" placeholder="Ej: 38.5000" autofocus>` : `<div class="text-muted" style="font-size:11px;">Para Zelle, P2P privado, acuerdo especial...</div>`}
             </div>
           </label>
         </div>
