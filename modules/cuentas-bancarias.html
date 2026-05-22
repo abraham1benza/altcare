@@ -252,33 +252,99 @@ function renderList() {
   });
 }
 
-function renderDetail() {
+// ====== ESTADO DE FILTROS DEL DETALLE ======
+let _detailFilters = { search: '', dateFrom: '', dateTo: '', salespersonId: '' };
+
+function _applyDetailFilters(moves) {
+  const f = _detailFilters;
+  return moves.filter(m => {
+    // Filtro fecha desde
+    if (f.dateFrom && (m.date || '') < f.dateFrom) return false;
+    // Filtro fecha hasta
+    if (f.dateTo && (m.date || '') > f.dateTo) return false;
+    // Filtro vendedor: cruzar por relatedDocId → salesOrder.salespersonId
+    if (f.salespersonId) {
+      const doc = m.relatedDocId ? db.getById(db.COLLECTIONS.salesOrders, m.relatedDocId) : null;
+      if (!doc || doc.salespersonId !== f.salespersonId) return false;
+    }
+    // Buscador: busca en cualquier campo de texto o monto
+    if (f.search) {
+      const q = f.search.toLowerCase();
+      const amtStr = String(m.amount || '');
+      const accountAmt = String(m.amountInAccountCurrency || '');
+      const balance = String(m.runningBalance || '');
+      const fields = [
+        m.counterpartyName || '', m.reference || '', m.type || '',
+        m.date || '', m.currency || '', amtStr, accountAmt, balance,
+        m.relatedDocCode || '', m.notes || ''
+      ];
+      if (!fields.some(v => v.toLowerCase().includes(q))) return false;
+    }
+    return true;
+  });
+}
+
+function _setDetailFilter(key, val) {
+  _detailFilters[key] = val;
+  _renderDetailContent();
+}
+
+function _clearDetailFilters() {
+  _detailFilters = { search: '', dateFrom: '', dateTo: '', salespersonId: '' };
+  _renderDetailContent();
+}
+
+function _renderDetailContent() {
   const a = db.getById(db.COLLECTIONS.bankAccounts, selectedId);
-  if (!a) { backToList(); return; }
-  let moves = db.query(db.COLLECTIONS.bankMoves, m => m.accountId === a.id);
-  moves.sort((x,y) => (y.timestamp||'').localeCompare(x.timestamp||''));
+  if (!a) return;
 
-  // Stats
-  const credits = moves.filter(m => m.direction === 'IN').reduce((s,m)=>s+Math.abs(m.amount||0), 0);
-  const debits = moves.filter(m => m.direction === 'OUT').reduce((s,m)=>s+Math.abs(m.amount||0), 0);
+  // Todos los movimientos de la cuenta (sin filtrar) para los KPIs
+  const allMoves = db.query(db.COLLECTIONS.bankMoves, m => m.accountId === a.id);
+  allMoves.sort((x,y) => (y.timestamp||'').localeCompare(x.timestamp||''));
 
-  const movesTable = moves.length ? `<table>
+  // Movimientos filtrados para la tabla
+  const filtered = _applyDetailFilters(allMoves);
+
+  const hasFilters = _detailFilters.search || _detailFilters.dateFrom || _detailFilters.dateTo || _detailFilters.salespersonId;
+
+  // KPIs: siempre sobre todos los movimientos (no filtrados)
+  const credits = allMoves.filter(m => m.direction === 'IN').reduce((s,m)=>s+Math.abs(m.amount||0), 0);
+  const debits  = allMoves.filter(m => m.direction === 'OUT').reduce((s,m)=>s+Math.abs(m.amount||0), 0);
+
+  // KPIs del rango filtrado
+  const filteredCredits = filtered.filter(m => m.direction === 'IN').reduce((s,m)=>s+Math.abs(m.amountInAccountCurrency??m.amount??0), 0);
+  const filteredDebits  = filtered.filter(m => m.direction === 'OUT').reduce((s,m)=>s+Math.abs(m.amountInAccountCurrency??m.amount??0), 0);
+
+  // Vendedores disponibles (solo los que tienen movimientos en esta cuenta)
+  const salesOrderIds = [...new Set(allMoves.filter(m => m.relatedDocId).map(m => m.relatedDocId))];
+  const vendedoresMap = {};
+  salesOrderIds.forEach(docId => {
+    const doc = db.getById(db.COLLECTIONS.salesOrders, docId);
+    if (doc && doc.salespersonId && doc.salespersonName) {
+      vendedoresMap[doc.salespersonId] = doc.salespersonName;
+    }
+  });
+  const vendedores = Object.entries(vendedoresMap).map(([id, name]) => ({ id, name })).sort((a,b) => a.name.localeCompare(b.name));
+
+  const typeLabel = t => ({'OPENING':'Saldo inicial','PAYMENT_OUT':'Pago a proveedor','PAYMENT_IN':'Cobro de cliente','DEPOSIT':'Depósito','WITHDRAWAL':'Retiro','TRANSFER_IN':'Transferencia recibida','TRANSFER_OUT':'Transferencia enviada','FEE':'Comisión','ADJUSTMENT':'Ajuste'}[t]) || t;
+
+  const movesTable = filtered.length ? `<table>
     <thead><tr><th>Fecha</th><th>Tipo</th><th>Concepto</th><th style="text-align:right;">Monto original</th><th style="text-align:right;">Aplicado a la cuenta</th><th style="text-align:right;">Saldo</th></tr></thead>
-    <tbody>${moves.map(m => {
+    <tbody>${filtered.map(m => {
       const sign = m.direction === 'IN' ? '+' : '−';
       const color = m.direction === 'IN' ? 'var(--success)' : 'var(--danger)';
-      const typeLabel = ({'OPENING':'Saldo inicial','PAYMENT_OUT':'Pago a proveedor','PAYMENT_IN':'Cobro de cliente','DEPOSIT':'Depósito','WITHDRAWAL':'Retiro','TRANSFER_IN':'Transferencia recibida','TRANSFER_OUT':'Transferencia enviada','FEE':'Comisión','ADJUSTMENT':'Ajuste'}[m.type]) || m.type;
-
-      // Distinguir si hubo conversión cruzada
       const wasConverted = m.conversionApplied && m.currency !== a.currency;
       const accountAmount = m.amountInAccountCurrency != null ? m.amountInAccountCurrency : m.amount;
-
+      // Vendedor asociado al movimiento (si aplica)
+      const relDoc = m.relatedDocId ? db.getById(db.COLLECTIONS.salesOrders, m.relatedDocId) : null;
+      const vendName = relDoc?.salespersonName || '';
       return `<tr>
         <td><span class="text-muted" style="font-size:12px;">${ui.formatDate(m.date)}</span></td>
-        <td><span class="badge badge-plain" style="font-size:10px;">${typeLabel}</span></td>
+        <td><span class="badge badge-plain" style="font-size:10px;">${typeLabel(m.type)}</span></td>
         <td>
           <div class="td-strong" style="font-size:13px;">${ui.escape(m.counterpartyName||m.reference||'—')}</div>
           ${m.reference && m.counterpartyName && m.reference !== m.counterpartyName ? `<div class="text-muted" style="font-size:11px;">${ui.escape(m.reference)}</div>` : ''}
+          ${vendName ? `<div class="text-muted" style="font-size:10px;margin-top:1px;">👤 ${ui.escape(vendName)}</div>` : ''}
         </td>
         <td style="text-align:right;color:${color};font-weight:600;font-family:var(--font-mono);font-size:13px;">${sign}${currency.format(Math.abs(m.amount||0), m.currency)}</td>
         <td style="text-align:right;font-family:var(--font-mono);">
@@ -287,7 +353,71 @@ function renderDetail() {
         </td>
         <td style="text-align:right;"><span class="td-mono td-strong">${currency.format(m.runningBalance||0, a.currency)}</span></td>
       </tr>`;
-    }).join('')}</tbody></table>` : '<div class="empty-state"><div class="empty-state-title">Sin movimientos</div><div class="empty-state-text">Los pagos y cobros realizados desde esta cuenta aparecerán aquí.</div></div>';
+    }).join('')}</tbody></table>`
+  : `<div class="empty-state"><div class="empty-state-title">${hasFilters ? 'Sin resultados' : 'Sin movimientos'}</div><div class="empty-state-text">${hasFilters ? 'Ningún movimiento coincide con los filtros aplicados.' : 'Los pagos y cobros realizados desde esta cuenta aparecerán aquí.'}</div>${hasFilters ? `<button class="btn btn-secondary btn-sm" onclick="_clearDetailFilters()" style="margin-top:12px;">Limpiar filtros</button>` : ''}</div>`;
+
+  // Renderizar solo la sección de filtros + tabla (sin rehacer layout completo)
+  const container = document.getElementById('_detail-dynamic');
+  if (!container) return;
+
+  container.innerHTML = `
+    <!-- Filtros de conciliación -->
+    <div class="card mb-16" style="padding:14px 20px;">
+      <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+        <!-- Buscador -->
+        <div style="flex:2;min-width:180px;position:relative;">
+          <span style="position:absolute;left:10px;top:50%;transform:translateY(-50%);color:var(--ink-3);font-size:14px;pointer-events:none;">🔍</span>
+          <input class="input" id="_det-search" style="padding-left:32px;" placeholder="Buscar monto, concepto, referencia..."
+            value="${ui.escape(_detailFilters.search)}"
+            oninput="_setDetailFilter('search', this.value)">
+        </div>
+        <!-- Fecha desde -->
+        <div style="flex:1;min-width:130px;">
+          <input class="input" type="date" title="Desde" value="${_detailFilters.dateFrom}"
+            onchange="_setDetailFilter('dateFrom', this.value)">
+        </div>
+        <!-- Fecha hasta -->
+        <div style="flex:1;min-width:130px;">
+          <input class="input" type="date" title="Hasta" value="${_detailFilters.dateTo}"
+            onchange="_setDetailFilter('dateTo', this.value)">
+        </div>
+        <!-- Vendedor -->
+        ${vendedores.length > 0 ? `
+        <div style="flex:1;min-width:150px;">
+          <select class="select" onchange="_setDetailFilter('salespersonId', this.value)">
+            <option value="">Todos los vendedores</option>
+            ${vendedores.map(v => `<option value="${v.id}" ${_detailFilters.salespersonId===v.id?'selected':''}>${ui.escape(v.name)}</option>`).join('')}
+          </select>
+        </div>` : ''}
+        <!-- Limpiar -->
+        ${hasFilters ? `<button class="btn btn-ghost btn-sm" onclick="_clearDetailFilters()" title="Limpiar filtros" style="white-space:nowrap;">✕ Limpiar</button>` : ''}
+      </div>
+      ${hasFilters ? `
+      <div style="margin-top:10px;padding-top:10px;border-top:1px solid var(--border);display:flex;gap:24px;flex-wrap:wrap;">
+        <span class="text-muted" style="font-size:12px;">${filtered.length} de ${allMoves.length} movimiento${allMoves.length!==1?'s':''}</span>
+        <span style="font-size:12px;color:var(--success);font-family:var(--font-mono);">+${currency.format(filteredCredits, a.currency)}</span>
+        <span style="font-size:12px;color:var(--danger);font-family:var(--font-mono);">−${currency.format(filteredDebits, a.currency)}</span>
+        <span style="font-size:12px;font-weight:600;font-family:var(--font-mono);">Neto: ${currency.format(filteredCredits - filteredDebits, a.currency)}</span>
+      </div>` : `<div class="text-muted" style="font-size:11px;margin-top:6px;">${allMoves.length} movimiento${allMoves.length!==1?'s':''} en total</div>`}
+    </div>
+
+    <!-- Tabla -->
+    <div class="card mb-24" style="padding:0;">
+      ${movesTable}
+    </div>
+  `;
+}
+
+function renderDetail() {
+  const a = db.getById(db.COLLECTIONS.bankAccounts, selectedId);
+  if (!a) { backToList(); return; }
+
+  // Resetear filtros al entrar a una nueva cuenta
+  _detailFilters = { search: '', dateFrom: '', dateTo: '', salespersonId: '' };
+
+  const allMoves = db.query(db.COLLECTIONS.bankMoves, m => m.accountId === a.id);
+  const credits = allMoves.filter(m => m.direction === 'IN').reduce((s,m)=>s+Math.abs(m.amount||0), 0);
+  const debits  = allMoves.filter(m => m.direction === 'OUT').reduce((s,m)=>s+Math.abs(m.amount||0), 0);
 
   ui.renderLayout({
     activeModule: 'cuentas-bancarias', pageEyebrow: 'Cuenta bancaria', pageTitle: a.name,
@@ -303,19 +433,22 @@ function renderDetail() {
         <div class="kpi"><div class="kpi-label">Total egresado</div><div class="kpi-value" style="color:var(--danger);font-size:22px;">−${currency.formatCompact(debits, a.currency)}</div></div>
       </div>
 
-      <div class="card mb-24" style="padding:0;">
-        <div style="padding:14px 20px;border-bottom:1px solid var(--border);"><div class="card-title" style="font-size:15px;">Movimientos · Kardex bancario</div><div class="text-muted" style="font-size:12px;margin-top:2px;">${moves.length} movimientos</div></div>
-        ${movesTable}
-      </div>
+      <div class="section-title" style="margin-bottom:12px;">Conciliación · Movimientos</div>
+
+      <!-- Contenedor dinámico: filtros + tabla se renderizan aquí sin rehacer el layout -->
+      <div id="_detail-dynamic"></div>
 
       <!-- Acciones abajo -->
-      <div style="display:flex;justify-content:flex-end;gap:8px;padding:24px 0;border-top:1px solid var(--border);margin-top:24px;flex-wrap:wrap;">
+      <div style="display:flex;justify-content:flex-end;gap:8px;padding:24px 0;border-top:1px solid var(--border);margin-top:8px;flex-wrap:wrap;">
         <button class="btn btn-secondary" onclick="editAccount('${a.id}')">${ui.icon('edit')} Editar cuenta</button>
         <button class="btn btn-secondary" onclick="adjustBalance('${a.id}')">${ui.icon('edit')} Ajustar saldo</button>
         <button class="btn btn-primary" onclick="newManualMove('${a.id}')">${ui.icon('plus')} Movimiento manual</button>
       </div>
     `
   });
+
+  // Renderizar filtros + tabla en el contenedor dinámico
+  _renderDetailContent();
 }
 
 function openDetail(id) { selectedId = id; view = 'detail'; render(); }
@@ -979,6 +1112,9 @@ Object.assign(window, {
   updateTransferCustomRate: typeof updateTransferCustomRate !== 'undefined' ? updateTransferCustomRate : undefined,
   refreshTransferPreview: typeof refreshTransferPreview !== 'undefined' ? refreshTransferPreview : undefined,
   confirmTransfer: typeof confirmTransfer !== 'undefined' ? confirmTransfer : undefined,
+  _setDetailFilter: typeof _setDetailFilter !== 'undefined' ? _setDetailFilter : undefined,
+  _clearDetailFilters: typeof _clearDetailFilters !== 'undefined' ? _clearDetailFilters : undefined,
+  _renderDetailContent: typeof _renderDetailContent !== 'undefined' ? _renderDetailContent : undefined,
 });
 });
 </script>
