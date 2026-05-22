@@ -286,45 +286,29 @@ function _applyDetailFilters(moves) {
 
 function _setDetailFilter(key, val) {
   _detailFilters[key] = val;
-  _renderDetailContent();
+  _renderDetailTable();
 }
 
 function _clearDetailFilters() {
   _detailFilters = { search: '', dateFrom: '', dateTo: '', salespersonId: '' };
-  _renderDetailContent();
+  const s = document.getElementById('_det-search'); if (s) s.value = '';
+  document.querySelectorAll('#_detail-dynamic input[type="date"]').forEach(d => { d.value = ''; });
+  const sel = document.querySelector('#_detail-dynamic select'); if (sel) sel.value = '';
+  _renderDetailTable();
 }
 
-function _renderDetailContent() {
+/** Renderiza SOLO la tabla y el resumen — nunca toca los inputs */
+function _renderDetailTable() {
   const a = db.getById(db.COLLECTIONS.bankAccounts, selectedId);
   if (!a) return;
 
-  // Todos los movimientos de la cuenta (sin filtrar) para los KPIs
   const allMoves = db.query(db.COLLECTIONS.bankMoves, m => m.accountId === a.id);
   allMoves.sort((x,y) => (y.timestamp||'').localeCompare(x.timestamp||''));
-
-  // Movimientos filtrados para la tabla
   const filtered = _applyDetailFilters(allMoves);
-
   const hasFilters = _detailFilters.search || _detailFilters.dateFrom || _detailFilters.dateTo || _detailFilters.salespersonId;
 
-  // KPIs: siempre sobre todos los movimientos (no filtrados)
-  const credits = allMoves.filter(m => m.direction === 'IN').reduce((s,m)=>s+Math.abs(m.amount||0), 0);
-  const debits  = allMoves.filter(m => m.direction === 'OUT').reduce((s,m)=>s+Math.abs(m.amount||0), 0);
-
-  // KPIs del rango filtrado
   const filteredCredits = filtered.filter(m => m.direction === 'IN').reduce((s,m)=>s+Math.abs(m.amountInAccountCurrency??m.amount??0), 0);
   const filteredDebits  = filtered.filter(m => m.direction === 'OUT').reduce((s,m)=>s+Math.abs(m.amountInAccountCurrency??m.amount??0), 0);
-
-  // Vendedores disponibles (solo los que tienen movimientos en esta cuenta)
-  const salesOrderIds = [...new Set(allMoves.filter(m => m.relatedDocId).map(m => m.relatedDocId))];
-  const vendedoresMap = {};
-  salesOrderIds.forEach(docId => {
-    const doc = db.getById(db.COLLECTIONS.salesOrders, docId);
-    if (doc && doc.salespersonId && doc.salespersonName) {
-      vendedoresMap[doc.salespersonId] = doc.salespersonName;
-    }
-  });
-  const vendedores = Object.entries(vendedoresMap).map(([id, name]) => ({ id, name })).sort((a,b) => a.name.localeCompare(b.name));
 
   const typeLabel = t => ({'OPENING':'Saldo inicial','PAYMENT_OUT':'Pago a proveedor','PAYMENT_IN':'Cobro de cliente','DEPOSIT':'Depósito','WITHDRAWAL':'Retiro','TRANSFER_IN':'Transferencia recibida','TRANSFER_OUT':'Transferencia enviada','FEE':'Comisión','ADJUSTMENT':'Ajuste'}[t]) || t;
 
@@ -335,7 +319,6 @@ function _renderDetailContent() {
       const color = m.direction === 'IN' ? 'var(--success)' : 'var(--danger)';
       const wasConverted = m.conversionApplied && m.currency !== a.currency;
       const accountAmount = m.amountInAccountCurrency != null ? m.amountInAccountCurrency : m.amount;
-      // Vendedor asociado al movimiento (si aplica)
       const relDoc = m.relatedDocId ? db.getById(db.COLLECTIONS.salesOrders, m.relatedDocId) : null;
       const vendName = relDoc?.salespersonName || '';
       return `<tr>
@@ -354,60 +337,83 @@ function _renderDetailContent() {
         <td style="text-align:right;"><span class="td-mono td-strong">${currency.format(m.runningBalance||0, a.currency)}</span></td>
       </tr>`;
     }).join('')}</tbody></table>`
-  : `<div class="empty-state"><div class="empty-state-title">${hasFilters ? 'Sin resultados' : 'Sin movimientos'}</div><div class="empty-state-text">${hasFilters ? 'Ningún movimiento coincide con los filtros aplicados.' : 'Los pagos y cobros realizados desde esta cuenta aparecerán aquí.'}</div>${hasFilters ? `<button class="btn btn-secondary btn-sm" onclick="_clearDetailFilters()" style="margin-top:12px;">Limpiar filtros</button>` : ''}</div>`;
+  : `<div class="empty-state"><div class="empty-state-title">${hasFilters ? 'Sin resultados' : 'Sin movimientos'}</div><div class="empty-state-text">${hasFilters ? 'Ningún movimiento coincide con los filtros aplicados.' : 'Los pagos y cobros realizados desde esta cuenta aparecerán aquí.'}</div>${hasFilters ? '<button class="btn btn-secondary btn-sm" onclick="_clearDetailFilters()" style="margin-top:12px;">Limpiar filtros</button>' : ''}</div>`;
 
-  // Renderizar solo la sección de filtros + tabla (sin rehacer layout completo)
+  // Actualizar resumen sin tocar los inputs
+  const resumen = document.getElementById('_detail-resumen');
+  if (resumen) {
+    resumen.innerHTML = hasFilters
+      ? `<div style="margin-top:10px;padding-top:10px;border-top:1px solid var(--border);display:flex;gap:24px;flex-wrap:wrap;">
+          <span class="text-muted" style="font-size:12px;">${filtered.length} de ${allMoves.length} movimiento${allMoves.length!==1?'s':''}</span>
+          <span style="font-size:12px;color:var(--success);font-family:var(--font-mono);">+${currency.format(filteredCredits, a.currency)}</span>
+          <span style="font-size:12px;color:var(--danger);font-family:var(--font-mono);">−${currency.format(filteredDebits, a.currency)}</span>
+          <span style="font-size:12px;font-weight:600;font-family:var(--font-mono);">Neto: ${currency.format(filteredCredits - filteredDebits, a.currency)}</span>
+         </div>`
+      : `<div class="text-muted" style="font-size:11px;margin-top:6px;">${allMoves.length} movimiento${allMoves.length!==1?'s':''} en total</div>`;
+  }
+
+  // Mostrar/ocultar botón limpiar
+  const btnLimpiar = document.getElementById('_detail-clear');
+  if (btnLimpiar) btnLimpiar.style.display = hasFilters ? '' : 'none';
+
+  // Actualizar solo la tabla
+  const tableWrap = document.getElementById('_detail-table');
+  if (tableWrap) tableWrap.innerHTML = movesTable;
+}
+
+/** Renderiza filtros + contenedores una sola vez al entrar al detalle */
+function _renderDetailContent() {
+  const a = db.getById(db.COLLECTIONS.bankAccounts, selectedId);
+  if (!a) return;
+
+  const allMoves = db.query(db.COLLECTIONS.bankMoves, m => m.accountId === a.id);
+
+  // Vendedores disponibles
+  const salesOrderIds = [...new Set(allMoves.filter(m => m.relatedDocId).map(m => m.relatedDocId))];
+  const vendedoresMap = {};
+  salesOrderIds.forEach(docId => {
+    const doc = db.getById(db.COLLECTIONS.salesOrders, docId);
+    if (doc && doc.salespersonId && doc.salespersonName) {
+      vendedoresMap[doc.salespersonId] = doc.salespersonName;
+    }
+  });
+  const vendedores = Object.entries(vendedoresMap).map(([id, name]) => ({ id, name })).sort((a,b) => a.name.localeCompare(b.name));
+
   const container = document.getElementById('_detail-dynamic');
   if (!container) return;
 
   container.innerHTML = `
-    <!-- Filtros de conciliación -->
     <div class="card mb-16" style="padding:14px 20px;">
       <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
-        <!-- Buscador -->
         <div style="flex:2;min-width:180px;position:relative;">
           <span style="position:absolute;left:10px;top:50%;transform:translateY(-50%);color:var(--ink-3);font-size:14px;pointer-events:none;">🔍</span>
           <input class="input" id="_det-search" style="padding-left:32px;" placeholder="Buscar monto, concepto, referencia..."
-            value="${ui.escape(_detailFilters.search)}"
-            oninput="_setDetailFilter('search', this.value)">
+            oninput="_detailFilters.search=this.value;_renderDetailTable()">
         </div>
-        <!-- Fecha desde -->
         <div style="flex:1;min-width:130px;">
-          <input class="input" type="date" title="Desde" value="${_detailFilters.dateFrom}"
+          <input class="input" type="date" title="Desde"
             onchange="_setDetailFilter('dateFrom', this.value)">
         </div>
-        <!-- Fecha hasta -->
         <div style="flex:1;min-width:130px;">
-          <input class="input" type="date" title="Hasta" value="${_detailFilters.dateTo}"
+          <input class="input" type="date" title="Hasta"
             onchange="_setDetailFilter('dateTo', this.value)">
         </div>
-        <!-- Vendedor -->
         ${vendedores.length > 0 ? `
         <div style="flex:1;min-width:150px;">
           <select class="select" onchange="_setDetailFilter('salespersonId', this.value)">
             <option value="">Todos los vendedores</option>
-            ${vendedores.map(v => `<option value="${v.id}" ${_detailFilters.salespersonId===v.id?'selected':''}>${ui.escape(v.name)}</option>`).join('')}
+            ${vendedores.map(v => '<option value="' + v.id + '">' + ui.escape(v.name) + '</option>').join('')}
           </select>
         </div>` : ''}
-        <!-- Limpiar -->
-        ${hasFilters ? `<button class="btn btn-ghost btn-sm" onclick="_clearDetailFilters()" title="Limpiar filtros" style="white-space:nowrap;">✕ Limpiar</button>` : ''}
+        <button id="_detail-clear" class="btn btn-ghost btn-sm" onclick="_clearDetailFilters()" style="white-space:nowrap;display:none;">✕ Limpiar</button>
       </div>
-      ${hasFilters ? `
-      <div style="margin-top:10px;padding-top:10px;border-top:1px solid var(--border);display:flex;gap:24px;flex-wrap:wrap;">
-        <span class="text-muted" style="font-size:12px;">${filtered.length} de ${allMoves.length} movimiento${allMoves.length!==1?'s':''}</span>
-        <span style="font-size:12px;color:var(--success);font-family:var(--font-mono);">+${currency.format(filteredCredits, a.currency)}</span>
-        <span style="font-size:12px;color:var(--danger);font-family:var(--font-mono);">−${currency.format(filteredDebits, a.currency)}</span>
-        <span style="font-size:12px;font-weight:600;font-family:var(--font-mono);">Neto: ${currency.format(filteredCredits - filteredDebits, a.currency)}</span>
-      </div>` : `<div class="text-muted" style="font-size:11px;margin-top:6px;">${allMoves.length} movimiento${allMoves.length!==1?'s':''} en total</div>`}
+      <div id="_detail-resumen"></div>
     </div>
-
-    <!-- Tabla -->
-    <div class="card mb-24" style="padding:0;">
-      ${movesTable}
-    </div>
+    <div class="card mb-24" style="padding:0;"><div id="_detail-table"></div></div>
   `;
-}
 
+  _renderDetailTable();
+}
 function renderDetail() {
   const a = db.getById(db.COLLECTIONS.bankAccounts, selectedId);
   if (!a) { backToList(); return; }
