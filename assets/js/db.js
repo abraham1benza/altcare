@@ -232,6 +232,43 @@ const db = {
     return obj;
   },
 
+  // ====== BACKUP / RESTORE ======
+
+  /**
+   * Exporta todo el caché en memoria como un objeto plano { collectionName: [...items] }.
+   * No hace llamadas a Firestore — usa lo que ya está en caché.
+   */
+  exportAll() {
+    const dump = {};
+    Object.keys(COLLECTIONS).forEach(key => {
+      const name = COLLECTIONS[key];
+      dump[name] = this.getAll(name);
+    });
+    return dump;
+  },
+
+  /**
+   * Importa un dump generado por exportAll().
+   * Sobreescribe cada colección en Firestore y actualiza el caché.
+   * @param {Object} dump  — { collectionName: [...items] }
+   */
+  async importAll(dump) {
+    const fb = window.fb;
+    for (const [collectionName, items] of Object.entries(dump)) {
+      if (!Array.isArray(items)) continue;
+      _cache[collectionName] = {};
+      for (const item of items) {
+        if (!item.id) continue;
+        _cache[collectionName][item.id] = item;
+        try {
+          await fb.setDoc(fb.doc(fb.db, collectionName, item.id), item);
+        } catch (err) {
+          console.warn(`[db] importAll: error guardando ${collectionName}/${item.id}:`, err.message);
+        }
+      }
+    }
+  },
+
   // ====== UTILIDADES ======
 
   /**
