@@ -200,7 +200,7 @@ const _doSearchRender = ui.debounce(() => ui.preserveFocus(() => render()), 250)
 function onSearch(v) { searchTerm = v; _doSearchRender(); }
 
 function newItem() {
-  const code = db.nextCode(db.COLLECTIONS.customers, 'CLI');
+  const code = db.nextCode(db.COLLECTIONS.customers, 'C');
   openForm({ code, paymentTerms: 'Contado', preferredCurrency: 'VES', taxpayerType: 'Contribuyente Ordinario', creditLimit: 0 });
 }
 
