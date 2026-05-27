@@ -1,0 +1,336 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Transportistas · altcare</title>
+<link rel="stylesheet" href="../assets/css/styles.css">
+</head>
+<body>
+<script type="module" src="../assets/js/firebase-init.js"></script>
+<script src="../assets/js/module-init-v2.js"></script>
+<script src="../assets/js/db.js"></script>
+<script src="../assets/js/auth.js"></script>
+<script src="../assets/js/currency.js"></script>
+<script src="../assets/js/tax.js"></script>
+<script src="../assets/js/ui.js"></script>
+<script>
+moduleInit('transportistas').then(async (ok) => {
+if (!ok) return;
+
+let searchTerm = '';
+
+function render() {
+  let items = db.getAll(db.COLLECTIONS.carriers);
+  if (searchTerm) {
+    const q = searchTerm.toLowerCase();
+    items = items.filter(c =>
+      (c.name||'').toLowerCase().includes(q) ||
+      (c.contactName||'').toLowerCase().includes(q) ||
+      (c.phone||'').toLowerCase().includes(q) ||
+      (c.rif||'').toLowerCase().includes(q)
+    );
+  }
+  items.sort((a,b) => (a.name||'').localeCompare(b.name||''));
+
+  // Contar uso en pedidos para mostrar "X envíos"
+  const allOrders = db.getAll(db.COLLECTIONS.salesOrders);
+  const usageByCarrier = {};
+  allOrders.forEach(o => {
+    if (o.carrierId) usageByCarrier[o.carrierId] = (usageByCarrier[o.carrierId]||0) + 1;
+  });
+
+  const tableHtml = items.length ? `<table>
+    <thead><tr>
+      <th>Nombre</th>
+      <th>Tipo</th>
+      <th>Contacto</th>
+      <th>Teléfono</th>
+      <th>RIF/Cédula</th>
+      <th style="text-align:right;">Envíos</th>
+      <th>Estado</th>
+      <th style="text-align:right;width:110px;">Acciones</th>
+    </tr></thead>
+    <tbody>${items.map(c => {
+      const uses = usageByCarrier[c.id] || 0;
+      return `<tr style="cursor:pointer;" onclick="viewItem('${c.id}')">
+        <td>
+          <div class="td-strong">${ui.escape(c.name)}</div>
+          ${c.tradename ? `<div class="text-muted" style="font-size:11px;">${ui.escape(c.tradename)}</div>` : ''}
+        </td>
+        <td>${c.carrierType ? `<span class="badge badge-plain">${ui.escape(c.carrierType)}</span>` : '<span class="td-muted">—</span>'}</td>
+        <td>${c.contactName ? ui.escape(c.contactName) : '<span class="td-muted">—</span>'}</td>
+        <td><span class="td-mono" style="font-size:12px;">${ui.escape(c.phone||c.whatsapp||'—')}</span></td>
+        <td><span class="td-mono">${ui.escape(c.rif||'—')}</span></td>
+        <td style="text-align:right;"><span class="td-mono ${uses>0?'td-strong':'text-muted'}">${uses}</span></td>
+        <td>${c.active !== false ? '<span class="badge badge-success">Activo</span>' : '<span class="badge badge-danger">Inactivo</span>'}</td>
+        <td class="td-actions" onclick="event.stopPropagation()">
+          <button class="btn-icon" onclick="editItem('${c.id}')" title="Editar">${ui.icon('edit')}</button>
+          <button class="btn-icon" onclick="deleteItem('${c.id}')" title="Eliminar">${ui.icon('trash')}</button>
+        </td>
+      </tr>`;
+    }).join('')}</tbody></table>` : `<div class="empty-state">
+      <div class="empty-state-icon">🚚</div>
+      <div class="empty-state-title">Sin transportistas</div>
+      <div class="empty-state-text">Agregá los transportes que usás para enviar pedidos. Después podrás seleccionarlos al despachar.</div>
+    </div>`;
+
+  ui.renderLayout({
+    activeModule: 'transportistas', pageEyebrow: 'Comercial', pageTitle: 'Transportistas',
+    contentHtml: `
+      <div class="action-bar">
+        <div class="action-bar-left">
+          <h2 class="action-bar-title">Transportistas</h2>
+          <span class="action-bar-count">${items.length} configurados</span>
+        </div>
+        <div class="action-bar-right">
+          <button class="btn btn-primary" onclick="newItem()">${ui.icon('plus')} Nuevo transportista</button>
+        </div>
+      </div>
+      <p class="text-muted mb-24" style="max-width:680px;">
+        Configurá los transportes que usás para entregar pedidos: empresas de encomienda, motorizados, transporte propio, etc. Después podrás seleccionarlos al marcar un pedido como despachado.
+      </p>
+
+      <div class="table-wrap">
+        <div class="table-toolbar">
+          <div class="search-box">${ui.icon('search')}<input id="search-input" class="input" type="search" placeholder="Buscar por nombre, contacto, teléfono..." value="${ui.escape(searchTerm)}" oninput="onSearch(this.value)"></div>
+        </div>
+        ${tableHtml}
+      </div>
+    `
+  });
+}
+
+const _doSearchRender = ui.debounce(() => ui.preserveFocus(() => render()), 250);
+function onSearch(v) { searchTerm = v; _doSearchRender(); }
+
+function newItem() {
+  openForm({ active: true, carrierType: 'Encomienda' });
+}
+
+function editItem(id) {
+  const c = db.getById(db.COLLECTIONS.carriers, id);
+  if (c) openForm(c);
+}
+
+/**
+ * Vista de detalle (solo lectura). Muestra datos completos y permite editar.
+ */
+function viewItem(id) {
+  const c = db.getById(db.COLLECTIONS.carriers, id);
+  if (!c) { ui.toast('Transportista no encontrado', 'error'); return; }
+
+  // Pedidos enviados con este transportista
+  const orders = db.getAll(db.COLLECTIONS.salesOrders).filter(o => o.carrierId === c.id);
+  const recentShipments = orders
+    .filter(o => o.shippedAt)
+    .sort((a,b) => (b.shippedAt||'').localeCompare(a.shippedAt||''))
+    .slice(0, 10);
+
+  const f = (label, value, mono = false) => `
+    <div class="field">
+      <div class="field-label">${label}</div>
+      <div class="input" style="background:var(--surface-2);${mono?'font-family:var(--font-mono);':''}">${value || '<span class="text-muted">—</span>'}</div>
+    </div>`;
+
+  ui.openModal({
+    size: 'lg',
+    title: c.name,
+    subtitle: `${c.carrierType || 'Transportista'} · ${orders.length} envíos registrados`,
+    body: `
+      <div class="section-title">Información general</div>
+      <div class="form-grid form-grid-2 mb-24">
+        ${f('Nombre / Razón social', ui.escape(c.name||''))}
+        ${f('Nombre comercial', ui.escape(c.tradename||''))}
+        ${f('Tipo', ui.escape(c.carrierType||''))}
+        ${f('RIF / Cédula', ui.escape(c.rif||''), true)}
+      </div>
+
+      <div class="section-title">Contacto</div>
+      <div class="form-grid form-grid-2 mb-24">
+        ${f('Persona de contacto', ui.escape(c.contactName||''))}
+        ${f('Cargo', ui.escape(c.contactRole||''))}
+        ${f('Teléfono', ui.escape(c.phone||''), true)}
+        ${f('WhatsApp', ui.escape(c.whatsapp||''), true)}
+        ${f('Email', ui.escape(c.email||''))}
+        ${f('Dirección / Oficina', ui.escape(c.address||''))}
+      </div>
+
+      ${c.notes ? `
+        <div class="section-title">Notas</div>
+        <div class="input" style="background:var(--surface-2);white-space:pre-wrap;min-height:60px;padding:12px;margin-bottom:18px;">${ui.escape(c.notes)}</div>
+      ` : ''}
+
+      ${recentShipments.length > 0 ? `
+        <div class="section-title">Últimos 10 envíos</div>
+        <div class="table-wrap" style="margin-top:8px;">
+          <table>
+            <thead><tr>
+              <th>Pedido</th><th>Cliente</th><th>Fecha despacho</th><th>Guía</th><th>Estado entrega</th>
+            </tr></thead>
+            <tbody>${recentShipments.map(o => `<tr>
+              <td><span class="td-mono td-strong">${ui.escape(o.code||'—')}</span></td>
+              <td>${ui.escape(o.customerName||'—')}</td>
+              <td><span class="text-muted">${o.shippedAt ? ui.formatDate(o.shippedAt.slice(0,10)) : '—'}</span></td>
+              <td><span class="td-mono">${ui.escape(o.trackingNumber||'—')}</span></td>
+              <td>${
+                o.deliveryStatus === 'ENTREGADO' ? '<span class="badge badge-success">Entregado</span>' :
+                o.deliveryStatus === 'DESPACHADO' ? '<span class="badge badge-warning">Despachado</span>' :
+                '<span class="badge badge-plain">—</span>'
+              }</td>
+            </tr>`).join('')}
+            </tbody>
+          </table>
+        </div>
+      ` : ''}
+    `,
+    footer: `
+      <button class="btn btn-secondary" onclick="ui.closeModal()">Cerrar</button>
+      <button class="btn btn-primary" onclick="ui.closeModal(); editItem('${c.id}')">${ui.icon('edit')} Editar</button>
+    `
+  });
+}
+
+function openForm(item) {
+  const isNew = !item.id;
+  ui.openModal({
+    size: 'lg',
+    title: isNew ? 'Nuevo transportista' : 'Editar transportista',
+    body: `
+      <form id="cr-form" autocomplete="off" onsubmit="saveItem(event, '${item.id || ''}')">
+        <div class="section-title">Información general</div>
+        <div class="form-grid form-grid-2 mb-24">
+          <div class="field" style="grid-column:1/-1;">
+            <label class="field-label">Nombre / Razón social *</label>
+            <input class="input" name="name" required value="${ui.escape(item.name||'')}" placeholder="Ej: MRW, Zoom, Juan Pérez (motorizado)">
+          </div>
+          <div class="field">
+            <label class="field-label">Nombre comercial</label>
+            <input class="input" name="tradename" value="${ui.escape(item.tradename||'')}">
+          </div>
+          <div class="field">
+            <label class="field-label">Tipo</label>
+            <select class="select" name="carrierType">
+              <option value="Encomienda" ${item.carrierType==='Encomienda'?'selected':''}>Encomienda (MRW, Zoom, etc.)</option>
+              <option value="Motorizado" ${item.carrierType==='Motorizado'?'selected':''}>Motorizado</option>
+              <option value="Transporte propio" ${item.carrierType==='Transporte propio'?'selected':''}>Transporte propio</option>
+              <option value="Carga / Flete" ${item.carrierType==='Carga / Flete'?'selected':''}>Carga / Flete</option>
+              <option value="Cliente retira" ${item.carrierType==='Cliente retira'?'selected':''}>Cliente retira</option>
+              <option value="Otro" ${item.carrierType==='Otro'?'selected':''}>Otro</option>
+            </select>
+          </div>
+          <div class="field">
+            <label class="field-label">RIF / Cédula</label>
+            <input class="input" name="rif" value="${ui.escape(item.rif||'')}" style="font-family:var(--font-mono);" placeholder="J-12345678-9">
+          </div>
+        </div>
+
+        <div class="section-title">Contacto</div>
+        <div class="form-grid form-grid-2 mb-24">
+          <div class="field">
+            <label class="field-label">Persona de contacto</label>
+            <input class="input" name="contactName" value="${ui.escape(item.contactName||'')}">
+          </div>
+          <div class="field">
+            <label class="field-label">Cargo</label>
+            <input class="input" name="contactRole" value="${ui.escape(item.contactRole||'')}">
+          </div>
+          <div class="field">
+            <label class="field-label">Teléfono</label>
+            <input class="input" name="phone" value="${ui.escape(item.phone||'')}" style="font-family:var(--font-mono);">
+          </div>
+          <div class="field">
+            <label class="field-label">WhatsApp</label>
+            <input class="input" name="whatsapp" value="${ui.escape(item.whatsapp||'')}" style="font-family:var(--font-mono);">
+          </div>
+          <div class="field">
+            <label class="field-label">Email</label>
+            <input class="input" type="email" name="email" value="${ui.escape(item.email||'')}">
+          </div>
+          <div class="field">
+            <label class="field-label">Dirección / Oficina</label>
+            <input class="input" name="address" value="${ui.escape(item.address||'')}">
+          </div>
+        </div>
+
+        <div class="form-grid form-grid-2">
+          <div class="field" style="grid-column:1/-1;">
+            <label class="field-label">Notas</label>
+            <textarea class="textarea" name="notes" placeholder="Tarifas, zonas que cubre, observaciones...">${ui.escape(item.notes||'')}</textarea>
+          </div>
+          ${!isNew ? `
+            <div class="field" style="grid-column:1/-1;">
+              <div class="checkbox-row">
+                <input type="checkbox" id="active-cb" name="active" ${item.active!==false?'checked':''}>
+                <label for="active-cb" style="font-size:13px;">Transportista activo</label>
+              </div>
+              <div class="field-hint">Desactivá en lugar de eliminar para mantener históricos. Los inactivos no aparecen al despachar.</div>
+            </div>
+          ` : ''}
+        </div>
+      </form>
+    `,
+    footer: `
+      <button class="btn btn-secondary" onclick="ui.closeModal()">Cancelar</button>
+      <button class="btn btn-primary" onclick="document.getElementById('cr-form').requestSubmit()">${ui.icon('check')} Guardar</button>
+    `
+  });
+}
+
+function saveItem(e, id) {
+  e.preventDefault();
+  const data = ui.formData(e.target);
+  if (!data.name || !data.name.trim()) { ui.toast('El nombre es obligatorio', 'error'); return; }
+  data.name = data.name.trim();
+
+  if (id) {
+    data.id = id;
+  } else {
+    data.createdAt = new Date().toISOString();
+  }
+  if (data.active === undefined) data.active = true;
+  data.active = data.active === true || data.active === 'true' || data.active === 'on';
+
+  db.save(db.COLLECTIONS.carriers, data);
+  ui.closeModal();
+  ui.toast(id ? 'Transportista actualizado' : 'Transportista creado', 'success');
+  render();
+}
+
+function deleteItem(id) {
+  const c = db.getById(db.COLLECTIONS.carriers, id);
+  if (!c) return;
+  // Verificar si está en uso
+  const inUse = db.query(db.COLLECTIONS.salesOrders, o => o.carrierId === id).length;
+  if (inUse > 0) {
+    ui.toast(`Este transportista está en uso en ${inUse} pedido(s). Desactivalo en lugar de eliminarlo.`, 'error', 5000);
+    return;
+  }
+  ui.confirm(
+    `¿Eliminar al transportista "${c.name}"?`,
+    () => {
+      db.remove(db.COLLECTIONS.carriers, id);
+      ui.toast('Transportista eliminado', 'success');
+      render();
+    },
+    { danger: true, confirmLabel: 'Eliminar' }
+  );
+}
+
+render();
+
+// Exponer funciones a window
+Object.assign(window, {
+  render: typeof render !== 'undefined' ? render : undefined,
+  onSearch: typeof onSearch !== 'undefined' ? onSearch : undefined,
+  newItem: typeof newItem !== 'undefined' ? newItem : undefined,
+  editItem: typeof editItem !== 'undefined' ? editItem : undefined,
+  viewItem: typeof viewItem !== 'undefined' ? viewItem : undefined,
+  openForm: typeof openForm !== 'undefined' ? openForm : undefined,
+  saveItem: typeof saveItem !== 'undefined' ? saveItem : undefined,
+  deleteItem: typeof deleteItem !== 'undefined' ? deleteItem : undefined,
+});
+});
+</script>
+</body>
+</html>

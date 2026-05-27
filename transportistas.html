@@ -1,0 +1,1193 @@
+/* ============================================
+   reports.js — Generación de reportes y exportación
+   ============================================ */
+
+const reports = {
+
+  // ====== UTILIDADES DE PERÍODO ======
+
+  /** Convierte un período predefinido a rango de fechas */
+  periodToDates(period, customFrom, customTo) {
+    const today = new Date();
+    today.setHours(0,0,0,0);
+    const fmt = d => d.toISOString().slice(0,10);
+    let from, to;
+
+    switch (period) {
+      case 'today':
+        from = to = fmt(today);
+        break;
+      case 'yesterday': {
+        const y = new Date(today); y.setDate(y.getDate()-1);
+        from = to = fmt(y);
+        break;
+      }
+      case 'this_week': {
+        const day = today.getDay();
+        const diff = day === 0 ? -6 : 1 - day; // lunes
+        const monday = new Date(today); monday.setDate(today.getDate() + diff);
+        from = fmt(monday); to = fmt(today);
+        break;
+      }
+      case 'last_week': {
+        const day = today.getDay();
+        const diff = day === 0 ? -6 : 1 - day;
+        const thisMonday = new Date(today); thisMonday.setDate(today.getDate() + diff);
+        const lastMonday = new Date(thisMonday); lastMonday.setDate(lastMonday.getDate()-7);
+        const lastSunday = new Date(thisMonday); lastSunday.setDate(lastSunday.getDate()-1);
+        from = fmt(lastMonday); to = fmt(lastSunday);
+        break;
+      }
+      case 'this_month': {
+        from = fmt(new Date(today.getFullYear(), today.getMonth(), 1));
+        to = fmt(today);
+        break;
+      }
+      case 'last_month': {
+        const first = new Date(today.getFullYear(), today.getMonth()-1, 1);
+        const last = new Date(today.getFullYear(), today.getMonth(), 0);
+        from = fmt(first); to = fmt(last);
+        break;
+      }
+      case 'this_year': {
+        from = fmt(new Date(today.getFullYear(), 0, 1));
+        to = fmt(today);
+        break;
+      }
+      case 'last_year': {
+        from = fmt(new Date(today.getFullYear()-1, 0, 1));
+        to = fmt(new Date(today.getFullYear()-1, 11, 31));
+        break;
+      }
+      case 'custom':
+        from = customFrom; to = customTo;
+        break;
+      case 'all':
+      default:
+        from = '0000-01-01'; to = '9999-12-31';
+        break;
+    }
+    return { from, to };
+  },
+
+  periodLabel(period, from, to) {
+    const labels = {
+      today: 'Hoy', yesterday: 'Ayer',
+      this_week: 'Esta semana', last_week: 'Semana pasada',
+      this_month: 'Este mes', last_month: 'Mes pasado',
+      this_year: 'Este año', last_year: 'Año pasado',
+      all: 'Todo el histórico',
+      custom: `Del ${from} al ${to}`
+    };
+    return labels[period] || `${from} a ${to}`;
+  },
+
+  inRange(dateIso, from, to) {
+    if (!dateIso) return false;
+    const d = String(dateIso).slice(0,10);
+    return d >= from && d <= to;
+  },
+
+  // ====== LIBRO DE COMPRAS (SENIAT) ======
+
+  /**
+   * Devuelve filas del libro de compras según artículos 75-77 del Reglamento de IVA.
+   * Solo facturas no anuladas dentro del período.
+   */
+  libroCompras(from, to) {
+    const invoices = db.getAll(db.COLLECTIONS.supplierInvoices)
+      .filter(i =>
+        i.status !== 'CANCELLED'
+        && this.inRange(i.issueDate, from, to)
+        && i.inventoryType !== 'NOTA_ENTREGA'  // Excluir notas de entrega (no fiscales)
+      )
+      .sort((a,b) => (a.issueDate||'').localeCompare(b.issueDate||''));
+
+    const rows = invoices.map((i, idx) => {
+      // Conversión a VES: prioridad
+      // 1. Si la factura ya está pagada y tiene tasa congelada → usa esa
+      // 2. Si no, usar tasa BCV actual
+      let baseVES = i.subtotal;
+      let ivaVES = i.ivaAmount;
+      let totalVES = i.total;
+      let retIVAVES = i.ivaWithheld || 0;
+      let retISLRVES = i.islrWithheld || 0;
+      let rateUsed = 0;
+      let rateLabel = '';
+      let isFrozen = false;
+
+      if (i.currency !== 'VES') {
+        if (i.rateAtFullPayment && i.rateAtFullPayment > 0) {
+          // Tasa congelada al completar pago
+          rateUsed = i.rateAtFullPayment;
+          rateLabel = `${i.rateTypeAtFullPayment || 'BCV'} 🔒`;
+          isFrozen = true;
+        } else if (i.rateValue) {
+          // Tasa al emitir (legacy)
+          rateUsed = parseFloat(i.rateValue) || 0;
+          rateLabel = 'al emitir';
+        } else {
+          // Tasa BCV de hoy
+          const r = currency.getRate('BCV_USD');
+          rateUsed = r?.value || 0;
+          rateLabel = 'BCV hoy (estimada)';
+        }
+        if (rateUsed > 0) {
+          baseVES *= rateUsed;
+          ivaVES *= rateUsed;
+          totalVES *= rateUsed;
+          retIVAVES *= rateUsed;
+          retISLRVES *= rateUsed;
+        }
+      } else {
+        rateLabel = '—';
+      }
+
+      return {
+        n: idx + 1,
+        fecha: i.issueDate,
+        rifProveedor: i.supplierRif || '',
+        nombreProveedor: i.supplierName,
+        nFactura: i.supplierInvoiceNumber || '',
+        nControl: i.supplierInvoiceControl || '',
+        baseImponible: baseVES,
+        ivaRate: i.ivaRate,
+        iva: ivaVES,
+        exento: i.exempt ? totalVES : 0,
+        total: totalVES,
+        retencionIVA: retIVAVES,
+        retencionISLR: retISLRVES,
+        currency: i.currency,
+        invoiceId: i.id,
+        rateUsed,
+        rateLabel,
+        isFrozen,
+        status: i.status
+      };
+    });
+
+    const totals = rows.reduce((t, r) => ({
+      baseImponible: t.baseImponible + r.baseImponible,
+      iva: t.iva + r.iva,
+      exento: t.exento + r.exento,
+      total: t.total + r.total,
+      retencionIVA: t.retencionIVA + r.retencionIVA,
+      retencionISLR: t.retencionISLR + r.retencionISLR
+    }), { baseImponible: 0, iva: 0, exento: 0, total: 0, retencionIVA: 0, retencionISLR: 0 });
+
+    return { rows, totals };
+  },
+
+  // ====== LIBRO DE VENTAS (SENIAT) ======
+
+  libroVentas(from, to) {
+    let docs = db.getAll(db.COLLECTIONS.salesOrders)
+      .filter(d => d.type === 'FACTURA' && this.inRange(d.issueDate, from, to))
+      .sort((a,b) => (a.issueDate||'').localeCompare(b.issueDate||''));
+
+    // Filtrar por visibilidad
+    if (typeof auth !== 'undefined' && auth.canSeeAll && !auth.canSeeAll()) {
+      const visibleUsers = auth.visibleUserIds() || [];
+      const myCustomerIds = new Set(
+        db.getAll(db.COLLECTIONS.customers)
+          .filter(c => auth.canSeeCustomer(c))
+          .map(c => c.id)
+      );
+      docs = docs.filter(d =>
+        (d.salespersonId && visibleUsers.includes(d.salespersonId)) ||
+        (d.customerId && myCustomerIds.has(d.customerId))
+      );
+    }
+
+    const creditNotes = db.getAll(db.COLLECTIONS.creditNotes)
+      .filter(n => n.status !== 'CANCELLED' && this.inRange(n.issueDate, from, to));
+
+    const rows = docs.map((d, idx) => {
+      const isCancelled = d.cancelled;
+      let baseVES = d.taxableBase;
+      let ivaVES = d.ivaAmount;
+      let totalVES = d.total;
+      let exemptVES = d.exemptBase;
+      let rateUsed = 0;
+      let rateLabel = '—';
+      let isFrozen = false;
+
+      if (d.currency !== 'VES') {
+        if (d.rateAtFullPayment && d.rateAtFullPayment > 0) {
+          rateUsed = d.rateAtFullPayment;
+          rateLabel = `${d.rateTypeAtFullPayment || 'BCV'} 🔒`;
+          isFrozen = true;
+        } else if (d.rateValue) {
+          rateUsed = parseFloat(d.rateValue) || 0;
+          rateLabel = 'al emitir';
+        } else {
+          const r = currency.getRate('BCV_USD');
+          rateUsed = r?.value || 0;
+          rateLabel = 'BCV hoy (estimada)';
+        }
+        if (rateUsed > 0) {
+          baseVES *= rateUsed;
+          ivaVES *= rateUsed;
+          totalVES *= rateUsed;
+          exemptVES *= rateUsed;
+        }
+      }
+
+      return {
+        n: idx + 1,
+        fecha: d.issueDate,
+        rifCliente: d.customerRif || '',
+        nombreCliente: d.customerName,
+        nFactura: d.invoiceNumber || d.code,
+        nControl: d.controlNumber || '',
+        tipoDoc: 'FACTURA',
+        baseImponible: isCancelled ? 0 : baseVES,
+        ivaRate: d.ivaRate,
+        iva: isCancelled ? 0 : ivaVES,
+        exento: isCancelled ? 0 : exemptVES,
+        total: isCancelled ? 0 : totalVES,
+        cancelled: isCancelled,
+        currency: d.currency,
+        docId: d.id,
+        rateUsed,
+        rateLabel,
+        isFrozen,
+        status: d.status
+      };
+    });
+
+    // Agregar NCs con monto NEGATIVO (restan del libro de ventas)
+    const ncRows = creditNotes.map((n, idx) => {
+      let baseVES = n.taxableBase;
+      let ivaVES = n.ivaAmount;
+      let totalVES = n.total;
+      let exemptVES = n.exemptBase;
+      let rateUsed = 0;
+      let rateLabel = '—';
+
+      if (n.currency !== 'VES') {
+        rateUsed = parseFloat(n.rateValue) || 0;
+        rateLabel = 'al emitir NC';
+        if (!rateUsed) {
+          const r = currency.getRate('BCV_USD');
+          rateUsed = r?.value || 0;
+          rateLabel = 'BCV hoy';
+        }
+        if (rateUsed > 0) {
+          baseVES *= rateUsed;
+          ivaVES *= rateUsed;
+          totalVES *= rateUsed;
+          exemptVES *= rateUsed;
+        }
+      }
+
+      return {
+        n: rows.length + idx + 1,
+        fecha: n.issueDate,
+        rifCliente: n.customerRif || '',
+        nombreCliente: n.customerName,
+        nFactura: n.code + (n.ncInvoiceNumber ? ` (${n.ncInvoiceNumber})` : ''),
+        nControl: n.ncControlNumber || '',
+        tipoDoc: 'NOTA_CREDITO',
+        nFacturaAfectada: n.invoiceNumber || n.invoiceCode,
+        // Montos NEGATIVOS porque restan
+        baseImponible: -baseVES,
+        ivaRate: n.ivaRate,
+        iva: -ivaVES,
+        exento: -exemptVES,
+        total: -totalVES,
+        cancelled: false,
+        currency: n.currency,
+        docId: n.id,
+        rateUsed,
+        rateLabel,
+        isFrozen: false,
+        status: n.status
+      };
+    });
+
+    // Agregar NDs con monto POSITIVO (suman al libro de ventas)
+    const debitNotes = db.getAll(db.COLLECTIONS.debitNotes)
+      .filter(n => n.status !== 'CANCELLED' && this.inRange(n.issueDate, from, to));
+
+    const ndRows = debitNotes.map((n, idx) => {
+      let baseVES = n.taxableBase;
+      let ivaVES = n.ivaAmount;
+      let totalVES = n.total;
+      let exemptVES = n.exemptBase;
+      let rateUsed = 0;
+      let rateLabel = '—';
+
+      if (n.currency !== 'VES') {
+        rateUsed = parseFloat(n.rateValue) || 0;
+        rateLabel = 'al emitir ND';
+        if (!rateUsed) {
+          const r = currency.getRate('BCV_USD');
+          rateUsed = r?.value || 0;
+          rateLabel = 'BCV hoy';
+        }
+        if (rateUsed > 0) {
+          baseVES *= rateUsed;
+          ivaVES *= rateUsed;
+          totalVES *= rateUsed;
+          exemptVES *= rateUsed;
+        }
+      }
+
+      return {
+        n: rows.length + ncRows.length + idx + 1,
+        fecha: n.issueDate,
+        rifCliente: n.customerRif || '',
+        nombreCliente: n.customerName,
+        nFactura: n.code + (n.ndInvoiceNumber ? ` (${n.ndInvoiceNumber})` : ''),
+        nControl: n.ndControlNumber || '',
+        tipoDoc: 'NOTA_DEBITO',
+        nFacturaAfectada: n.invoiceNumber || n.invoiceCode,
+        // Montos POSITIVOS porque suman al débito fiscal
+        baseImponible: baseVES,
+        ivaRate: n.ivaRate,
+        iva: ivaVES,
+        exento: exemptVES,
+        total: totalVES,
+        cancelled: false,
+        currency: n.currency,
+        docId: n.id,
+        rateUsed,
+        rateLabel,
+        isFrozen: false,
+        status: n.status
+      };
+    });
+
+    // Combinar y ordenar por fecha
+    const allRows = [...rows, ...ncRows, ...ndRows].sort((a, b) => (a.fecha||'').localeCompare(b.fecha||''));
+    // Renumerar
+    allRows.forEach((r, idx) => r.n = idx + 1);
+
+    const totals = allRows.reduce((t, r) => ({
+      baseImponible: t.baseImponible + r.baseImponible,
+      iva: t.iva + r.iva,
+      exento: t.exento + r.exento,
+      total: t.total + r.total
+    }), { baseImponible: 0, iva: 0, exento: 0, total: 0 });
+
+    return { rows: allRows, totals };
+  },
+
+  // ====== ESTADO DE CUENTA CLIENTE ======
+
+  estadoCuentaCliente(customerId, from, to) {
+    const customer = db.getById(db.COLLECTIONS.customers, customerId);
+
+    // Trae cobros normales (IN) y ajustes (ADJUSTMENT_IN reduce saldo, ADJUSTMENT_OUT aumenta saldo).
+    // Los ajustes están en la misma colección de payments con direction distinto.
+    const allPayments = db.query(db.COLLECTIONS.payments, p =>
+      (p.direction === 'IN' || p.direction === 'ADJUSTMENT_IN' || p.direction === 'ADJUSTMENT_OUT') &&
+      p.counterpartyId === customerId &&
+      this.inRange(p.date, from, to)
+    );
+
+    // Para evitar saldos negativos huérfanos: si hay un pago/ajuste en el rango
+    // sobre un documento que cayó FUERA del rango, igualmente traemos ese doc
+    // para que el cargo original aparezca y el saldo cuadre. Sin esto, vemos
+    // -$157.50 cuando en realidad el cliente debe $19.70 porque la NE original
+    // (de febrero) queda invisible.
+    const docIdsReferencedByPayments = new Set(allPayments.map(p => p.relatedDocId).filter(Boolean));
+    const docs = db.getAll(db.COLLECTIONS.salesOrders)
+      .filter(d => d.customerId === customerId && (d.type === 'FACTURA' || d.type === 'NOTA_ENTREGA') && !d.cancelled)
+      .filter(d => this.inRange(d.issueDate, from, to) || docIdsReferencedByPayments.has(d.id))
+      .sort((a,b) => (a.issueDate||'').localeCompare(b.issueDate||''));
+
+    // Movimientos: cargo (factura/NE) y abono (pago)
+    const movements = [];
+    docs.forEach(d => {
+      const isNE = d.type === 'NOTA_ENTREGA';
+      movements.push({
+        date: d.issueDate,
+        type: isNE ? 'NOTA_ENTREGA' : 'INVOICE',
+        ref: d.invoiceNumber || d.code,
+        description: isNE ? 'Nota de Entrega emitida' : 'Factura emitida',
+        debit: d.total,
+        credit: 0,
+        currency: d.currency,
+        docId: d.id
+      });
+
+      // === COBRO INICIAL MIGRADO ===
+      // Si el doc viene de una importación (isInitialLoad) y trae paidAmount,
+      // ese monto NO existe como payment record separado: está embebido en el
+      // doc. Para que el reporte cuadre, lo mostramos como movimiento explícito.
+      // Calculamos cuánto del paidAmount NO viene de payments reales:
+      const paymentsForThisDoc = allPayments.filter(p => p.relatedDocId === d.id);
+      const fromExplicitPayments = paymentsForThisDoc.reduce((s, p) => {
+        if (p.direction === 'IN' || p.direction === 'ADJUSTMENT_IN') return s + (p.amountInDocCurrency || p.amount);
+        return s;
+      }, 0);
+      const initialMigratedPayment = Math.round(((d.paidAmount || 0) - fromExplicitPayments) * 100) / 100;
+      if (d.isInitialLoad && initialMigratedPayment > 0.01) {
+        movements.push({
+          date: d.issueDate,  // misma fecha que el doc (no sabemos la real)
+          type: 'INITIAL_PAYMENT',
+          ref: d.code,
+          description: 'Cobro inicial migrado del sistema anterior',
+          debit: 0,
+          credit: initialMigratedPayment,
+          currency: d.currency,
+          docId: d.id
+        });
+      }
+    });
+    allPayments.forEach(p => {
+      // ¿La cuenta donde entró el pago es de la empresa (fiscal) o personal?
+      let bankAccountIsCompany = true; // default si no hay cuenta o no se sabe
+      if (p.bankAccountId) {
+        const acc = db.getById(db.COLLECTIONS.bankAccounts, p.bankAccountId);
+        if (acc) bankAccountIsCompany = acc.countsForFiscal !== false;
+      }
+
+      // Distinguir entre cobro normal y ajuste
+      const isAdjIn  = p.direction === 'ADJUSTMENT_IN';
+      const isAdjOut = p.direction === 'ADJUSTMENT_OUT';
+      const isAdj    = isAdjIn || isAdjOut;
+
+      let type, description, debit, credit;
+      if (isAdjIn) {
+        // Ajuste negativo: reduce el saldo (igual que un cobro)
+        type = 'ADJUSTMENT_IN';
+        const reasonLbl = p.adjustmentReasonLabel || 'Ajuste';
+        description = `Ajuste − ${reasonLbl}${p.notes?' · '+p.notes:''}${p.relatedDocCode?' · ref '+p.relatedDocCode:''}`;
+        debit = 0;
+        credit = p.amountInDocCurrency || p.amount;
+      } else if (isAdjOut) {
+        // Ajuste positivo: aumenta el saldo
+        type = 'ADJUSTMENT_OUT';
+        const reasonLbl = p.adjustmentReasonLabel || 'Ajuste';
+        description = `Ajuste + ${reasonLbl}${p.notes?' · '+p.notes:''}${p.relatedDocCode?' · ref '+p.relatedDocCode:''}`;
+        debit = p.amountInDocCurrency || p.amount;
+        credit = 0;
+      } else {
+        // Cobro normal
+        type = 'PAYMENT';
+        description = `Cobro · ${p.paymentMethodName||''}${p.reference?' · '+p.reference:''}${!bankAccountIsCompany?' · 👤 cuenta personal':''}`;
+        debit = 0;
+        credit = p.amountInDocCurrency;
+      }
+
+      movements.push({
+        date: p.date,
+        type,
+        ref: p.code,
+        description,
+        debit,
+        credit,
+        currency: p.docCurrency || p.currency,
+        paymentId: p.id,
+        bankAccountIsCompany,
+        isAdjustment: isAdj
+      });
+    });
+    movements.sort((a,b) => (a.date||'').localeCompare(b.date||''));
+
+    // Saldo corriente por moneda
+    const balanceByCcy = {};
+    movements.forEach(m => {
+      if (!balanceByCcy[m.currency]) balanceByCcy[m.currency] = 0;
+      balanceByCcy[m.currency] += m.debit - m.credit;
+      m.balance = balanceByCcy[m.currency];
+    });
+
+    return { customer, movements, balanceByCcy };
+  },
+
+  estadoCuentaProveedor(supplierId, from, to) {
+    const supplier = db.getById(db.COLLECTIONS.suppliers, supplierId);
+    const invoices = db.getAll(db.COLLECTIONS.supplierInvoices)
+      .filter(i => i.supplierId === supplierId && i.status !== 'CANCELLED' && this.inRange(i.issueDate, from, to))
+      .sort((a,b) => (a.issueDate||'').localeCompare(b.issueDate||''));
+    const allPayments = db.query(db.COLLECTIONS.payments, p => p.direction === 'OUT' && p.counterpartyId === supplierId && this.inRange(p.date, from, to));
+
+    const movements = [];
+    invoices.forEach(i => {
+      movements.push({
+        date: i.issueDate,
+        type: 'INVOICE',
+        ref: `${i.code}${i.supplierInvoiceNumber?' / '+i.supplierInvoiceNumber:''}`,
+        description: 'Factura recibida',
+        debit: 0,
+        credit: i.totalToPay,
+        currency: i.currency,
+        invoiceId: i.id
+      });
+    });
+    allPayments.forEach(p => {
+      let bankAccountIsCompany = true;
+      if (p.bankAccountId) {
+        const acc = db.getById(db.COLLECTIONS.bankAccounts, p.bankAccountId);
+        if (acc) bankAccountIsCompany = acc.countsForFiscal !== false;
+      }
+      movements.push({
+        date: p.date,
+        type: 'PAYMENT',
+        ref: p.code,
+        description: `Pago · ${p.paymentMethodName||''}${p.reference?' · '+p.reference:''}${!bankAccountIsCompany?' · 👤 cuenta personal':''}`,
+        debit: p.amountInDocCurrency,
+        credit: 0,
+        currency: p.docCurrency,
+        paymentId: p.id,
+        bankAccountIsCompany
+      });
+    });
+    movements.sort((a,b) => (a.date||'').localeCompare(b.date||''));
+
+    const balanceByCcy = {};
+    movements.forEach(m => {
+      if (!balanceByCcy[m.currency]) balanceByCcy[m.currency] = 0;
+      balanceByCcy[m.currency] += m.credit - m.debit;
+      m.balance = balanceByCcy[m.currency];
+    });
+
+    return { supplier, movements, balanceByCcy };
+  },
+
+  // ====== INVENTARIO VALORIZADO ======
+
+  inventarioValorizado() {
+    const rms = db.getAll(db.COLLECTIONS.rawMaterials);
+    const rmRows = rms.map(rm => {
+      const lots = db.query(db.COLLECTIONS.rmLots, l => l.rawMaterialId === rm.id && (l.balance||0) > 0);
+      const totalQty = lots.reduce((s,l) => s + (l.balance||0), 0);
+      let totalValueUSD = 0;
+      lots.forEach(l => {
+        let usd = (l.balance||0) * (l.unitCost||0);
+        if (l.costCurrency === 'VES') {
+          const r = currency.getActiveRate();
+          usd = r && r.value ? usd / r.value : 0;
+        }
+        totalValueUSD += usd;
+      });
+      return {
+        kind: 'MP',
+        code: rm.code,
+        name: rm.name,
+        unit: rm.unit,
+        quantity: totalQty,
+        avgCost: totalQty > 0 ? totalValueUSD / totalQty : 0,
+        valueUSD: totalValueUSD,
+        lotCount: lots.length
+      };
+    }).filter(r => r.quantity > 0);
+
+    const fgs = db.getAll(db.COLLECTIONS.finishedGoods).filter(l => (l.balance||0) > 0);
+    // Agrupar por fórmula
+    const fgByFormula = {};
+    fgs.forEach(l => {
+      const key = l.formulaId || l.code;
+      if (!fgByFormula[key]) fgByFormula[key] = { code: l.code, name: l.formulaName, unit: l.unit, lots: [] };
+      fgByFormula[key].lots.push(l);
+    });
+    const fgRows = Object.values(fgByFormula).map(g => {
+      const totalQty = g.lots.reduce((s,l) => s + (l.balance||0), 0);
+      const totalValueUSD = g.lots.reduce((s,l) => s + ((l.balance||0) * (l.unitCost||0)), 0);
+      return {
+        kind: 'PT',
+        code: g.lots[0].formulaCode || '—',
+        name: g.name,
+        unit: g.unit,
+        quantity: totalQty,
+        avgCost: totalQty > 0 ? totalValueUSD / totalQty : 0,
+        valueUSD: totalValueUSD,
+        lotCount: g.lots.length
+      };
+    });
+
+    const all = [...rmRows, ...fgRows];
+    const totals = {
+      rmValue: rmRows.reduce((s,r) => s + r.valueUSD, 0),
+      fgValue: fgRows.reduce((s,r) => s + r.valueUSD, 0),
+      total: all.reduce((s,r) => s + r.valueUSD, 0)
+    };
+    return { rows: all, totals, rmRows, fgRows };
+  },
+
+  // ====== INVENTARIO EN FABRICACIÓN (OFs en proceso) ======
+
+  /**
+   * Productos actualmente en fabricación: OFs con estado IN_PROCESS.
+   * El "valor" es la MP ya consumida/reservada para esa OF (en USD).
+   */
+  inventarioEnFabricacion() {
+    const ofs = db.getAll(db.COLLECTIONS.productionOrders)
+      .filter(o => o.status === 'IN_PROCESS')
+      .sort((a,b) => (a.scheduledDate||'').localeCompare(b.scheduledDate||''));
+
+    const rows = ofs.map(o => {
+      let materialCostUSD = 0;
+      (o.items||[]).forEach(it => {
+        const lot = db.getById(db.COLLECTIONS.rmLots, it.lotId);
+        if (lot) {
+          let usd = (it.required||0) * (lot.unitCost||0);
+          if (lot.costCurrency === 'VES') {
+            const r = currency.getActiveRate();
+            usd = r && r.value ? usd / r.value : 0;
+          }
+          materialCostUSD += usd;
+        }
+      });
+      return {
+        kind: 'OF',
+        code: o.code,
+        name: o.formulaName,
+        unit: o.batchUnit,
+        quantity: o.batchSize || 0,
+        scheduledDate: o.scheduledDate,
+        valueUSD: materialCostUSD,
+        ofId: o.id,
+        formulaVersion: o.formulaVersion
+      };
+    });
+
+    const totals = {
+      countOFs: rows.length,
+      totalQty: rows.reduce((s,r) => s + r.quantity, 0),
+      totalValueUSD: rows.reduce((s,r) => s + r.valueUSD, 0)
+    };
+    return { rows, totals };
+  },
+
+  // ====== PRODUCCIÓN POR PERÍODO ======
+
+  produccion(from, to) {
+    const ofs = db.getAll(db.COLLECTIONS.productionOrders)
+      .filter(o => this.inRange(o.completedAt || o.scheduledDate, from, to))
+      .sort((a,b) => (b.completedAt||b.scheduledDate||'').localeCompare(a.completedAt||a.scheduledDate||''));
+
+    const rows = ofs.map(o => {
+      const fg = o.fgLotId ? db.getById(db.COLLECTIONS.finishedGoods, o.fgLotId) : null;
+      const yieldPct = o.batchSize > 0 && o.actualQuantity ? (o.actualQuantity / o.batchSize) * 100 : 0;
+      // Costo total: suma de MP consumida (en USD)
+      let materialCostUSD = 0;
+      (o.items||[]).forEach(it => {
+        const lot = db.getById(db.COLLECTIONS.rmLots, it.lotId);
+        if (lot) {
+          let usd = (it.required||0) * (lot.unitCost||0);
+          if (lot.costCurrency === 'VES') {
+            const r = currency.getActiveRate();
+            usd = r && r.value ? usd / r.value : 0;
+          }
+          materialCostUSD += usd;
+        }
+      });
+      const unitCost = o.actualQuantity > 0 ? materialCostUSD / o.actualQuantity : 0;
+      return {
+        code: o.code,
+        formulaName: o.formulaName,
+        formulaVersion: o.formulaVersion,
+        scheduledDate: o.scheduledDate,
+        completedAt: o.completedAt,
+        status: o.status,
+        plannedBatch: o.batchSize,
+        actualQty: o.actualQuantity || 0,
+        unit: o.batchUnit,
+        yieldPct,
+        materialCostUSD,
+        unitCostUSD: unitCost,
+        lotCode: fg?.code || '—',
+        ofId: o.id
+      };
+    });
+
+    const completed = rows.filter(r => r.status === 'COMPLETED');
+    const totals = {
+      countTotal: rows.length,
+      countCompleted: completed.length,
+      totalProduced: completed.reduce((s,r) => s + r.actualQty, 0),
+      totalCostUSD: completed.reduce((s,r) => s + r.materialCostUSD, 0),
+      avgYield: completed.length ? completed.reduce((s,r) => s + r.yieldPct, 0) / completed.length : 0
+    };
+    return { rows, totals };
+  },
+
+  // ====== MÁRGENES DE VENTA ======
+
+  margenes(from, to) {
+    const docs = db.getAll(db.COLLECTIONS.salesOrders)
+      .filter(d => d.type === 'FACTURA' && !d.cancelled && this.inRange(d.issueDate, from, to));
+
+    // Por producto
+    const byProduct = {};
+    docs.forEach(d => {
+      d.items.forEach(it => {
+        if (!it.formulaId) return;
+        if (!byProduct[it.formulaId]) {
+          byProduct[it.formulaId] = {
+            formulaId: it.formulaId,
+            formulaName: it.formulaName || it.description,
+            quantity: 0,
+            revenueUSD: 0,
+            costUSD: 0
+          };
+        }
+        const itemSubtotal = it.subtotal || (it.quantity * it.unitPrice);
+        let revenueUSD = itemSubtotal;
+        if (d.currency === 'VES') {
+          const r = currency.getActiveRate();
+          revenueUSD = r && r.value ? itemSubtotal / r.value : 0;
+        } else if (d.currency === 'EUR') {
+          revenueUSD = itemSubtotal * 1.05; // aprox
+        }
+        byProduct[it.formulaId].quantity += it.quantity;
+        byProduct[it.formulaId].revenueUSD += revenueUSD;
+        // Costo: tomar de los lotes asignados
+        (it.allocations || []).forEach(al => {
+          const lot = db.getById(db.COLLECTIONS.finishedGoods, al.lotId);
+          if (lot) {
+            byProduct[it.formulaId].costUSD += al.quantity * (lot.unitCost || 0);
+          }
+        });
+      });
+    });
+    const productRows = Object.values(byProduct).map(p => ({
+      ...p,
+      profitUSD: p.revenueUSD - p.costUSD,
+      marginPct: p.revenueUSD > 0 ? ((p.revenueUSD - p.costUSD) / p.revenueUSD) * 100 : 0
+    })).sort((a,b) => b.revenueUSD - a.revenueUSD);
+
+    // Por cliente
+    const byCustomer = {};
+    docs.forEach(d => {
+      if (!byCustomer[d.customerId]) {
+        byCustomer[d.customerId] = {
+          customerId: d.customerId,
+          customerName: d.customerName,
+          docCount: 0,
+          revenueUSD: 0,
+          costUSD: 0
+        };
+      }
+      let revenueUSD = d.subtotal;
+      if (d.currency === 'VES') {
+        const r = currency.getActiveRate();
+        revenueUSD = r && r.value ? d.subtotal / r.value : 0;
+      } else if (d.currency === 'EUR') {
+        revenueUSD = d.subtotal * 1.05;
+      }
+      byCustomer[d.customerId].docCount += 1;
+      byCustomer[d.customerId].revenueUSD += revenueUSD;
+      d.items.forEach(it => {
+        (it.allocations || []).forEach(al => {
+          const lot = db.getById(db.COLLECTIONS.finishedGoods, al.lotId);
+          if (lot) byCustomer[d.customerId].costUSD += al.quantity * (lot.unitCost || 0);
+        });
+      });
+    });
+    const customerRows = Object.values(byCustomer).map(c => ({
+      ...c,
+      profitUSD: c.revenueUSD - c.costUSD,
+      marginPct: c.revenueUSD > 0 ? ((c.revenueUSD - c.costUSD) / c.revenueUSD) * 100 : 0
+    })).sort((a,b) => b.revenueUSD - a.revenueUSD);
+
+    const totals = {
+      revenueUSD: productRows.reduce((s,r) => s + r.revenueUSD, 0),
+      costUSD: productRows.reduce((s,r) => s + r.costUSD, 0)
+    };
+    totals.profitUSD = totals.revenueUSD - totals.costUSD;
+    totals.marginPct = totals.revenueUSD > 0 ? (totals.profitUSD / totals.revenueUSD) * 100 : 0;
+
+    return { productRows, customerRows, totals };
+  },
+
+  // ====== FLUJO DE CAJA ======
+
+  flujoCaja(from, to) {
+    const moves = db.getAll(db.COLLECTIONS.bankMoves)
+      .filter(m => this.inRange(m.date, from, to))
+      .sort((a,b) => (a.date||'').localeCompare(b.date||'') || (a.timestamp||'').localeCompare(b.timestamp||''));
+
+    // Agrupar por cuenta
+    const accounts = db.getAll(db.COLLECTIONS.bankAccounts);
+    const byAccount = {};
+    accounts.forEach(a => {
+      byAccount[a.id] = {
+        account: a,
+        moves: [],
+        opening: 0, closing: 0, totalIn: 0, totalOut: 0
+      };
+    });
+    moves.forEach(m => {
+      if (!byAccount[m.accountId]) return;
+      byAccount[m.accountId].moves.push(m);
+      if (m.direction === 'IN') byAccount[m.accountId].totalIn += m.amount;
+      else byAccount[m.accountId].totalOut += m.amount;
+    });
+    // Closing balance del último movimiento o saldo actual si no hubo movimientos
+    Object.values(byAccount).forEach(g => {
+      if (g.moves.length) {
+        g.closing = g.moves[g.moves.length-1].runningBalance || 0;
+        // Saldo apertura: el saldo antes del primer movimiento del período
+        const firstMove = g.moves[0];
+        const firstAmount = firstMove.signedAmount || (firstMove.direction === 'IN' ? firstMove.amount : -firstMove.amount);
+        g.opening = (firstMove.runningBalance || 0) - firstAmount;
+      } else {
+        g.closing = g.account.balance;
+        g.opening = g.account.balance;
+      }
+    });
+
+    return { byAccount: Object.values(byAccount).filter(g => g.moves.length || g.account.active) };
+  },
+
+  // ====== RETENCIONES ======
+
+  retenciones(from, to) {
+    const vouchers = db.getAll(db.COLLECTIONS.withholdingVouchers)
+      .filter(v => this.inRange(v.issueDate, from, to))
+      .sort((a,b) => (a.issueDate||'').localeCompare(b.issueDate||''));
+
+    const rows = vouchers.map(v => {
+      const inv = db.getById(db.COLLECTIONS.supplierInvoices, v.invoiceId);
+      let baseVES = v.taxableBase;
+      let ivaWithheldVES = v.ivaWithheld;
+      let islrWithheldVES = v.islrWithheld;
+      let totalVES = v.totalWithheld;
+      if (v.currency !== 'VES' && inv) {
+        const rate = parseFloat(inv.rateValue) || 0;
+        baseVES *= rate;
+        ivaWithheldVES *= rate;
+        islrWithheldVES *= rate;
+        totalVES *= rate;
+      }
+      return {
+        n: vouchers.indexOf(v) + 1,
+        fecha: v.issueDate,
+        comprobante: v.code,
+        rifProveedor: v.supplierRif,
+        nombreProveedor: v.supplierName,
+        nFactura: v.supplierInvoiceNumber,
+        nControl: v.supplierInvoiceControl,
+        baseImponible: baseVES,
+        ivaWithheld: ivaWithheldVES,
+        islrWithheld: islrWithheldVES,
+        totalWithheld: totalVES,
+        currency: v.currency,
+        voucherId: v.id
+      };
+    });
+
+    const totals = rows.reduce((t,r) => ({
+      baseImponible: t.baseImponible + r.baseImponible,
+      ivaWithheld: t.ivaWithheld + r.ivaWithheld,
+      islrWithheld: t.islrWithheld + r.islrWithheld,
+      totalWithheld: t.totalWithheld + r.totalWithheld
+    }), { baseImponible: 0, ivaWithheld: 0, islrWithheld: 0, totalWithheld: 0 });
+
+    return { rows, totals };
+  },
+
+  /**
+   * ===== REPORTE DE PÉRDIDA/GANANCIA CAMBIARIA =====
+   *
+   * Calcula dos tipos de exposición al riesgo cambiario, considerando solo
+   * movimientos en VES (los pagos en USD/EUR no tienen riesgo cambiario):
+   *
+   * 1. DIFERENCIAL al momento del cobro/pago (BCV vs tasa de mercado):
+   *    El cobro se valoró al BCV (lo que dice SENIAT) pero en el mercado real
+   *    esos Bs valían X% menos USD. Ese gap es la "pérdida invisible" del día
+   *    de la transacción.
+   *
+   * 2. DEPRECIACIÓN por permanencia en caja Bs:
+   *    Los Bs que entraron hace N días y siguen en banco hoy valen menos USD
+   *    (porque el dólar subió desde entonces). Se calcula contra el saldo
+   *    actual de las cuentas en Bs.
+   *
+   * @param {string} from - YYYY-MM-DD
+   * @param {string} to   - YYYY-MM-DD
+   * @param {string} compareRateType - 'BINANCE' (default) | 'BCV_USD' | etc.
+   */
+  perdidaCambiaria(from, to, compareRateType = 'BINANCE') {
+    // ====== 1) DIFERENCIAL POR MOVIMIENTO ======
+    // Para cada cobro/pago en VES: comparar lo que valía a BCV vs lo que valía
+    // a la tasa de comparación (Binance por default) ese mismo día.
+    const allPayments = db.query(db.COLLECTIONS.payments, p =>
+      p.currency === 'VES' &&
+      (p.direction === 'IN' || p.direction === 'OUT' || p.direction === 'ADJUSTMENT_IN' || p.direction === 'ADJUSTMENT_OUT') &&
+      this.inRange(p.date, from, to)
+    );
+
+    const movementRows = [];
+    allPayments.forEach(p => {
+      const bcvOnDate = currency.getRateOnDate
+        ? currency.getRateOnDate(p.date, 'BCV_USD')
+        : null;
+      const compareOnDate = currency.getRateOnDate
+        ? currency.getRateOnDate(p.date, compareRateType)
+        : null;
+      const bcvRate = bcvOnDate?.value || p.rateAtPayment || 0;
+      const compareRate = compareOnDate?.value || 0;
+      if (!bcvRate || !compareRate) return;
+
+      // USD que "vale" según cada tasa
+      const usdAtBCV     = p.amount / bcvRate;
+      const usdAtCompare = p.amount / compareRate;
+      // Diferencia: negativo si la tasa de comparación es mayor (Bs valen menos USD)
+      const diffUSD = Math.round((usdAtCompare - usdAtBCV) * 100) / 100;
+      const diffPct = compareRate > 0 ? ((compareRate - bcvRate) / compareRate) * 100 : 0;
+
+      movementRows.push({
+        date: p.date,
+        paymentCode: p.code,
+        direction: p.direction,
+        counterpartyName: p.counterpartyName || '',
+        relatedDocCode: p.relatedDocCode || '',
+        amountVES: p.amount,
+        bcvRate,
+        bcvRateFound: bcvOnDate?.found || false,
+        compareRate,
+        compareRateFound: compareOnDate?.found || false,
+        usdAtBCV: Math.round(usdAtBCV * 100) / 100,
+        usdAtCompare: Math.round(usdAtCompare * 100) / 100,
+        diffUSD,
+        diffPct: Math.round(diffPct * 100) / 100
+      });
+    });
+
+    // Totales del diferencial
+    const movementTotals = movementRows.reduce((t, r) => ({
+      countMovements: t.countMovements + 1,
+      totalVES: t.totalVES + r.amountVES,
+      totalUsdBCV: t.totalUsdBCV + r.usdAtBCV,
+      totalUsdCompare: t.totalUsdCompare + r.usdAtCompare,
+      // Pérdida total = suma de diffUSD negativos (cobros donde Bs valieron menos en compare)
+      // Para PAGOS salientes el signo se invierte: pagar con Bs depreciados es ganancia (pagaste menos USD reales)
+      totalDiff: t.totalDiff + (r.direction === 'OUT' ? -r.diffUSD : r.diffUSD)
+    }), { countMovements: 0, totalVES: 0, totalUsdBCV: 0, totalUsdCompare: 0, totalDiff: 0 });
+    movementTotals.totalUsdBCV     = Math.round(movementTotals.totalUsdBCV * 100) / 100;
+    movementTotals.totalUsdCompare = Math.round(movementTotals.totalUsdCompare * 100) / 100;
+    movementTotals.totalDiff       = Math.round(movementTotals.totalDiff * 100) / 100;
+
+    // ====== 2) DEPRECIACIÓN POR PERMANENCIA EN CUENTAS BS ======
+    // Para cada cuenta bancaria activa en VES: cuánto valor USD perdió/ganó
+    // su saldo actual respecto al BCV "promedio histórico" de los Bs depositados.
+    // Aproximación: tomamos el saldo actual en Bs y comparamos:
+    //   - cuánto USD vale hoy esa plata (al BCV de hoy)
+    //   - cuánto USD valía esa plata cuando fue entrando (promedio ponderado)
+    // Si la diferencia es negativa, hubo depreciación (la plata se devaluó).
+    const accounts = db.getAll(db.COLLECTIONS.bankAccounts).filter(a => a.active && a.currency === 'VES');
+    const bcvToday = currency.getRate('BCV_USD')?.value || 0;
+
+    const accountRows = [];
+    accounts.forEach(acc => {
+      const balanceVES = acc.balance || 0;
+      if (Math.abs(balanceVES) < 0.01) return;
+      const valueUSDToday = bcvToday > 0 ? balanceVES / bcvToday : 0;
+
+      // Buscar todos los movimientos de ENTRADA a esta cuenta dentro del rango
+      // y calcular el USD ponderado promedio que valía la plata al entrar.
+      const moves = db.query(db.COLLECTIONS.bankMoves, m =>
+        m.accountId === acc.id &&
+        m.amount > 0 &&
+        this.inRange(m.date, from, to)
+      );
+      let totalVESEntered = 0;
+      let totalUSDAtDeposit = 0;
+      moves.forEach(m => {
+        const rateAtDate = currency.getRateOnDate
+          ? currency.getRateOnDate(m.date, 'BCV_USD')
+          : null;
+        const r = rateAtDate?.value || m.rate || 0;
+        if (!r) return;
+        totalVESEntered += m.amount;
+        totalUSDAtDeposit += (m.amount / r);
+      });
+
+      // Valor USD que esos depósitos "valen" hoy al BCV actual (proporcional al saldo)
+      let valueUSDAtDeposit = 0;
+      if (totalVESEntered > 0 && balanceVES > 0) {
+        // Proporción del saldo actual sobre lo que entró → USD ponderado correspondiente
+        const proportion = Math.min(balanceVES / totalVESEntered, 1);
+        valueUSDAtDeposit = totalUSDAtDeposit * proportion;
+      }
+
+      const depreciation = Math.round((valueUSDToday - valueUSDAtDeposit) * 100) / 100;
+
+      accountRows.push({
+        accountId: acc.id,
+        accountName: acc.name,
+        bankName: acc.bank || '',
+        balanceVES,
+        valueUSDToday: Math.round(valueUSDToday * 100) / 100,
+        valueUSDAtDeposit: Math.round(valueUSDAtDeposit * 100) / 100,
+        depreciation,                       // negativo = perdió valor
+        bcvToday,
+        movesCount: moves.length,
+        totalVESEntered: Math.round(totalVESEntered * 100) / 100
+      });
+    });
+
+    const accountTotals = accountRows.reduce((t, r) => ({
+      totalBalanceVES: t.totalBalanceVES + r.balanceVES,
+      totalValueUSDToday: t.totalValueUSDToday + r.valueUSDToday,
+      totalValueUSDAtDeposit: t.totalValueUSDAtDeposit + r.valueUSDAtDeposit,
+      totalDepreciation: t.totalDepreciation + r.depreciation
+    }), { totalBalanceVES: 0, totalValueUSDToday: 0, totalValueUSDAtDeposit: 0, totalDepreciation: 0 });
+    Object.keys(accountTotals).forEach(k => {
+      accountTotals[k] = Math.round(accountTotals[k] * 100) / 100;
+    });
+
+    // ====== RESUMEN GLOBAL ======
+    const netUSD = Math.round((movementTotals.totalDiff + accountTotals.totalDepreciation) * 100) / 100;
+    const avgDiffPct = movementRows.length
+      ? Math.round((movementRows.reduce((s, r) => s + r.diffPct, 0) / movementRows.length) * 100) / 100
+      : 0;
+
+    // Fechas con tasa faltante (BCV o compareRate no encontrada exacta)
+    const missingDates = new Set();
+    movementRows.forEach(r => {
+      if (!r.bcvRateFound) missingDates.add(`${r.date} (BCV)`);
+      if (!r.compareRateFound) missingDates.add(`${r.date} (${compareRateType})`);
+    });
+
+    return {
+      from, to,
+      compareRateType,
+      compareRateLabel: currency.getRate(compareRateType)?.label || compareRateType,
+      movementRows,
+      movementTotals,
+      accountRows,
+      accountTotals,
+      netUSD,
+      avgDiffPct,
+      missingRateDates: Array.from(missingDates).sort()
+    };
+  },
+
+  // ====== EXPORTACIÓN CSV ======
+
+  /**
+   * Convierte filas a CSV con headers. Detecta automáticamente las columnas.
+   */
+  toCSV(rows, columns) {
+    // columns: [{key, label, format?}]
+    const header = columns.map(c => `"${c.label.replace(/"/g,'""')}"`).join(',');
+    const body = rows.map(r => columns.map(c => {
+      let v = r[c.key];
+      if (c.format) v = c.format(v, r);
+      if (v === null || v === undefined) v = '';
+      v = String(v).replace(/"/g, '""');
+      return `"${v}"`;
+    }).join(',')).join('\n');
+    return header + '\n' + body;
+  },
+
+  downloadCSV(filename, csvContent) {
+    // BOM para que Excel reconozca UTF-8
+    const blob = new Blob(['\ufeff' + csvContent], { type: 'text/csv;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = filename;
+    document.body.appendChild(a); a.click();
+    setTimeout(() => { document.body.removeChild(a); URL.revokeObjectURL(url); }, 100);
+  },
+
+  // ====== EXPORTACIÓN PDF (vista imprimible HTML) ======
+
+  /**
+   * Abre vista imprimible con header del reporte. El cuerpo se pasa como HTML.
+   */
+  openPrintable({ title, subtitle, periodLabel, bodyHtml }) {
+    const cfg = db.getById(db.COLLECTIONS.config, 'main') || {};
+    const html = `<!DOCTYPE html>
+<html><head><meta charset="UTF-8"><title>${escapeHtml(title)}</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500&family=Inter+Tight:wght@400;500;600&display=swap');
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'Inter Tight', sans-serif; font-size: 9.5pt; color: #1a1a18; padding: 30px 40px; line-height: 1.5; }
+  .header { display: flex; justify-content: space-between; align-items: flex-start; padding-bottom: 18px; border-bottom: 2px solid #1a1a18; margin-bottom: 24px; }
+  .brand { font-family: 'Fraunces', serif; font-size: 22pt; font-style: italic; letter-spacing: -1px; line-height: 1; }
+  .brand span { color: #5b7a5a; }
+  .company-info { text-align: right; font-size: 9pt; color: #4a4a45; line-height: 1.6; }
+  .doc-title { font-family: 'Fraunces', serif; font-size: 22pt; font-style: italic; margin-bottom: 4px; margin-top: 20px; }
+  .doc-sub { font-size: 9pt; letter-spacing: 0.16em; text-transform: uppercase; color: #8a8a82; font-weight: 600; }
+  .period-banner { background: #f4f3ef; padding: 12px 16px; border-radius: 6px; margin: 16px 0; font-size: 10pt; }
+  .period-banner strong { font-weight: 600; }
+  table { width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 8.5pt; }
+  th { text-align: left; font-size: 7.5pt; letter-spacing: 0.08em; text-transform: uppercase; color: #8a8a82; font-weight: 600; padding: 8px 6px; border-bottom: 2px solid #1a1a18; }
+  td { padding: 7px 6px; border-bottom: 1px solid #e7e5df; }
+  .num { text-align: right; font-family: monospace; }
+  .total-row { background: #1a1a18; color: white; font-weight: 600; font-size: 9.5pt; }
+  .total-row td { border: none; padding: 12px 6px; }
+  .toolbar { background: #1a1a18; color: white; padding: 12px 20px; margin: -30px -40px 24px -40px; display: flex; justify-content: space-between; align-items: center; }
+  .btn-print { background: #5b7a5a; color: white; padding: 8px 16px; border: none; border-radius: 4px; cursor: pointer; font-family: inherit; font-size: 11pt; font-weight: 500; }
+  .footer { margin-top: 32px; padding-top: 12px; border-top: 1px solid #e7e5df; font-size: 8pt; color: #8a8a82; text-align: center; }
+  .summary-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; margin: 16px 0; }
+  .summary-box { padding: 14px; background: #f4f3ef; border-radius: 6px; }
+  .summary-box .label { font-size: 8pt; letter-spacing: 0.12em; text-transform: uppercase; color: #8a8a82; font-weight: 600; }
+  .summary-box .value { font-family: 'Fraunces', serif; font-size: 16pt; font-style: italic; margin-top: 4px; color: #5b7a5a; }
+  .section-title { font-family: 'Fraunces', serif; font-size: 14pt; font-style: italic; margin: 24px 0 8px 0; }
+  @media print { body { padding: 15mm; } .no-print { display: none; } @page { margin: 0; size: A4 landscape; } }
+</style></head><body>
+
+<div class="toolbar no-print">
+  <span>${escapeHtml(title)} · Vista previa</span>
+  <button class="btn-print" onclick="window.print()">Imprimir / Guardar como PDF</button>
+</div>
+
+<div class="header">
+  <div>
+    <div class="brand"><span>alt</span>care</div>
+    <div style="font-size: 8pt; letter-spacing: 0.16em; text-transform: uppercase; color: #8a8a82; font-weight: 600; margin-top: 4px;">${escapeHtml(cfg.companyName||'')}</div>
+  </div>
+  <div class="company-info">
+    ${cfg.companyName ? `<div style="font-weight:600;color:#1a1a18;">${escapeHtml(cfg.companyName)}</div>` : ''}
+    ${cfg.rif ? `<div>RIF: ${escapeHtml(cfg.rif)}</div>` : ''}
+    ${cfg.address ? `<div>${escapeHtml(cfg.address)}</div>` : ''}
+  </div>
+</div>
+
+<div class="doc-sub">Reporte</div>
+<h1 class="doc-title">${escapeHtml(title)}</h1>
+${subtitle ? `<div style="font-size:10pt;color:#4a4a45;margin-top:4px;">${escapeHtml(subtitle)}</div>` : ''}
+
+<div class="period-banner">
+  <strong>Período:</strong> ${escapeHtml(periodLabel)} · Generado: ${formatDateTime(new Date().toISOString())}
+</div>
+
+${bodyHtml}
+
+<div class="footer">
+  Reporte generado por altcare Manufacturing OS · ${formatDateTime(new Date().toISOString())} · ${escapeHtml(cfg.companyName||'')}
+</div>
+
+</body></html>`;
+    const w = window.open('', '_blank');
+    if (!w) { ui.toast('Permite ventanas emergentes', 'error'); return; }
+    w.document.write(html);
+    w.document.close();
+
+    function escapeHtml(s) { return String(s ?? '').replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m])); }
+    function formatDateTime(iso) { return iso ? new Date(iso).toLocaleString('es-VE', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }) : '—'; }
+  }
+};
+
+// helper compartido
+function escapeHtml(s) { return String(s ?? '').replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m])); }
+function fmtVES(n) { return (parseFloat(n)||0).toLocaleString('es-VE', { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
+function fmtUSD(n) { return '$' + (parseFloat(n)||0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
+function fmtDate(iso) { return iso ? new Date(iso).toLocaleDateString('es-VE', { day: '2-digit', month: '2-digit', year: 'numeric' }) : '—'; }
+
+/**
+ * Formatea un valor en USD a la moneda del modo activo.
+ * Los reportes operativos calculan internamente en USD; esta función
+ * convierte a la moneda del usuario al mostrar.
+ * - Modo Gerencial → mantiene en USD
+ * - Modo Contable → convierte a VES con tasa BCV
+ */
+function fmtMode(usdAmount) {
+  if (typeof currency === 'undefined' || !currency.getModeCurrency) return fmtUSD(usdAmount);
+  const modeCcy = currency.getModeCurrency();
+  if (modeCcy === 'USD') return fmtUSD(usdAmount);
+  // Convertir USD → VES con la tasa del modo (BCV)
+  const rate = currency.getRate('BCV_USD');
+  if (!rate || !rate.value) return fmtUSD(usdAmount);
+  const ves = (parseFloat(usdAmount) || 0) * rate.value;
+  return fmtVES(ves) + ' Bs.';
+}

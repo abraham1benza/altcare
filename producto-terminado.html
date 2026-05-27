@@ -1,0 +1,660 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Clientes · altcare</title>
+<link rel="stylesheet" href="../assets/css/styles.css">
+</head>
+<body>
+<script type="module" src="../assets/js/firebase-init.js"></script>
+<script src="../assets/js/module-init-v2.js"></script>
+<script src="../assets/js/db.js"></script>
+<script src="../assets/js/auth.js"></script>
+<script src="../assets/js/currency.js"></script>
+<script src="../assets/js/tax.js"></script>
+<script src="../assets/js/ui.js"></script>
+<script>
+moduleInit('clientes').then(async (ok) => {
+if (!ok) return;
+
+const PAYMENT_TERMS = ['Contado', '7 días', '15 días', '30 días', '45 días', '60 días', '90 días'];
+const TAXPAYER_TYPES = ['Contribuyente Ordinario', 'Contribuyente Formal', 'Contribuyente Especial', 'No Contribuyente', 'Persona Natural'];
+const CUSTOMER_TYPES = ['Mayorista', 'Distribuidor', 'Salón de belleza', 'Tienda', 'Particular', 'Marca privada'];
+
+let searchTerm = '';
+let sortState = { key: 'code', dir: 'asc' };
+
+function onSort(key) {
+  sortState = ui.toggleSort(sortState, key);
+  render();
+}
+
+function render() {
+  let items = db.getAll(db.COLLECTIONS.customers);
+
+  // Filtrado por visibilidad: si el usuario es vendedor con clientAccess='own', solo ve los suyos
+  const access = auth.getClientAccess();
+  if (access === 'own') {
+    const visibleUsers = auth.visibleUserIds();
+    if (visibleUsers !== null) {
+      items = items.filter(c => {
+        // Compat: array nuevo + campo single viejo
+        const ids = c.salesRepUserIds || [];
+        if (c.salesRepUserId && !ids.includes(c.salesRepUserId)) ids.push(c.salesRepUserId);
+        return ids.some(id => visibleUsers.includes(id));
+      });
+    }
+  }
+  const allItems = items;
+
+  if (searchTerm) {
+    const q = searchTerm.toLowerCase();
+    items = items.filter(i =>
+      (i.name||'').toLowerCase().includes(q) ||
+      (i.rif||'').toLowerCase().includes(q) ||
+      (i.contactName||'').toLowerCase().includes(q)
+    );
+  }
+
+  // Aplicar ordenamiento
+  items = ui.applySort(items, sortState, (item, key) => {
+    if (key === 'code') return item.code || '';
+    if (key === 'name') return item.name || '';
+    if (key === 'rif') return item.rif || '';
+    if (key === 'customerType') return item.customerType || '';
+    if (key === 'contactName') return item.contactName || '';
+    if (key === 'vendor') {
+      // Ordenar por nombre del primer vendedor asignado
+      const ids = (item.salesRepUserIds || []).slice();
+      if (item.salesRepUserId && !ids.includes(item.salesRepUserId)) ids.push(item.salesRepUserId);
+      if (ids.length === 0) return 'zzz' + (item.salesRep || ''); // sin vendedor al final
+      const u = db.getById(db.COLLECTIONS.users, ids[0]);
+      return u ? (u.fullName || u.username || '') : (item.salesRep || '');
+    }
+    if (key === 'paymentTerms') return item.paymentTerms || '';
+    if (key === 'preferredCurrency') return item.preferredCurrency || 'VES';
+    if (key === 'creditLimit') return parseFloat(item.creditLimit) || 0;
+    return '';
+  });
+
+  const tableHtml = items.length
+    ? `<table>
+        <thead><tr>
+          ${ui.sortableTh('Código', 'code', sortState, 'onSort')}
+          ${ui.sortableTh('Razón social', 'name', sortState, 'onSort')}
+          ${ui.sortableTh('RIF', 'rif', sortState, 'onSort')}
+          ${ui.sortableTh('Tipo', 'customerType', sortState, 'onSort')}
+          ${ui.sortableTh('Contacto', 'contactName', sortState, 'onSort')}
+          ${ui.sortableTh('Vendedor(es)', 'vendor', sortState, 'onSort')}
+          ${ui.sortableTh('Términos', 'paymentTerms', sortState, 'onSort')}
+          ${ui.sortableTh('Moneda', 'preferredCurrency', sortState, 'onSort')}
+          ${ui.sortableTh('Crédito', 'creditLimit', sortState, 'onSort', { align: 'right' })}
+          <th style="text-align:right;width:110px;">Acciones</th>
+        </tr></thead>
+        <tbody>
+          ${items.map(r => {
+            // Resolver vendedores: array nuevo + retrocompat con single
+            const ids = (r.salesRepUserIds || []).slice();
+            if (r.salesRepUserId && !ids.includes(r.salesRepUserId)) ids.push(r.salesRepUserId);
+            const vendorEntries = ids
+              .map(uid => ({ uid, user: db.getById(db.COLLECTIONS.users, uid) }))
+              .filter(e => e.user);
+            const fallbackName = r.salesRep || '';
+            const vendorDisplay = vendorEntries.length > 0
+              ? vendorEntries.map(e =>
+                  ui.vendorBadge(e.uid, e.user.fullName || e.user.username)
+                ).join(' ')
+              : (fallbackName
+                  ? `<span class="text-muted" style="font-size:11px;">${ui.escape(fallbackName)}</span><div style="font-size:10px;color:#92400e;">⚠ sin vincular</div>`
+                  : '<span class="td-muted">—</span>');
+            return `
+            <tr style="cursor:pointer;" onclick="viewItem('${r.id}')">
+              <td><span class="td-mono td-strong">${r.code || '—'}</span></td>
+              <td>
+                <div class="td-strong">${ui.escape(r.name)}</div>
+                ${r.tradename ? `<div class="text-muted" style="font-size:11px;">${ui.escape(r.tradename)}</div>` : ''}
+              </td>
+              <td><span class="td-mono">${ui.escape(r.rif||'—')}</span></td>
+              <td>${r.customerType ? `<span class="badge badge-plain">${ui.escape(r.customerType)}</span>` : '<span class="td-muted">—</span>'}</td>
+              <td>
+                ${r.contactName ? ui.escape(r.contactName) : '<span class="td-muted">—</span>'}
+                ${r.phone ? `<div class="text-muted" style="font-size:11px;">${ui.escape(r.phone)}</div>` : ''}
+              </td>
+              <td><div style="display:flex;flex-wrap:wrap;gap:4px;">${vendorDisplay}</div></td>
+              <td>${r.paymentTerms ? `<span class="td-mono">${ui.escape(r.paymentTerms)}</span>` : '<span class="td-muted">—</span>'}</td>
+              <td><span class="badge ${r.preferredCurrency==='USD'?'badge-accent':'badge-plain'}">${r.preferredCurrency || 'VES'}</span></td>
+              <td style="text-align:right;">${r.creditLimit ? `<span class="td-mono">${currency.formatCompact(r.creditLimit, r.preferredCurrency || 'VES')}</span>` : '<span class="td-muted">—</span>'}</td>
+              <td class="td-actions" onclick="event.stopPropagation()">
+                <button class="btn-icon" onclick="editItem('${r.id}')" title="Editar">${ui.icon('edit')}</button>
+                <button class="btn-icon" onclick="deleteItem('${r.id}')" title="Eliminar">${ui.icon('trash')}</button>
+              </td>
+            </tr>
+          `;
+          }).join('')}
+        </tbody>
+      </table>`
+    : (allItems.length === 0
+      ? `<div class="empty-state">
+          <div class="empty-state-icon">${ui.icon('users')}</div>
+          <div class="empty-state-title">Sin clientes</div>
+          <div class="empty-state-text">Registra a tus clientes para emitir facturas, gestionar pedidos y dar seguimiento a cuentas por cobrar.</div>
+          <button class="btn btn-primary" onclick="newItem()">${ui.icon('plus')} Crear el primero</button>
+        </div>`
+      : `<div class="empty-state"><div class="empty-state-title">Sin resultados</div><div class="empty-state-text">Ningún cliente coincide con tu búsqueda.</div></div>`);
+
+  // Detectar clientes con vendedor en texto pero sin vincular (problema típico post-import)
+  const isAdmin = auth.canSeeAll();
+  const orphanCustomers = isAdmin
+    ? db.getAll(db.COLLECTIONS.customers).filter(c => {
+        const hasIds = (c.salesRepUserIds && c.salesRepUserIds.length > 0) || c.salesRepUserId;
+        return !hasIds && c.salesRep && c.salesRep.trim() !== '';
+      })
+    : [];
+
+  const content = `
+    <div class="action-bar">
+      <div class="action-bar-left">
+        <h2 class="action-bar-title">Clientes</h2>
+        <span class="action-bar-count">${allItems.length} registrados</span>
+      </div>
+      <div class="action-bar-right">
+        <button class="btn btn-primary" onclick="newItem()">${ui.icon('plus')} Nuevo cliente</button>
+      </div>
+    </div>
+
+    ${orphanCustomers.length > 0 ? `
+      <div class="card mb-24" style="background:#fef3c7;border-color:#fcd34d;">
+        <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap;">
+          <div style="flex:1;min-width:240px;">
+            <div style="font-weight:600;font-size:13px;color:#78350f;margin-bottom:4px;">⚠️ ${orphanCustomers.length} cliente${orphanCustomers.length!==1?'s':''} con vendedor desvinculado</div>
+            <div class="text-muted" style="font-size:12px;line-height:1.5;color:#78350f;">
+              Estos clientes tienen un vendedor en texto (importados antes de crear los usuarios). Los vendedores no los ven en su lista. Hacé click en "Reparar" para vincular automáticamente buscando el usuario por nombre.
+            </div>
+          </div>
+          <button class="btn btn-primary" onclick="repairSalesReps()" style="background:#92400e;border-color:#92400e;">🔗 Reparar vendedores</button>
+        </div>
+      </div>
+    ` : ''}
+
+    <div class="table-wrap">
+      <div class="table-toolbar">
+        <div class="search-box">
+          ${ui.icon('search')}
+          <input id="search-input" class="input" type="search" placeholder="Buscar por nombre, RIF o contacto..." value="${ui.escape(searchTerm)}" oninput="onSearch(this.value)">
+        </div>
+      </div>
+      ${tableHtml}
+    </div>
+  `;
+
+  ui.renderLayout({
+    activeModule: 'clientes',
+    pageEyebrow: 'Comercial',
+    pageTitle: 'Clientes',
+    contentHtml: content
+  });
+}
+
+const _doSearchRender = ui.debounce(() => ui.preserveFocus(() => render()), 250);
+function onSearch(v) { searchTerm = v; _doSearchRender(); }
+
+function newItem() {
+  const code = db.nextCode(db.COLLECTIONS.customers, 'C');
+  openForm({ code, paymentTerms: 'Contado', preferredCurrency: 'VES', taxpayerType: 'Contribuyente Ordinario', creditLimit: 0 });
+}
+
+function editItem(id) {
+  const r = db.getById(db.COLLECTIONS.customers, id);
+  if (r) openForm(r);
+}
+
+/**
+ * Vista de detalle (solo lectura) del cliente. Muestra toda la información
+ * y permite ir a editar desde un botón.
+ */
+function viewItem(id) {
+  const r = db.getById(db.COLLECTIONS.customers, id);
+  if (!r) { ui.toast('Cliente no encontrado', 'error'); return; }
+
+  // Vendedores asignados
+  const ids = (r.salesRepUserIds || []).slice();
+  if (r.salesRepUserId && !ids.includes(r.salesRepUserId)) ids.push(r.salesRepUserId);
+  const vendorList = ids
+    .map(uid => db.getById(db.COLLECTIONS.users, uid))
+    .filter(Boolean)
+    .map(u => u.fullName || u.username);
+  const vendorText = vendorList.length > 0
+    ? vendorList.join(', ')
+    : (r.salesRep ? `${ui.escape(r.salesRep)} (sin vincular)` : '—');
+
+  // Fecha de creación: si existe createdAt usa eso, sino busca el campo legacy o muestra dash
+  const createdLabel = r.createdAt
+    ? ui.formatDateTime(r.createdAt)
+    : '<span class="text-muted" style="font-size:11px;">No registrada (cliente importado o anterior)</span>';
+
+  // Helper para renderizar campo
+  const f = (label, value, mono = false) => `
+    <div class="field">
+      <div class="field-label">${label}</div>
+      <div class="input" style="background:var(--surface-2);${mono?'font-family:var(--font-mono);':''}">${value || '<span class="text-muted">—</span>'}</div>
+    </div>`;
+
+  ui.openModal({
+    size: 'lg',
+    title: r.name,
+    subtitle: `Código: ${r.code || '—'} · ${r.rif || 'sin RIF'}`,
+    body: `
+      <div class="section-title">Datos fiscales</div>
+      <div class="form-grid form-grid-2 mb-24">
+        ${f('Razón social / Nombre', ui.escape(r.name||''))}
+        ${f('Nombre comercial', ui.escape(r.tradename||''))}
+        ${f('RIF / Cédula', ui.escape(r.rif||''), true)}
+        ${f('Tipo de contribuyente', ui.escape(r.taxpayerType||''))}
+        <div class="field" style="grid-column:1/-1;">
+          <div class="field-label">Dirección fiscal</div>
+          <div class="input" style="background:var(--surface-2);min-height:36px;">${r.address ? ui.escape(r.address) : '<span class="text-muted">—</span>'}</div>
+        </div>
+        <div class="field" style="grid-column:1/-1;">
+          <div class="field-label">Dirección de envío</div>
+          <div class="input" style="background:var(--surface-2);min-height:36px;">${r.shippingAddress ? ui.escape(r.shippingAddress) : '<span class="text-muted">— (usa la dirección fiscal)</span>'}</div>
+        </div>
+      </div>
+
+      <div class="section-title">Contacto</div>
+      <div class="form-grid form-grid-2 mb-24">
+        ${f('Persona de contacto', ui.escape(r.contactName||''))}
+        ${f('Cargo', ui.escape(r.contactRole||''))}
+        ${f('Teléfono', ui.escape(r.phone||''), true)}
+        ${f('WhatsApp', ui.escape(r.whatsapp||''), true)}
+        ${f('Email', ui.escape(r.email||''))}
+      </div>
+
+      <div class="section-title">Comercial</div>
+      <div class="form-grid form-grid-3 mb-24">
+        ${f('Tipo de cliente', ui.escape(r.customerType||''))}
+        ${f('Términos de pago', ui.escape(r.paymentTerms||''), true)}
+        ${f('Moneda preferida', `<span class="badge ${r.preferredCurrency==='USD'?'badge-accent':'badge-plain'}">${r.preferredCurrency || 'VES'}</span>`)}
+        ${f('Límite de crédito', r.creditLimit ? `<span class="td-mono">${currency.format(r.creditLimit, r.preferredCurrency || 'VES')}</span>` : '0', false)}
+        ${f('Descuento habitual (%)', r.defaultDiscount ? `${r.defaultDiscount}%` : '0%', true)}
+        ${f('Vendedor(es) asignado(s)', vendorText)}
+      </div>
+
+      <div class="section-title">Sistema</div>
+      <div class="form-grid form-grid-2 mb-24">
+        ${f('Fecha de creación', createdLabel)}
+        ${f('Código interno', ui.escape(r.code||''), true)}
+      </div>
+
+      ${r.notes ? `
+        <div class="section-title">Notas</div>
+        <div class="input" style="background:var(--surface-2);white-space:pre-wrap;min-height:60px;padding:12px;">${ui.escape(r.notes)}</div>
+      ` : ''}
+    `,
+    footer: `
+      <button class="btn btn-secondary" onclick="ui.closeModal()">Cerrar</button>
+      <button class="btn btn-primary" onclick="ui.closeModal(); editItem('${r.id}')">${ui.icon('edit')} Editar</button>
+    `
+  });
+}
+
+function openForm(item) {
+  const isNew = !item.id;
+  ui.openModal({
+    size: 'lg',
+    title: isNew ? 'Nuevo cliente' : 'Editar cliente',
+    subtitle: isNew ? `Código asignado: ${item.code}` : `Código: ${item.code}`,
+    body: `
+      <form id="cli-form" onsubmit="saveItem(event, '${item.id || ''}')">
+        <input type="hidden" name="code" value="${item.code}">
+
+        <div class="section-title">Datos fiscales</div>
+        <div class="form-grid form-grid-2 mb-24">
+          <div class="field">
+            <label class="field-label">Razón social / Nombre *</label>
+            <input class="input" name="name" required value="${ui.escape(item.name||'')}">
+          </div>
+          <div class="field">
+            <label class="field-label">Nombre comercial</label>
+            <input class="input" name="tradename" value="${ui.escape(item.tradename||'')}">
+          </div>
+          <div class="field">
+            <label class="field-label">RIF / Cédula *</label>
+            <input class="input" name="rif" required value="${ui.escape(item.rif||'')}" placeholder="J-12345678-9 o V-12345678">
+          </div>
+          <div class="field">
+            <label class="field-label">Tipo de contribuyente</label>
+            <select class="select" name="taxpayerType">
+              ${TAXPAYER_TYPES.map(t => `<option ${t===item.taxpayerType?'selected':''}>${t}</option>`).join('')}
+            </select>
+          </div>
+          <div class="field" style="grid-column:1 / -1;">
+            <label class="field-label">Dirección fiscal</label>
+            <input class="input" name="address" value="${ui.escape(item.address||'')}">
+          </div>
+          <div class="field" style="grid-column:1 / -1;">
+            <label class="field-label">Dirección de envío (si difiere)</label>
+            <input class="input" name="shippingAddress" value="${ui.escape(item.shippingAddress||'')}">
+          </div>
+        </div>
+
+        <div class="section-title">Contacto</div>
+        <div class="form-grid form-grid-2 mb-24">
+          <div class="field">
+            <label class="field-label">Persona de contacto</label>
+            <input class="input" name="contactName" value="${ui.escape(item.contactName||'')}">
+          </div>
+          <div class="field">
+            <label class="field-label">Cargo</label>
+            <input class="input" name="contactRole" value="${ui.escape(item.contactRole||'')}">
+          </div>
+          <div class="field">
+            <label class="field-label">Teléfono</label>
+            <input class="input" name="phone" value="${ui.escape(item.phone||'')}">
+          </div>
+          <div class="field">
+            <label class="field-label">WhatsApp</label>
+            <input class="input" name="whatsapp" value="${ui.escape(item.whatsapp||'')}" placeholder="Si es distinto al teléfono">
+            <div class="field-hint">Para enviar notificaciones. Si vacío, se usa el teléfono.</div>
+          </div>
+          <div class="field">
+            <label class="field-label">Email</label>
+            <input class="input" type="email" name="email" value="${ui.escape(item.email||'')}">
+          </div>
+        </div>
+
+        <div class="section-title">Comercial</div>
+        <div class="form-grid form-grid-3 mb-24">
+          <div class="field">
+            <label class="field-label">Tipo de cliente</label>
+            <select class="select" name="customerType">
+              <option value="">—</option>
+              ${CUSTOMER_TYPES.map(t => `<option ${t===item.customerType?'selected':''}>${t}</option>`).join('')}
+            </select>
+          </div>
+          <div class="field">
+            <label class="field-label">Términos de pago</label>
+            <select class="select" name="paymentTerms">
+              ${PAYMENT_TERMS.map(t => `<option ${t===item.paymentTerms?'selected':''}>${t}</option>`).join('')}
+            </select>
+          </div>
+          <div class="field">
+            <label class="field-label">Moneda preferida</label>
+            <select class="select" name="preferredCurrency">
+              <option value="VES" ${item.preferredCurrency==='VES'?'selected':''}>Bolívares (VES)</option>
+              <option value="USD" ${item.preferredCurrency==='USD'?'selected':''}>Dólares (USD)</option>
+              <option value="EUR" ${item.preferredCurrency==='EUR'?'selected':''}>Euros (EUR)</option>
+            </select>
+          </div>
+          <div class="field">
+            <label class="field-label">Límite de crédito</label>
+            <input class="input" type="number" step="0.01" name="creditLimit" value="${item.creditLimit||0}">
+            <div class="field-hint">En la moneda preferida. 0 = sin crédito</div>
+          </div>
+          <div class="field">
+            <label class="field-label">Descuento habitual (%)</label>
+            <input class="input" type="number" step="0.01" name="defaultDiscount" value="${item.defaultDiscount||0}">
+          </div>
+          <div class="field" style="grid-column:1/-1;">
+            <label class="field-label">Vendedores asignados</label>
+            ${(() => {
+              // Lista de usuarios candidatos: ventas, gerentes, admins activos
+              const allUsers = db.getAll(db.COLLECTIONS.users)
+                .filter(u => u.active !== false)
+                .sort((a, b) => (a.fullName||a.username||'').localeCompare(b.fullName||b.username||''));
+
+              if (allUsers.length === 0) {
+                return '<div class="text-muted" style="font-size:12px;padding:8px;">No hay usuarios para asignar. Creá vendedores en el módulo Usuarios.</div>';
+              }
+
+              // Resolver array de IDs asignados (con retrocompat con campo viejo single)
+              const assigned = new Set(item.salesRepUserIds || []);
+              if (item.salesRepUserId && !assigned.has(item.salesRepUserId)) assigned.add(item.salesRepUserId);
+
+              return `<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:6px;padding:10px;background:var(--surface-2);border:1px solid var(--border);border-radius:8px;max-height:200px;overflow-y:auto;">
+                ${allUsers.map(u => {
+                  const checked = assigned.has(u.id);
+                  const roleLabel = u.role === 'admin' ? 'admin' : u.role === 'gerente' ? 'gerente' : '';
+                  return `<label style="display:flex;align-items:center;gap:8px;padding:6px 8px;background:white;border-radius:5px;cursor:pointer;border:1px solid ${checked?'var(--accent)':'var(--border)'};${checked?'background:#f3f6f0;':''}">
+                    <input type="checkbox" name="salesRepUserIds_${u.id}" value="${u.id}" ${checked?'checked':''}>
+                    <div style="flex:1;min-width:0;font-size:12px;">
+                      <div style="font-weight:${checked?'600':'400'};color:${checked?'var(--accent-ink)':'var(--ink-1)'};">${ui.escape(u.fullName||u.username)}</div>
+                      ${roleLabel ? `<div class="text-muted" style="font-size:10px;">${roleLabel}</div>` : ''}
+                    </div>
+                  </label>`;
+                }).join('')}
+              </div>
+              <div class="field-hint">Podés asignar varios vendedores. Cada uno verá este cliente en su lista. Si no marcás ninguno, solo admin/gerente lo verán.</div>`;
+            })()}
+          </div>
+        </div>
+
+        <div class="section-title">Notas</div>
+        <div class="field">
+          <textarea class="textarea" name="notes" placeholder="Observaciones, preferencias, historial...">${ui.escape(item.notes||'')}</textarea>
+        </div>
+      </form>
+    `,
+    footer: `
+      <button class="btn btn-secondary" onclick="ui.closeModal()">Cancelar</button>
+      <button class="btn btn-primary" onclick="document.getElementById('cli-form').requestSubmit()">${ui.icon('check')} Guardar</button>
+    `
+  });
+}
+
+function saveItem(e, id) {
+  e.preventDefault();
+  const data = ui.formData(e.target);
+  if (!data.name || !data.rif) { ui.toast('Razón social y RIF/Cédula son obligatorios', 'error'); return; }
+
+  // Procesar checkboxes de vendedores asignados
+  const fd = new FormData(e.target);
+  const salesRepUserIds = [];
+  for (const [key, val] of fd.entries()) {
+    if (key.startsWith('salesRepUserIds_') && val) {
+      salesRepUserIds.push(val);
+      delete data[key];
+    }
+  }
+  data.salesRepUserIds = salesRepUserIds;
+
+  // Generar el nombre de vendedor combinado para mostrar (compat con código viejo)
+  if (salesRepUserIds.length > 0) {
+    const names = salesRepUserIds
+      .map(uid => db.getById(db.COLLECTIONS.users, uid))
+      .filter(Boolean)
+      .map(u => u.fullName || u.username);
+    data.salesRep = names.join(' / ');
+  } else {
+    data.salesRep = '';
+  }
+
+  // Limpiar el campo viejo single si existía
+  delete data.salesRepUserId;
+
+  if (id) {
+    data.id = id;
+    // No tocamos createdAt al editar
+  } else {
+    // Cliente nuevo: guardar fecha de creación
+    data.createdAt = new Date().toISOString();
+    // Creación nueva: si el usuario no es admin/gerente y no marcó vendedores,
+    // auto-asignarse a sí mismo (para que él lo vea en su lista)
+    if (salesRepUserIds.length === 0) {
+      const me = auth.currentUser();
+      if (me && !auth.isAdmin() && !auth.isManager()) {
+        data.salesRepUserIds = [me.id];
+        data.salesRep = me.fullName || me.username;
+      }
+    }
+  }
+
+  db.save(db.COLLECTIONS.customers, data);
+  ui.closeModal();
+  ui.toast(id ? 'Cliente actualizado' : 'Cliente creado', 'success');
+  render();
+}
+
+function deleteItem(id) {
+  const r = db.getById(db.COLLECTIONS.customers, id);
+  ui.confirm(
+    `¿Eliminar al cliente "${r.name}"?`,
+    () => {
+      db.remove(db.COLLECTIONS.customers, id);
+      ui.toast('Cliente eliminado', 'success');
+      render();
+    },
+    { danger: true, confirmLabel: 'Eliminar' }
+  );
+}
+
+/**
+ * Repara clientes con vendedor en texto pero sin vincular a un usuario.
+ * Busca el usuario por nombre y le asigna el salesRepUserIds.
+ */
+function repairSalesReps() {
+  const customers = db.getAll(db.COLLECTIONS.customers).filter(c => {
+    const hasIds = (c.salesRepUserIds && c.salesRepUserIds.length > 0) || c.salesRepUserId;
+    return !hasIds && c.salesRep && c.salesRep.trim() !== '';
+  });
+
+  if (customers.length === 0) {
+    ui.toast('No hay clientes para reparar', 'info');
+    return;
+  }
+
+  const allUsers = db.getAll(db.COLLECTIONS.users).filter(u => u.active !== false);
+
+  // Pre-calcular: agrupar nombres distintos de salesRep para mostrar al usuario
+  const salesRepGroups = {};
+  customers.forEach(c => {
+    const name = c.salesRep.trim();
+    salesRepGroups[name] = (salesRepGroups[name] || 0) + 1;
+  });
+
+  // Para cada nombre, buscar match
+  const matchedNames = {};
+  const unmatchedNames = [];
+  for (const repName of Object.keys(salesRepGroups)) {
+    const lowerRepName = repName.toLowerCase();
+    // El nombre puede tener varios separados por " / " (clientes editados después con multi-vendedor)
+    const parts = repName.split('/').map(s => s.trim()).filter(Boolean);
+    const userIdsFound = [];
+    for (const part of parts) {
+      const lower = part.toLowerCase();
+      const matched = allUsers.find(u => {
+        const fn = (u.fullName || '').toLowerCase();
+        const un = (u.username || '').toLowerCase();
+        return fn === lower || un === lower || (fn && fn.includes(lower)) || (lower && lower.includes(fn) && fn);
+      });
+      if (matched) userIdsFound.push(matched.id);
+    }
+    if (userIdsFound.length > 0) {
+      matchedNames[repName] = userIdsFound;
+    } else {
+      unmatchedNames.push(repName);
+    }
+  }
+
+  // Mostrar diálogo de confirmación con resultados del análisis
+  const willMatchCount = customers.filter(c => matchedNames[c.salesRep.trim()]).length;
+
+  let summaryHtml = `<div style="font-size:13px;line-height:1.5;">
+    <p>Se va a procesar ${customers.length} cliente${customers.length!==1?'s':''}:</p>
+    <ul style="margin:8px 0;padding-left:20px;">`;
+
+  for (const [name, count] of Object.entries(salesRepGroups)) {
+    if (matchedNames[name]) {
+      const userNames = matchedNames[name].map(uid => {
+        const u = db.getById(db.COLLECTIONS.users, uid);
+        return u?.fullName || u?.username || '?';
+      }).join(', ');
+      summaryHtml += `<li><strong>${ui.escape(name)}</strong> (${count}) → vincular a: <strong style="color:var(--success);">${ui.escape(userNames)}</strong></li>`;
+    } else {
+      summaryHtml += `<li><strong>${ui.escape(name)}</strong> (${count}) → <span style="color:var(--danger);">no se encontró usuario</span></li>`;
+    }
+  }
+  summaryHtml += `</ul>`;
+
+  if (unmatchedNames.length > 0) {
+    summaryHtml += `<p style="color:#92400e;font-size:12px;margin-top:8px;">
+      ⚠️ Para los nombres sin match, primero creá esos usuarios en el módulo Usuarios y volvé a ejecutar la reparación.
+    </p>`;
+  }
+
+  summaryHtml += `<p style="margin-top:8px;"><strong>${willMatchCount} cliente${willMatchCount!==1?'s':''}</strong> serán reparados.</p></div>`;
+
+  ui.openModal({
+    title: '🔗 Reparar vendedores',
+    body: summaryHtml,
+    footer: `
+      <button class="btn btn-secondary" onclick="ui.closeModal()">Cancelar</button>
+      ${willMatchCount > 0 ? `<button class="btn btn-primary" onclick="doRepairSalesReps()">${ui.icon('check')} Reparar ${willMatchCount} cliente${willMatchCount!==1?'s':''}</button>` : ''}
+    `
+  });
+}
+
+function doRepairSalesReps() {
+  const customers = db.getAll(db.COLLECTIONS.customers).filter(c => {
+    const hasIds = (c.salesRepUserIds && c.salesRepUserIds.length > 0) || c.salesRepUserId;
+    return !hasIds && c.salesRep && c.salesRep.trim() !== '';
+  });
+  const allUsers = db.getAll(db.COLLECTIONS.users).filter(u => u.active !== false);
+
+  let repaired = 0;
+  let skipped = 0;
+
+  for (const c of customers) {
+    const repName = c.salesRep.trim();
+    const parts = repName.split('/').map(s => s.trim()).filter(Boolean);
+    const userIdsFound = [];
+    for (const part of parts) {
+      const lower = part.toLowerCase();
+      const matched = allUsers.find(u => {
+        const fn = (u.fullName || '').toLowerCase();
+        const un = (u.username || '').toLowerCase();
+        return fn === lower || un === lower || (fn && fn.includes(lower)) || (lower && lower.includes(fn) && fn);
+      });
+      if (matched && !userIdsFound.includes(matched.id)) userIdsFound.push(matched.id);
+    }
+    if (userIdsFound.length > 0) {
+      c.salesRepUserIds = userIdsFound;
+      // Actualizar también el texto para que sea consistente
+      const names = userIdsFound.map(uid => {
+        const u = db.getById(db.COLLECTIONS.users, uid);
+        return u?.fullName || u?.username || '';
+      }).filter(Boolean);
+      c.salesRep = names.join(' / ');
+      db.save(db.COLLECTIONS.customers, c);
+      repaired++;
+    } else {
+      skipped++;
+    }
+  }
+
+  ui.closeModal();
+  ui.toast(`✓ ${repaired} cliente${repaired!==1?'s':''} reparado${repaired!==1?'s':''}${skipped > 0 ? ` · ${skipped} omitidos (sin match)` : ''}`, 'success', 5000);
+  render();
+}
+
+render();
+
+
+// Exponer funciones a window (para que onclick="" del HTML pueda llamarlas)
+Object.assign(window, {
+  render: typeof render !== 'undefined' ? render : undefined,
+  onSearch: typeof onSearch !== 'undefined' ? onSearch : undefined,
+  onSort: typeof onSort !== 'undefined' ? onSort : undefined,
+  newItem: typeof newItem !== 'undefined' ? newItem : undefined,
+  editItem: typeof editItem !== 'undefined' ? editItem : undefined,
+  viewItem: typeof viewItem !== 'undefined' ? viewItem : undefined,
+  openForm: typeof openForm !== 'undefined' ? openForm : undefined,
+  saveItem: typeof saveItem !== 'undefined' ? saveItem : undefined,
+  deleteItem: typeof deleteItem !== 'undefined' ? deleteItem : undefined,
+  repairSalesReps: typeof repairSalesReps !== 'undefined' ? repairSalesReps : undefined,
+  doRepairSalesReps: typeof doRepairSalesReps !== 'undefined' ? doRepairSalesReps : undefined,
+});
+});
+</script>
+</body>
+</html>

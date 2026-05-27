@@ -1,0 +1,1128 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Cuentas Bancarias · altcare</title>
+<link rel="stylesheet" href="../assets/css/styles.css">
+</head>
+<body>
+<script type="module" src="../assets/js/firebase-init.js"></script>
+<script src="../assets/js/module-init-v2.js"></script>
+<script src="../assets/js/db.js"></script>
+<script src="../assets/js/auth.js"></script>
+<script src="../assets/js/currency.js"></script>
+<script src="../assets/js/tax.js"></script>
+<script src="../assets/js/inventory.js"></script>
+<script src="../assets/js/formulas.js"></script>
+<script src="../assets/js/purchases.js"></script>
+<script src="../assets/js/sales.js"></script>
+<script src="../assets/js/payments.js"></script>
+<script src="../assets/js/ui.js"></script>
+<script>
+moduleInit('cuentas-bancarias').then(async (ok) => {
+if (!ok) return;
+
+let view = 'list';        // list | detail
+let selectedId = null;
+
+function render() {
+  if (view === 'detail' && selectedId) return renderDetail();
+  return renderList();
+}
+
+function renderList() {
+  const accounts = db.getAll(db.COLLECTIONS.bankAccounts).filter(a => a.active !== false);
+  const modeCcy = currency.getModeCurrency();
+  const activeMode = auth.getActiveMode();
+
+  // Separar cuentas: empresa vs personal
+  const companyAccounts = accounts.filter(a => a.countsForFiscal !== false);
+  const personalAccounts = accounts.filter(a => a.countsForFiscal === false);
+
+  // Totales consolidados en moneda del modo
+  let totalCompany = 0;
+  let totalPersonal = 0;
+  companyAccounts.forEach(a => { totalCompany += currency.toDisplay(a.balance || 0, a.currency); });
+  personalAccounts.forEach(a => { totalPersonal += currency.toDisplay(a.balance || 0, a.currency); });
+  const totalAll = totalCompany + totalPersonal;
+
+  // Helper para renderizar una card estilo "dashboard de cuenta"
+  const renderCard = (a, totalForGroup) => {
+    const isPersonal = a.countsForFiscal === false;
+    const balance = a.balance || 0;
+
+    // Conversiones cruzadas
+    let conversions = [];
+    const bcvUsd = currency.getRate('BCV_USD');
+    const binance = currency.getRate('BINANCE');
+    const bcvEur = currency.getRate('BCV_EUR');
+
+    if (a.currency === 'VES') {
+      // Mostrar equivalente en USD (BCV) y USD (Binance)
+      if (bcvUsd?.value) conversions.push({ label: 'BCV', value: balance / bcvUsd.value, ccy: 'USD' });
+      if (binance?.value) conversions.push({ label: 'Binance', value: balance / binance.value, ccy: 'USD' });
+    } else if (a.currency === 'USD') {
+      // Mostrar equivalente en VES (BCV) y VES (Binance)
+      if (bcvUsd?.value) conversions.push({ label: 'BCV', value: balance * bcvUsd.value, ccy: 'VES' });
+      if (binance?.value) conversions.push({ label: 'Binance', value: balance * binance.value, ccy: 'VES' });
+    } else if (a.currency === 'EUR') {
+      // Mostrar equivalente en VES (BCV €)
+      if (bcvEur?.value) conversions.push({ label: 'BCV €', value: balance * bcvEur.value, ccy: 'VES' });
+    }
+
+    // Calcular movimientos del mes
+    const today = new Date();
+    const yyyymm = today.toISOString().slice(0,7);
+    const moves = db.query(db.COLLECTIONS.bankMoves, m => m.accountId === a.id && (m.date||'').startsWith(yyyymm));
+    const ingresosMes = moves.filter(m => m.direction === 'IN').reduce((s,m) => s + Math.abs(m.amount||0), 0);
+    const egresosMes = moves.filter(m => m.direction === 'OUT').reduce((s,m) => s + Math.abs(m.amount||0), 0);
+
+    // Total de movimientos
+    const totalMoves = db.query(db.COLLECTIONS.bankMoves, m => m.accountId === a.id);
+    const lastMove = totalMoves.sort((x,y)=>(y.date||'').localeCompare(x.date||''))[0];
+
+    // % del total del grupo
+    const equivalentInMode = currency.toDisplay(balance, a.currency);
+    const percentOfTotal = totalForGroup > 0 ? (equivalentInMode / totalForGroup) * 100 : 0;
+
+    // Color de moneda
+    const ccyColor = a.currency === 'USD' ? '#1e40af' :
+                     a.currency === 'EUR' ? '#6b21a8' :
+                     '#92400e';
+    const ccyBg = a.currency === 'USD' ? '#dbeafe' :
+                  a.currency === 'EUR' ? '#f3e8ff' :
+                  '#fef3c7';
+    const ccyBadge = a.currency === 'USD' ? 'badge-invoice' :
+                     a.currency === 'EUR' ? 'badge-quote' :
+                     'badge-caja';
+
+    return `
+      <div class="card account-card" style="padding:0;overflow:hidden;border-radius:12px;${
+        isPersonal
+          ? 'border:2px solid #d97706;background:linear-gradient(180deg, #fffbeb 0%, #fef9e7 100%);box-shadow:0 1px 3px rgba(217, 119, 6, 0.08);'
+          : 'border:2px solid var(--accent);background:linear-gradient(180deg, #f3f6f0 0%, #f8faf6 100%);box-shadow:0 1px 3px rgba(91, 122, 90, 0.08);'
+      }">
+        <!-- Header con badge moneda -->
+        <div style="padding:18px 20px 12px;${
+          isPersonal
+            ? 'background:linear-gradient(180deg, #fef3c7 0%, transparent 100%);border-bottom:1px solid #fde68a;'
+            : 'background:linear-gradient(180deg, var(--accent-soft) 0%, transparent 100%);border-bottom:1px solid #d4ddd0;'
+        }">
+          <div style="display:flex;justify-content:space-between;align-items:start;gap:8px;">
+            <div style="flex:1;min-width:0;">
+              <div class="text-muted" style="font-size:10px;text-transform:uppercase;letter-spacing:0.08em;font-weight:600;margin-bottom:6px;color:${isPersonal?'#92400e':'var(--accent-ink)'};">
+                ${isPersonal ? '👤 CUENTA PERSONAL' : '🏢 CUENTA DE EMPRESA'}
+              </div>
+              <div style="font-family:var(--font-display);font-size:18px;line-height:1.2;font-weight:500;${isPersonal?'color:#78350f;':'color:var(--accent-ink);'}">${ui.escape(a.name)}</div>
+              <div class="text-muted" style="font-size:11px;margin-top:4px;">${ui.escape(a.bank||'')}${a.accountNumber?` · ····${a.accountNumber.slice(-4)}`:''}</div>
+            </div>
+            <div style="display:flex;flex-direction:column;align-items:flex-end;gap:4px;flex-shrink:0;">
+              <span class="badge ${ccyBadge}" style="font-size:10px;font-weight:700;">${a.currency}</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Saldo grande + conversiones -->
+        <div style="padding:8px 20px 16px;cursor:pointer;" onclick="openDetail('${a.id}')">
+          <div style="font-family:var(--font-display);font-size:32px;letter-spacing:-0.03em;line-height:1.1;font-weight:500;${balance<0?'color:var(--danger);':'color:var(--ink-1);'}">${currency.format(balance, a.currency)}</div>
+          ${conversions.length ? `
+            <div style="margin-top:8px;display:flex;flex-direction:column;gap:2px;">
+              ${conversions.map(c => `
+                <div class="text-muted" style="font-size:11.5px;font-family:var(--font-mono);">≈ ${currency.format(c.value, c.ccy)} <span style="opacity:0.7;">(${c.label})</span></div>
+              `).join('')}
+            </div>
+          ` : ''}
+        </div>
+
+        <!-- % del total + barra -->
+        ${totalForGroup > 0 ? `
+        <div style="padding:0 20px 14px;">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+            <span class="text-muted" style="font-size:10px;text-transform:uppercase;letter-spacing:0.05em;">% del total</span>
+            <span class="td-mono td-strong" style="font-size:11px;color:var(--accent-ink);">${percentOfTotal.toFixed(0)}%</span>
+          </div>
+          <div style="height:4px;background:var(--surface-2);border-radius:2px;overflow:hidden;">
+            <div style="width:${Math.min(percentOfTotal,100)}%;height:100%;background:${isPersonal?'#f59e0b':'var(--accent)'};transition:width 0.3s;"></div>
+          </div>
+        </div>` : ''}
+
+        <!-- Ingresos / Egresos del mes -->
+        <div style="padding:0 16px 14px;display:grid;grid-template-columns:1fr 1fr;gap:8px;">
+          <div style="padding:8px 12px;background:#dcfce7;border-radius:6px;">
+            <div class="text-muted" style="font-size:9px;text-transform:uppercase;letter-spacing:0.08em;font-weight:600;color:#166534;">Ingresos mes</div>
+            <div style="font-family:var(--font-mono);font-size:13px;font-weight:600;color:#15803d;margin-top:2px;">+${currency.format(ingresosMes, a.currency)}</div>
+          </div>
+          <div style="padding:8px 12px;background:#fee2e2;border-radius:6px;">
+            <div class="text-muted" style="font-size:9px;text-transform:uppercase;letter-spacing:0.08em;font-weight:600;color:#991b1b;">Egresos mes</div>
+            <div style="font-family:var(--font-mono);font-size:13px;font-weight:600;color:#dc2626;margin-top:2px;">−${currency.format(egresosMes, a.currency)}</div>
+          </div>
+        </div>
+
+        <!-- Footer info -->
+        <div style="padding:0 20px 14px;display:flex;justify-content:space-between;align-items:center;font-size:10.5px;color:var(--ink-3);border-top:1px solid var(--border);padding-top:10px;margin:0 4px;">
+          <span>${totalMoves.length} mov. totales</span>
+          <span>${lastMove ? `Último: ${ui.formatDate(lastMove.date)}` : 'Sin movimientos'}</span>
+        </div>
+
+        <!-- Botones -->
+        <div style="padding:0 16px 16px;display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;">
+          <button class="btn btn-secondary btn-sm" onclick="event.stopPropagation();quickDeposit('${a.id}')" style="font-size:11px;padding:6px 8px;">+ Ingresar</button>
+          <button class="btn btn-secondary btn-sm" onclick="event.stopPropagation();quickWithdraw('${a.id}')" style="font-size:11px;padding:6px 8px;">− Retirar</button>
+          <button class="btn btn-secondary btn-sm" onclick="event.stopPropagation();openTransfer('${a.id}')" style="font-size:11px;padding:6px 8px;">⇄ Transferir</button>
+        </div>
+      </div>
+    `;
+  };
+
+  const companyCards = companyAccounts.map(a => renderCard(a, totalCompany)).join('');
+  const personalCards = personalAccounts.map(a => renderCard(a, totalPersonal)).join('');
+
+  // En modo Contable: solo mostramos empresa. En Gerencial: ambas separadas + total.
+  const showPersonal = activeMode === 'gerencial';
+
+  let totalsBar = '';
+  if (showPersonal && personalAccounts.length > 0) {
+    totalsBar = `<span class="action-bar-count">
+      🏢 Empresa: <strong>${currency.format(totalCompany, modeCcy)}</strong>
+      · 👤 Personal: <strong>${currency.format(totalPersonal, modeCcy)}</strong>
+      · Total: <strong>${currency.format(totalAll, modeCcy)}</strong>
+    </span>`;
+  } else {
+    totalsBar = `<span class="action-bar-count">
+      ${accounts.length} cuenta${accounts.length!==1?'s':''} ·
+      Empresa: <strong>${currency.format(totalCompany, modeCcy)}</strong>
+    </span>`;
+  }
+
+  ui.renderLayout({
+    activeModule: 'cuentas-bancarias', pageEyebrow: 'Sistema', pageTitle: 'Cuentas Bancarias',
+    contentHtml: `
+      <div class="action-bar">
+        <div class="action-bar-left">
+          <h2 class="action-bar-title">Cuentas bancarias</h2>
+          ${totalsBar}
+        </div>
+        <div class="action-bar-right">
+          <button class="btn btn-secondary btn-sm" onclick="recalcBalances()" title="Recalcula los saldos desde los movimientos. Útil si hay diferencia.">${ui.icon('refresh')} Recalcular</button>
+          <button class="btn btn-primary" onclick="newAccount()">${ui.icon('plus')} Nueva cuenta</button>
+        </div>
+      </div>
+
+      <p class="text-muted mb-24" style="max-width:680px;">
+        Cada cuenta bancaria lleva su propio saldo corriente. Marcá si una cuenta es de la <strong>empresa</strong> (entra en libros fiscales SENIAT) o <strong>personal</strong> (de paso, no entra en reportes fiscales).
+        ${!showPersonal && personalAccounts.length > 0 ? `<br><span style="color:var(--accent-ink);font-size:12px;">⚙️ Estás en modo Contable: ${personalAccounts.length} cuenta${personalAccounts.length!==1?'s':''} personal${personalAccounts.length!==1?'es':''} oculta${personalAccounts.length!==1?'s':''}. Cambiá a modo Gerencial para verlas.</span>` : ''}
+      </p>
+
+      ${companyAccounts.length ? `
+        ${showPersonal && personalAccounts.length > 0 ? `
+          <div style="display:flex;align-items:center;gap:12px;margin:8px 0 16px;padding:10px 16px;background:var(--accent-soft);border-radius:8px;border-left:4px solid var(--accent);">
+            <span style="font-size:18px;">🏢</span>
+            <div style="flex:1;">
+              <div style="font-family:var(--font-display);font-size:16px;color:var(--accent-ink);font-weight:600;">Cuentas de la Empresa</div>
+              <div class="text-muted" style="font-size:11px;">Entran en libros fiscales SENIAT · Total: <strong>${currency.format(totalCompany, modeCcy)}</strong></div>
+            </div>
+            <span class="badge" style="background:var(--accent);color:white;">${companyAccounts.length} cuenta${companyAccounts.length!==1?'s':''}</span>
+          </div>
+        ` : ''}
+        <div class="grid grid-3 mb-24">${companyCards}</div>
+      ` : ''}
+
+      ${showPersonal && personalAccounts.length > 0 ? `
+        <div style="display:flex;align-items:center;gap:12px;margin:24px 0 16px;padding:10px 16px;background:#fef3c7;border-radius:8px;border-left:4px solid #d97706;">
+          <span style="font-size:18px;">👤</span>
+          <div style="flex:1;">
+            <div style="font-family:var(--font-display);font-size:16px;color:#78350f;font-weight:600;">Cuentas Personales</div>
+            <div class="text-muted" style="font-size:11px;color:#92400e;">No entran en libros fiscales · Total: <strong>${currency.format(totalPersonal, modeCcy)}</strong></div>
+          </div>
+          <span class="badge" style="background:#d97706;color:white;">${personalAccounts.length} cuenta${personalAccounts.length!==1?'s':''}</span>
+        </div>
+        <div class="grid grid-3 mb-24">${personalCards}</div>
+      ` : ''}
+
+      ${accounts.length === 0 ? `
+        <div class="empty-state">
+          <div class="empty-state-icon">${ui.icon('currency')}</div>
+          <div class="empty-state-title">Sin cuentas bancarias</div>
+          <div class="empty-state-text">Registra tus cuentas bancarias (en Bs, USD, EUR) con saldo inicial. El sistema llevará el track automáticamente.</div>
+          <button class="btn btn-primary" onclick="newAccount()" style="margin-top:16px;">${ui.icon('plus')} Crear primera cuenta</button>
+        </div>
+      ` : ''}
+    `
+  });
+}
+
+// ====== ESTADO DE FILTROS DEL DETALLE ======
+let _detailFilters = { search: '', dateFrom: '', dateTo: '', salespersonId: '' };
+
+function _applyDetailFilters(moves) {
+  const f = _detailFilters;
+  return moves.filter(m => {
+    // Filtro fecha desde
+    if (f.dateFrom && (m.date || '') < f.dateFrom) return false;
+    // Filtro fecha hasta
+    if (f.dateTo && (m.date || '') > f.dateTo) return false;
+    // Filtro vendedor: cruzar por relatedDocId → salesOrder.salespersonId
+    if (f.salespersonId) {
+      const doc = m.relatedDocId ? db.getById(db.COLLECTIONS.salesOrders, m.relatedDocId) : null;
+      if (!doc || doc.salespersonId !== f.salespersonId) return false;
+    }
+    // Buscador: busca en cualquier campo de texto o monto
+    if (f.search) {
+      const q = f.search.toLowerCase();
+      const amtStr = String(m.amount || '');
+      const accountAmt = String(m.amountInAccountCurrency || '');
+      const balance = String(m.runningBalance || '');
+      const fields = [
+        m.counterpartyName || '', m.reference || '', m.type || '',
+        m.date || '', m.currency || '', amtStr, accountAmt, balance,
+        m.relatedDocCode || '', m.notes || ''
+      ];
+      if (!fields.some(v => v.toLowerCase().includes(q))) return false;
+    }
+    return true;
+  });
+}
+
+function _setDetailFilter(key, val) {
+  _detailFilters[key] = val;
+  _renderDetailTable();
+}
+
+function _clearDetailFilters() {
+  _detailFilters = { search: '', dateFrom: '', dateTo: '', salespersonId: '' };
+  const s = document.getElementById('_det-search'); if (s) s.value = '';
+  document.querySelectorAll('#_detail-dynamic input[type="date"]').forEach(d => { d.value = ''; });
+  const sel = document.querySelector('#_detail-dynamic select'); if (sel) sel.value = '';
+  _renderDetailTable();
+}
+
+/** Renderiza SOLO la tabla y el resumen — nunca toca los inputs */
+function _renderDetailTable() {
+  const a = db.getById(db.COLLECTIONS.bankAccounts, selectedId);
+  if (!a) return;
+
+  const allMoves = db.query(db.COLLECTIONS.bankMoves, m => m.accountId === a.id);
+  allMoves.sort((x,y) => (y.timestamp||'').localeCompare(x.timestamp||''));
+  const filtered = _applyDetailFilters(allMoves);
+  const hasFilters = _detailFilters.search || _detailFilters.dateFrom || _detailFilters.dateTo || _detailFilters.salespersonId;
+
+  const filteredCredits = filtered.filter(m => m.direction === 'IN').reduce((s,m)=>s+Math.abs(m.amountInAccountCurrency??m.amount??0), 0);
+  const filteredDebits  = filtered.filter(m => m.direction === 'OUT').reduce((s,m)=>s+Math.abs(m.amountInAccountCurrency??m.amount??0), 0);
+
+  const typeLabel = t => ({'OPENING':'Saldo inicial','PAYMENT_OUT':'Pago a proveedor','PAYMENT_IN':'Cobro de cliente','DEPOSIT':'Depósito','WITHDRAWAL':'Retiro','TRANSFER_IN':'Transferencia recibida','TRANSFER_OUT':'Transferencia enviada','FEE':'Comisión','ADJUSTMENT':'Ajuste'}[t]) || t;
+
+  const movesTable = filtered.length ? `<table>
+    <thead><tr><th>Fecha</th><th>Tipo</th><th>Concepto</th><th style="text-align:right;">Monto original</th><th style="text-align:right;">Aplicado a la cuenta</th><th style="text-align:right;">Saldo</th></tr></thead>
+    <tbody>${filtered.map(m => {
+      const sign = m.direction === 'IN' ? '+' : '−';
+      const color = m.direction === 'IN' ? 'var(--success)' : 'var(--danger)';
+      const wasConverted = m.conversionApplied && m.currency !== a.currency;
+      const accountAmount = m.amountInAccountCurrency != null ? m.amountInAccountCurrency : m.amount;
+      const relDoc = m.relatedDocId ? db.getById(db.COLLECTIONS.salesOrders, m.relatedDocId) : null;
+      const vendName = relDoc?.salespersonName || '';
+      return `<tr>
+        <td><span class="text-muted" style="font-size:12px;">${ui.formatDate(m.date)}</span></td>
+        <td><span class="badge badge-plain" style="font-size:10px;">${typeLabel(m.type)}</span></td>
+        <td>
+          <div class="td-strong" style="font-size:13px;">${ui.escape(m.counterpartyName||m.reference||'—')}</div>
+          ${m.reference && m.counterpartyName && m.reference !== m.counterpartyName ? `<div class="text-muted" style="font-size:11px;">${ui.escape(m.reference)}</div>` : ''}
+          ${vendName ? `<div class="text-muted" style="font-size:10px;margin-top:1px;">👤 ${ui.escape(vendName)}</div>` : ''}
+        </td>
+        <td style="text-align:right;color:${color};font-weight:600;font-family:var(--font-mono);font-size:13px;">${sign}${currency.format(Math.abs(m.amount||0), m.currency)}</td>
+        <td style="text-align:right;font-family:var(--font-mono);">
+          <div style="color:${color};font-weight:600;">${sign}${currency.format(Math.abs(accountAmount||0), a.currency)}</div>
+          ${wasConverted ? `<div class="text-muted" style="font-size:10px;font-weight:400;">${m.conversionRateType||'tasa'}: ${(m.conversionRate||0).toLocaleString('es-VE',{maximumFractionDigits:2})}</div>` : ''}
+        </td>
+        <td style="text-align:right;"><span class="td-mono td-strong">${currency.format(m.runningBalance||0, a.currency)}</span></td>
+      </tr>`;
+    }).join('')}</tbody></table>`
+  : `<div class="empty-state"><div class="empty-state-title">${hasFilters ? 'Sin resultados' : 'Sin movimientos'}</div><div class="empty-state-text">${hasFilters ? 'Ningún movimiento coincide con los filtros aplicados.' : 'Los pagos y cobros realizados desde esta cuenta aparecerán aquí.'}</div>${hasFilters ? '<button class="btn btn-secondary btn-sm" onclick="_clearDetailFilters()" style="margin-top:12px;">Limpiar filtros</button>' : ''}</div>`;
+
+  // Actualizar resumen sin tocar los inputs
+  const resumen = document.getElementById('_detail-resumen');
+  if (resumen) {
+    resumen.innerHTML = hasFilters
+      ? `<div style="margin-top:10px;padding-top:10px;border-top:1px solid var(--border);display:flex;gap:24px;flex-wrap:wrap;">
+          <span class="text-muted" style="font-size:12px;">${filtered.length} de ${allMoves.length} movimiento${allMoves.length!==1?'s':''}</span>
+          <span style="font-size:12px;color:var(--success);font-family:var(--font-mono);">+${currency.format(filteredCredits, a.currency)}</span>
+          <span style="font-size:12px;color:var(--danger);font-family:var(--font-mono);">−${currency.format(filteredDebits, a.currency)}</span>
+          <span style="font-size:12px;font-weight:600;font-family:var(--font-mono);">Neto: ${currency.format(filteredCredits - filteredDebits, a.currency)}</span>
+         </div>`
+      : `<div class="text-muted" style="font-size:11px;margin-top:6px;">${allMoves.length} movimiento${allMoves.length!==1?'s':''} en total</div>`;
+  }
+
+  // Mostrar/ocultar botón limpiar
+  const btnLimpiar = document.getElementById('_detail-clear');
+  if (btnLimpiar) btnLimpiar.style.display = hasFilters ? '' : 'none';
+
+  // Actualizar solo la tabla
+  const tableWrap = document.getElementById('_detail-table');
+  if (tableWrap) tableWrap.innerHTML = movesTable;
+}
+
+/** Renderiza filtros + contenedores una sola vez al entrar al detalle */
+function _renderDetailContent() {
+  const a = db.getById(db.COLLECTIONS.bankAccounts, selectedId);
+  if (!a) return;
+
+  const allMoves = db.query(db.COLLECTIONS.bankMoves, m => m.accountId === a.id);
+
+  // Vendedores disponibles
+  const salesOrderIds = [...new Set(allMoves.filter(m => m.relatedDocId).map(m => m.relatedDocId))];
+  const vendedoresMap = {};
+  salesOrderIds.forEach(docId => {
+    const doc = db.getById(db.COLLECTIONS.salesOrders, docId);
+    if (doc && doc.salespersonId && doc.salespersonName) {
+      vendedoresMap[doc.salespersonId] = doc.salespersonName;
+    }
+  });
+  const vendedores = Object.entries(vendedoresMap).map(([id, name]) => ({ id, name })).sort((a,b) => a.name.localeCompare(b.name));
+
+  const container = document.getElementById('_detail-dynamic');
+  if (!container) return;
+
+  container.innerHTML = `
+    <div class="card mb-16" style="padding:14px 20px;">
+      <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+        <div style="flex:2;min-width:180px;position:relative;">
+          <span style="position:absolute;left:10px;top:50%;transform:translateY(-50%);color:var(--ink-3);font-size:14px;pointer-events:none;">🔍</span>
+          <input class="input" id="_det-search" style="padding-left:32px;" placeholder="Buscar monto, concepto, referencia..."
+            oninput="_detailFilters.search=this.value;_renderDetailTable()">
+        </div>
+        <div style="flex:1;min-width:130px;">
+          <input class="input" type="date" title="Desde"
+            onchange="_setDetailFilter('dateFrom', this.value)">
+        </div>
+        <div style="flex:1;min-width:130px;">
+          <input class="input" type="date" title="Hasta"
+            onchange="_setDetailFilter('dateTo', this.value)">
+        </div>
+        ${vendedores.length > 0 ? `
+        <div style="flex:1;min-width:150px;">
+          <select class="select" onchange="_setDetailFilter('salespersonId', this.value)">
+            <option value="">Todos los vendedores</option>
+            ${vendedores.map(v => '<option value="' + v.id + '">' + ui.escape(v.name) + '</option>').join('')}
+          </select>
+        </div>` : ''}
+        <button id="_detail-clear" class="btn btn-ghost btn-sm" onclick="_clearDetailFilters()" style="white-space:nowrap;display:none;">✕ Limpiar</button>
+      </div>
+      <div id="_detail-resumen"></div>
+    </div>
+    <div class="card mb-24" style="padding:0;"><div id="_detail-table"></div></div>
+  `;
+
+  _renderDetailTable();
+}
+function renderDetail() {
+  const a = db.getById(db.COLLECTIONS.bankAccounts, selectedId);
+  if (!a) { backToList(); return; }
+
+  // Resetear filtros al entrar a una nueva cuenta
+  _detailFilters = { search: '', dateFrom: '', dateTo: '', salespersonId: '' };
+
+  const allMoves = db.query(db.COLLECTIONS.bankMoves, m => m.accountId === a.id);
+  const credits = allMoves.filter(m => m.direction === 'IN').reduce((s,m)=>s+Math.abs(m.amount||0), 0);
+  const debits  = allMoves.filter(m => m.direction === 'OUT').reduce((s,m)=>s+Math.abs(m.amount||0), 0);
+
+  ui.renderLayout({
+    activeModule: 'cuentas-bancarias', pageEyebrow: 'Cuenta bancaria', pageTitle: a.name,
+    contentHtml: `
+      <div class="action-bar">
+        <div class="action-bar-left"><button class="btn btn-ghost btn-sm" onclick="backToList()">← Volver</button></div>
+      </div>
+
+      <div class="grid grid-4 mb-24">
+        <div class="kpi"><div class="kpi-label">Saldo actual</div><div class="kpi-value" style="color:${a.balance<0?'var(--danger)':'var(--accent-ink)'};">${currency.formatCompact(a.balance, a.currency)}</div><div class="kpi-value-sub">${a.currency}</div></div>
+        <div class="kpi"><div class="kpi-label">Saldo inicial</div><div class="kpi-value" style="font-size:22px;">${currency.formatCompact(a.openingBalance||0, a.currency)}</div></div>
+        <div class="kpi"><div class="kpi-label">Total ingresado</div><div class="kpi-value" style="color:var(--success);font-size:22px;">+${currency.formatCompact(credits, a.currency)}</div></div>
+        <div class="kpi"><div class="kpi-label">Total egresado</div><div class="kpi-value" style="color:var(--danger);font-size:22px;">−${currency.formatCompact(debits, a.currency)}</div></div>
+      </div>
+
+      <div class="section-title" style="margin-bottom:12px;">Conciliación · Movimientos</div>
+
+      <!-- Contenedor dinámico: filtros + tabla se renderizan aquí sin rehacer el layout -->
+      <div id="_detail-dynamic"></div>
+
+      <!-- Acciones abajo -->
+      <div style="display:flex;justify-content:flex-end;gap:8px;padding:24px 0;border-top:1px solid var(--border);margin-top:8px;flex-wrap:wrap;">
+        <button class="btn btn-secondary" onclick="editAccount('${a.id}')">${ui.icon('edit')} Editar cuenta</button>
+        <button class="btn btn-secondary" onclick="adjustBalance('${a.id}')">${ui.icon('edit')} Ajustar saldo</button>
+        <button class="btn btn-primary" onclick="newManualMove('${a.id}')">${ui.icon('plus')} Movimiento manual</button>
+      </div>
+    `
+  });
+
+  // Renderizar filtros + tabla en el contenedor dinámico
+  _renderDetailContent();
+}
+
+function openDetail(id) { selectedId = id; view = 'detail'; render(); }
+function backToList() { view = 'list'; selectedId = null; render(); }
+
+// ====== CRUD CUENTA ======
+
+function newAccount() {
+  openForm({ currency: 'VES', type: 'Corriente', openingBalance: 0 });
+}
+
+function editAccount(id) {
+  const a = db.getById(db.COLLECTIONS.bankAccounts, id);
+  if (a) openForm(a);
+}
+
+function openForm(item) {
+  const isNew = !item.id;
+  // Por defecto: empresa (countsForFiscal=true). Las cuentas viejas sin el flag se asumen empresa.
+  const isCompany = item.countsForFiscal !== false;
+  ui.openModal({
+    title: isNew ? 'Nueva cuenta bancaria' : 'Editar cuenta',
+    body: `
+      <form id="acc-form" onsubmit="saveAccount(event, '${item.id || ''}')">
+        <div class="form-grid form-grid-2">
+          <div class="field"><label class="field-label">Nombre / Alias *</label><input class="input" name="name" required value="${ui.escape(item.name||'')}" placeholder="Ej: Banesco Bs principal"></div>
+          <div class="field"><label class="field-label">Banco</label><input class="input" name="bank" value="${ui.escape(item.bank||'')}" placeholder="Banesco, Mercantil, Zelle, Bitcoin..."></div>
+          <div class="field"><label class="field-label">Número de cuenta</label><input class="input" name="accountNumber" value="${ui.escape(item.accountNumber||'')}"></div>
+          <div class="field"><label class="field-label">Moneda *</label><select class="select" name="currency" required ${!isNew?'disabled':''}>
+            <option value="VES" ${item.currency==='VES'?'selected':''}>Bolívares (VES)</option>
+            <option value="USD" ${item.currency==='USD'?'selected':''}>Dólares (USD)</option>
+            <option value="EUR" ${item.currency==='EUR'?'selected':''}>Euros (EUR)</option>
+          </select>${!isNew?'<div class="field-hint">No se puede cambiar la moneda una vez creada</div>':''}</div>
+          <div class="field"><label class="field-label">Tipo</label><select class="select" name="type">
+            <option ${item.type==='Corriente'?'selected':''}>Corriente</option>
+            <option ${item.type==='Ahorro'?'selected':''}>Ahorro</option>
+            <option ${item.type==='Custodia'?'selected':''}>Custodia</option>
+            <option ${item.type==='Cripto'?'selected':''}>Cripto</option>
+            <option ${item.type==='Digital'?'selected':''}>Digital (Zelle/Wise)</option>
+            <option ${item.type==='Otro'?'selected':''}>Otro</option>
+          </select></div>
+          ${isNew ? `<div class="field"><label class="field-label">Saldo inicial</label><input class="input" type="number" step="0.01" name="openingBalance" value="${item.openingBalance||0}"><div class="field-hint">Saldo actual de la cuenta al momento de cargarla</div></div>` : ''}
+        </div>
+
+        <div class="section-title" style="margin-top:24px;">Tipo de cuenta</div>
+        <div style="display:flex;gap:12px;margin-top:6px;">
+          <label class="checkbox-row" style="flex:1;padding:14px;background:var(--surface-2);border:1px solid var(--border);border-radius:8px;cursor:pointer;display:flex;align-items:start;gap:10px;">
+            <input type="radio" name="countsForFiscal" value="true" ${isCompany?'checked':''} style="margin-top:2px;">
+            <div>
+              <div style="font-weight:600;font-size:13px;">🏢 Cuenta de la empresa</div>
+              <div class="text-muted" style="font-size:11.5px;margin-top:2px;">Los pagos y cobros en esta cuenta cuentan para los reportes fiscales (Libro de Compras/Ventas, SENIAT).</div>
+            </div>
+          </label>
+          <label class="checkbox-row" style="flex:1;padding:14px;background:var(--surface-2);border:1px solid var(--border);border-radius:8px;cursor:pointer;display:flex;align-items:start;gap:10px;">
+            <input type="radio" name="countsForFiscal" value="false" ${!isCompany?'checked':''} style="margin-top:2px;">
+            <div>
+              <div style="font-weight:600;font-size:13px;">👤 Cuenta personal</div>
+              <div class="text-muted" style="font-size:11.5px;margin-top:2px;">Cuenta de paso o personal. Sus pagos y cobros NO entran en libros fiscales, pero sí en reportes operativos.</div>
+            </div>
+          </label>
+        </div>
+      </form>
+    `,
+    footer: `<button class="btn btn-secondary" onclick="ui.closeModal()">Cancelar</button><button class="btn btn-primary" onclick="document.getElementById('acc-form').requestSubmit()">${ui.icon('check')} Guardar</button>`
+  });
+}
+
+function saveAccount(e, id) {
+  e.preventDefault();
+  const data = ui.formData(e.target);
+  if (!data.name || !data.currency) { ui.toast('Nombre y moneda son obligatorios', 'error'); return; }
+  // Convertir radio a boolean
+  const countsForFiscal = data.countsForFiscal === 'true' || data.countsForFiscal === true;
+  if (id) {
+    const a = db.getById(db.COLLECTIONS.bankAccounts, id);
+    Object.assign(a, { name: data.name, bank: data.bank, accountNumber: data.accountNumber, type: data.type, countsForFiscal });
+    db.save(db.COLLECTIONS.bankAccounts, a);
+    ui.toast('Cuenta actualizada', 'success');
+  } else {
+    const created = payments.createBankAccount({ ...data, countsForFiscal, openingBalance: data.openingBalance || 0 });
+    selectedId = created.id;
+    ui.toast('Cuenta creada', 'success');
+  }
+  ui.closeModal();
+  render();
+}
+
+// ====== AJUSTE DE SALDO ======
+
+function adjustBalance(id) {
+  const a = db.getById(db.COLLECTIONS.bankAccounts, id);
+  ui.openModal({
+    title: `Ajustar saldo de ${a.name}`,
+    subtitle: `Saldo actual: ${currency.format(a.balance, a.currency)}`,
+    body: `
+      <form id="adj-form" onsubmit="saveAdjust(event, '${id}')">
+        <div class="form-grid form-grid-2">
+          <div class="field"><label class="field-label">Saldo correcto *</label><input class="input" type="number" step="0.01" name="newBalance" required value="${a.balance}"></div>
+          <div class="field"><label class="field-label">Fecha</label><input class="input" type="date" name="date" value="${new Date().toISOString().slice(0,10)}"></div>
+          <div class="field" style="grid-column:1/-1;"><label class="field-label">Motivo *</label><input class="input" name="reason" required placeholder="Ej: Conciliación bancaria, intereses, comisión..."></div>
+        </div>
+      </form>
+    `,
+    footer: `<button class="btn btn-secondary" onclick="ui.closeModal()">Cancelar</button><button class="btn btn-primary" onclick="document.getElementById('adj-form').requestSubmit()">${ui.icon('check')} Aplicar</button>`
+  });
+}
+
+function saveAdjust(e, id) {
+  e.preventDefault();
+  const data = ui.formData(e.target);
+  const a = db.getById(db.COLLECTIONS.bankAccounts, id);
+  const newBal = parseFloat(data.newBalance);
+  const diff = newBal - a.balance;
+  if (Math.abs(diff) < 0.01) { ui.toast('Sin diferencia que ajustar', 'error'); return; }
+  payments.registerBankMove({
+    accountId: id,
+    type: diff > 0 ? 'DEPOSIT' : 'WITHDRAWAL',
+    amount: Math.abs(diff),
+    currency: a.currency,
+    date: data.date,
+    reference: data.reason
+  });
+  ui.closeModal();
+  ui.toast('Saldo ajustado', 'success');
+  render();
+}
+
+// ====== MOVIMIENTO MANUAL ======
+
+function newManualMove(id) {
+  const a = db.getById(db.COLLECTIONS.bankAccounts, id);
+  ui.openModal({
+    title: `Movimiento manual en ${a.name}`,
+    subtitle: 'Para depósitos, retiros, comisiones, transferencias entre cuentas',
+    body: `
+      <form id="mov-form" onsubmit="saveMove(event, '${id}')">
+        <div class="form-grid form-grid-2">
+          <div class="field"><label class="field-label">Tipo *</label><select class="select" name="type" required>
+            <option value="DEPOSIT">Depósito (+)</option>
+            <option value="WITHDRAWAL">Retiro (−)</option>
+            <option value="TRANSFER_IN">Transferencia recibida (+)</option>
+            <option value="TRANSFER_OUT">Transferencia enviada (−)</option>
+            <option value="FEE">Comisión bancaria (−)</option>
+          </select></div>
+          <div class="field"><label class="field-label">Monto *</label><input class="input" type="number" step="0.01" name="amount" required min="0.01"></div>
+          <div class="field"><label class="field-label">Fecha</label><input class="input" type="date" name="date" value="${new Date().toISOString().slice(0,10)}"></div>
+          <div class="field"><label class="field-label">Concepto / Contraparte</label><input class="input" name="counterpartyName" placeholder="Quien envía/recibe"></div>
+          <div class="field" style="grid-column:1/-1;"><label class="field-label">Referencia</label><input class="input" name="reference" placeholder="N° comprobante, descripción..."></div>
+        </div>
+      </form>
+    `,
+    footer: `<button class="btn btn-secondary" onclick="ui.closeModal()">Cancelar</button><button class="btn btn-primary" onclick="document.getElementById('mov-form').requestSubmit()">${ui.icon('check')} Registrar</button>`
+  });
+}
+
+function saveMove(e, id) {
+  e.preventDefault();
+  const data = ui.formData(e.target);
+  const a = db.getById(db.COLLECTIONS.bankAccounts, id);
+  payments.registerBankMove({
+    accountId: id,
+    type: data.type,
+    amount: parseFloat(data.amount),
+    currency: a.currency,
+    date: data.date,
+    reference: data.reference,
+    counterpartyName: data.counterpartyName
+  });
+  ui.closeModal();
+  ui.toast('Movimiento registrado', 'success');
+  render();
+}
+
+/**
+ * Recalcular saldos: PRIMERO muestra un preview (dry-run) de qué va a cambiar
+ * y deja al usuario confirmar. Las cuentas sin movimientos NO se tocan
+ * (preservan el saldo manual). Las cuentas con diferencias se muestran con
+ * sus valores antes/después.
+ */
+function recalcBalances() {
+  // Paso 1: dry-run para calcular qué cambiaría
+  const preview = payments.recalcAllBalances({ dryRun: true });
+  const totalAccounts = preview.changes.length;
+
+  // Separar cambios reales (con diff) de cuentas preservadas y sin cambio
+  const realChanges = preview.changes.filter(c => !c.preserved && c.diff > 0.01);
+  const preserved   = preview.changes.filter(c => c.preserved);
+  const unchanged   = preview.changes.filter(c => !c.preserved && c.diff <= 0.01);
+
+  if (realChanges.length === 0 && preserved.length === 0) {
+    ui.toast(`Todos los saldos están correctos (${unchanged.length} cuentas)`, 'success');
+    return;
+  }
+
+  // Paso 2: armar el modal de preview
+  const realChangesHtml = realChanges.length ? `
+    <div style="margin-top:14px;">
+      <div style="font-size:11px;font-weight:700;color:var(--ink-2);text-transform:uppercase;letter-spacing:0.1em;margin-bottom:8px;">
+        ⚠️ ${realChanges.length} cuenta(s) cambiarán de saldo
+      </div>
+      <div class="table-wrap" style="margin:0;">
+        <table>
+          <thead><tr>
+            <th>Cuenta</th>
+            <th style="text-align:right;">Saldo actual</th>
+            <th style="text-align:right;">Nuevo saldo</th>
+            <th style="text-align:right;">Diferencia</th>
+          </tr></thead>
+          <tbody>${realChanges.map(c => {
+            const goingToZero = Math.abs(c.newBalance) < 0.01 && Math.abs(c.oldBalance) > 0.01;
+            const diffSign = c.newBalance > c.oldBalance ? '+' : '';
+            return `<tr ${goingToZero ? 'style="background:#fef2f2;"' : ''}>
+              <td><strong>${ui.escape(c.name)}</strong></td>
+              <td style="text-align:right;font-family:var(--font-mono);">${currency.format(c.oldBalance, c.currency)}</td>
+              <td style="text-align:right;font-family:var(--font-mono);${goingToZero?'color:var(--danger);font-weight:700;':''}">${currency.format(c.newBalance, c.currency)}${goingToZero?' ⚠️':''}</td>
+              <td style="text-align:right;font-family:var(--font-mono);color:${c.newBalance>=c.oldBalance?'var(--success)':'var(--danger)'};">${diffSign}${currency.format(c.newBalance - c.oldBalance, c.currency)}</td>
+            </tr>`;
+          }).join('')}</tbody>
+        </table>
+      </div>
+    </div>
+  ` : '';
+
+  const preservedHtml = preserved.length ? `
+    <div style="margin-top:14px;padding:12px;background:#f0f9ff;border:1px solid #bae6fd;border-radius:6px;font-size:12px;color:#0369a1;">
+      <strong>ℹ️ ${preserved.length} cuenta(s) sin movimientos</strong> — Su saldo se preservará intacto:
+      <div style="margin-top:6px;font-size:11px;">${preserved.map(c => `${ui.escape(c.name)}: ${currency.format(c.oldBalance, c.currency)}`).join(' · ')}</div>
+    </div>
+  ` : '';
+
+  const unchangedHtml = unchanged.length ? `
+    <div style="margin-top:10px;font-size:11px;color:var(--ink-3);">
+      ${unchanged.length} cuenta(s) ya tienen el saldo correcto (sin cambios).
+    </div>
+  ` : '';
+
+  const hasGoingToZero = realChanges.some(c => Math.abs(c.newBalance) < 0.01 && Math.abs(c.oldBalance) > 0.01);
+
+  ui.openModal({
+    size: 'lg',
+    title: 'Vista previa: Recalcular saldos',
+    subtitle: `${totalAccounts} cuenta(s) analizadas — Revisá los cambios antes de aplicar`,
+    body: `
+      <div style="font-size:13px;line-height:1.6;color:var(--ink-2);margin-bottom:8px;">
+        El sistema recalculó los saldos sumando todos los movimientos bancarios.
+        Revisá los cambios propuestos abajo y confirmá solo si querés aplicarlos.
+      </div>
+
+      ${hasGoingToZero ? `<div style="padding:12px 14px;background:#fef2f2;border:1px solid #fca5a5;border-radius:6px;font-size:12px;color:#991b1b;margin-top:10px;">
+        <strong>⚠️ Atención:</strong> Hay cuentas con saldo actual que pasarían a 0 (resaltadas en rojo). Esto pasa cuando una cuenta no tiene movimientos registrados en el kardex pero sí tiene saldo. Si confirmás, vas a perder ese saldo. Si no estás seguro, cancelá y usá "Ajustar saldo" en cada cuenta para registrar el saldo real con un movimiento de apertura.
+      </div>` : ''}
+
+      ${realChangesHtml}
+      ${preservedHtml}
+      ${unchangedHtml}
+    `,
+    footer: `
+      <button class="btn btn-secondary" onclick="ui.closeModal()">Cancelar (no aplicar)</button>
+      ${realChanges.length > 0 ? `<button class="btn ${hasGoingToZero?'btn-danger':'btn-primary'}" onclick="confirmRecalc()">${hasGoingToZero?'⚠️ ':''}Aplicar cambios (${realChanges.length})</button>` : ''}
+    `
+  });
+}
+
+function confirmRecalc() {
+  const result = payments.recalcAllBalances({ dryRun: false });
+  ui.closeModal();
+  let msg = `${result.fixed} cuenta(s) corregida(s)`;
+  if (result.skipped > 0) msg += ` · ${result.skipped} preservada(s) sin movimientos`;
+  ui.toast(msg, 'success', 4000);
+  render();
+}
+
+// ====== ACCIONES RÁPIDAS DESDE LAS CARDS ======
+
+function quickDeposit(accountId) {
+  const a = db.getById(db.COLLECTIONS.bankAccounts, accountId);
+  if (!a) return;
+  ui.openModal({
+    title: `Ingresar dinero a ${a.name}`,
+    body: `
+      <form id="qd-form" onsubmit="confirmQuickMove(event,'${accountId}','DEPOSIT')">
+        <p class="text-muted" style="font-size:12px;margin-bottom:14px;">
+          Registra un ingreso/depósito (sin cobro de factura asociada).
+          Saldo actual: <strong>${currency.format(a.balance||0, a.currency)}</strong>
+        </p>
+        <div class="form-grid form-grid-2">
+          <div class="field">
+            <label class="field-label">Monto (${a.currency}) *</label>
+            <input class="input" type="number" step="0.01" name="amount" required autofocus>
+          </div>
+          <div class="field">
+            <label class="field-label">Fecha *</label>
+            <input class="input" type="date" name="date" value="${new Date().toISOString().slice(0,10)}" required>
+          </div>
+          <div class="field" style="grid-column:1/-1;">
+            <label class="field-label">Concepto / Referencia</label>
+            <input class="input" name="reference" placeholder="Ej: Aporte de capital, Depósito en efectivo...">
+          </div>
+        </div>
+      </form>
+    `,
+    footer: `<button class="btn btn-secondary" onclick="ui.closeModal()">Cancelar</button><button class="btn btn-primary" onclick="document.getElementById('qd-form').requestSubmit()">${ui.icon('check')} Ingresar</button>`
+  });
+}
+
+function quickWithdraw(accountId) {
+  const a = db.getById(db.COLLECTIONS.bankAccounts, accountId);
+  if (!a) return;
+  ui.openModal({
+    title: `Retirar dinero de ${a.name}`,
+    body: `
+      <form id="qw-form" onsubmit="confirmQuickMove(event,'${accountId}','WITHDRAWAL')">
+        <p class="text-muted" style="font-size:12px;margin-bottom:14px;">
+          Registra un retiro/egreso (sin pago a proveedor asociado).
+          Saldo actual: <strong>${currency.format(a.balance||0, a.currency)}</strong>
+        </p>
+        <div class="form-grid form-grid-2">
+          <div class="field">
+            <label class="field-label">Monto (${a.currency}) *</label>
+            <input class="input" type="number" step="0.01" name="amount" required autofocus max="${a.balance||0}">
+          </div>
+          <div class="field">
+            <label class="field-label">Fecha *</label>
+            <input class="input" type="date" name="date" value="${new Date().toISOString().slice(0,10)}" required>
+          </div>
+          <div class="field" style="grid-column:1/-1;">
+            <label class="field-label">Concepto / Referencia</label>
+            <input class="input" name="reference" placeholder="Ej: Retiro en efectivo, Comisión bancaria...">
+          </div>
+        </div>
+      </form>
+    `,
+    footer: `<button class="btn btn-secondary" onclick="ui.closeModal()">Cancelar</button><button class="btn btn-primary" onclick="document.getElementById('qw-form').requestSubmit()">${ui.icon('check')} Retirar</button>`
+  });
+}
+
+function confirmQuickMove(e, accountId, type) {
+  e.preventDefault();
+  const data = ui.formData(e.target);
+  const amount = parseFloat(data.amount) || 0;
+  if (amount <= 0) { ui.toast('Monto inválido', 'error'); return; }
+  try {
+    payments.registerBankMove({
+      accountId,
+      type,
+      amount,
+      date: data.date,
+      reference: data.reference || (type==='DEPOSIT' ? 'Ingreso manual' : 'Retiro manual')
+    });
+    ui.closeModal();
+    ui.toast(type === 'DEPOSIT' ? 'Ingreso registrado' : 'Retiro registrado', 'success');
+    render();
+  } catch (err) {
+    ui.toast(err.message, 'error');
+  }
+}
+
+// ====== TRANSFERENCIA ENTRE CUENTAS ======
+
+let _transferState = null;
+
+function openTransfer(fromAccountId) {
+  const from = db.getById(db.COLLECTIONS.bankAccounts, fromAccountId);
+  if (!from) return;
+  const otherAccounts = db.getAll(db.COLLECTIONS.bankAccounts).filter(a => a.id !== fromAccountId && a.active !== false);
+  if (otherAccounts.length === 0) {
+    ui.toast('Necesitás al menos otra cuenta para transferir', 'error');
+    return;
+  }
+
+  _transferState = {
+    fromId: fromAccountId,
+    toId: '',
+    amount: '',
+    rate: 0,
+    rateType: 'BCV_USD',
+    rateLabel: 'BCV',
+    useCustomRate: false,
+    date: new Date().toISOString().slice(0,10),
+    notes: ''
+  };
+
+  ui.openModal({
+    title: `Transferir desde ${from.name}`,
+    body: `<div id="transfer-form-body"></div>`,
+    footer: `<button class="btn btn-secondary" onclick="ui.closeModal();_transferState=null;">Cancelar</button><button class="btn btn-primary" onclick="confirmTransfer()">${ui.icon('check')} Transferir</button>`
+  });
+
+  renderTransferForm();
+}
+
+function renderTransferForm() {
+  const t = _transferState;
+  if (!t) return;
+  const from = db.getById(db.COLLECTIONS.bankAccounts, t.fromId);
+  const to = t.toId ? db.getById(db.COLLECTIONS.bankAccounts, t.toId) : null;
+  const otherAccounts = db.getAll(db.COLLECTIONS.bankAccounts).filter(a => a.id !== t.fromId && a.active !== false);
+
+  const sameCurrency = to && from.currency === to.currency;
+  const isCross = to && !sameCurrency;
+  const isMixedFiscal = to && (from.countsForFiscal !== false) !== (to.countsForFiscal !== false);
+
+  // Tasas disponibles
+  const allRates = currency.getRates().filter(r => r.value > 0);
+  const applicableRates = allRates.filter(r => {
+    if (!isCross) return false;
+    // BCV_USD y BINANCE para par USD-VES
+    if (r.type === 'BCV_USD' || r.type === 'BINANCE') {
+      return (from.currency === 'USD' && to.currency === 'VES') || (from.currency === 'VES' && to.currency === 'USD');
+    }
+    if (r.type === 'BCV_EUR' || r.type === 'P2P_EUR') {
+      return (from.currency === 'EUR' && to.currency === 'VES') || (from.currency === 'VES' && to.currency === 'EUR');
+    }
+    return false;
+  });
+
+  // Auto-elegir tasa si todavía no hay una
+  if (isCross && !t.useCustomRate && (!t.rate || t.rate === 0) && applicableRates.length > 0) {
+    const defaultRate = applicableRates.find(r => r.type === 'BCV_USD') || applicableRates.find(r => r.type === 'BCV_EUR') || applicableRates[0];
+    t.rate = defaultRate.value;
+    t.rateType = defaultRate.type;
+    t.rateLabel = defaultRate.label;
+  }
+
+  // Calcular conversión
+  const amt = parseFloat(t.amount) || 0;
+  let amountInDest = amt;
+  if (to && !sameCurrency && t.rate > 0) {
+    let amtInVES = 0;
+    if (from.currency === 'VES') amtInVES = amt;
+    else if (from.currency === 'USD' || from.currency === 'EUR') amtInVES = amt * t.rate;
+    if (to.currency === 'VES') amountInDest = amtInVES;
+    else if (to.currency === 'USD' || to.currency === 'EUR') amountInDest = amtInVES / t.rate;
+    amountInDest = Math.round(amountInDest * 100) / 100;
+  }
+
+  const insufficientFunds = amt > 0 && amt > (from.balance || 0);
+
+  const html = `
+    <div class="form-grid form-grid-2">
+      <div class="field">
+        <label class="field-label">Cuenta origen</label>
+        <input class="input" value="${ui.escape(from.name)} (${from.currency})" disabled>
+        <div class="field-hint">Saldo: <strong>${currency.format(from.balance||0, from.currency)}</strong></div>
+      </div>
+      <div class="field">
+        <label class="field-label">Cuenta destino *</label>
+        <select class="select" onchange="setTransferDest(this.value)">
+          <option value="">— Selecciona cuenta destino —</option>
+          ${otherAccounts.map(a => `<option value="${a.id}" ${t.toId===a.id?'selected':''}>${ui.escape(a.name)} (${a.currency})${a.countsForFiscal===false?' 👤':' 🏢'}</option>`).join('')}
+        </select>
+      </div>
+      <div class="field" style="grid-column:1/-1;">
+        <label class="field-label">Monto a transferir (${from.currency}) *</label>
+        <input class="input" type="number" step="0.01" value="${t.amount}" oninput="setTransferAmount(this.value)" placeholder="0.00" max="${from.balance||0}">
+        <div id="transfer-insufficient" class="field-hint" style="color:var(--danger);display:${insufficientFunds?'block':'none'};">⚠️ Saldo insuficiente</div>
+      </div>
+    </div>
+
+    ${isMixedFiscal ? `
+      <div style="margin-top:14px;padding:10px 14px;background:#fef3c7;border:1px solid #fcd34d;border-radius:6px;font-size:12px;color:#92400e;">
+        ⚠️ <strong>Transferencia entre cuenta empresa y personal.</strong> Registra esto contablemente como retiro de socios o aporte. Este movimiento NO se reflejará en libros fiscales SENIAT del lado personal.
+      </div>
+    ` : ''}
+
+    ${isCross ? `
+      <div style="margin-top:16px;padding:14px;background:#dbeafe;border:1px solid #93c5fd;border-radius:8px;">
+        <div style="font-weight:600;font-size:13px;color:#1e40af;margin-bottom:10px;">⇄ Conversión cruzada (${from.currency} → ${to.currency})</div>
+        <div style="display:flex;flex-direction:column;gap:6px;margin-bottom:12px;">
+          ${applicableRates.map(r => `
+            <label style="display:flex;align-items:center;gap:10px;padding:8px 12px;background:white;border:1px solid var(--border);border-radius:6px;cursor:pointer;${t.rateType===r.type && !t.useCustomRate?'border-color:var(--accent);background:#f3f6f0;':''}">
+              <input type="radio" name="trate" ${t.rateType===r.type && !t.useCustomRate?'checked':''} onchange="selectTransferRate('${r.type}', ${r.value})">
+              <div style="flex:1;font-size:12px;">
+                <strong>${r.label}</strong> · ${r.value.toLocaleString('es-VE',{maximumFractionDigits:4})}
+                <span class="text-muted" style="font-size:11px;display:block;">${r.updatedDate||'—'}</span>
+              </div>
+            </label>
+          `).join('')}
+          <label style="display:flex;align-items:center;gap:10px;padding:8px 12px;background:white;border:1px solid var(--border);border-radius:6px;cursor:pointer;${t.useCustomRate?'border-color:var(--accent);background:#f3f6f0;':''}">
+            <input type="radio" name="trate" ${t.useCustomRate?'checked':''} onchange="useTransferCustomRate()">
+            <div style="flex:1;font-size:12px;">
+              <strong>Personalizada</strong>
+              ${t.useCustomRate ? `<input type="number" step="0.0001" class="input" style="margin-top:6px;" value="${t.rate}" oninput="updateTransferCustomRate(this.value)" placeholder="Ej: 487">` : `<span class="text-muted" style="font-size:11px;display:block;">Para Zelle, P2P privado, acuerdo especial...</span>`}
+            </div>
+          </label>
+        </div>
+        <div style="padding:10px 12px;background:white;border-radius:6px;display:grid;grid-template-columns:1fr auto 1fr;gap:8px;align-items:center;font-size:12px;">
+          <div>
+            <div class="text-muted" style="font-size:10px;">Salida</div>
+            <div class="td-mono td-strong" id="transfer-preview-out">${currency.format(amt, from.currency)}</div>
+          </div>
+          <div style="text-align:center;color:var(--ink-3);font-size:18px;">→</div>
+          <div style="text-align:right;">
+            <div class="text-muted" style="font-size:10px;">Entrada</div>
+            <div class="td-mono td-strong" id="transfer-preview-in" style="color:var(--success);">${currency.format(amountInDest, to.currency)}</div>
+          </div>
+        </div>
+      </div>
+    ` : (sameCurrency ? `
+      <div style="margin-top:14px;padding:10px 14px;background:var(--surface-2);border-radius:6px;font-size:12px;color:var(--ink-2);">
+        ✓ Misma moneda. Transferencia directa sin conversión.
+      </div>
+    ` : '')}
+
+    <div class="form-grid form-grid-2" style="margin-top:14px;">
+      <div class="field">
+        <label class="field-label">Fecha *</label>
+        <input class="input" type="date" value="${t.date}" onchange="_transferState.date=this.value">
+      </div>
+      <div class="field">
+        <label class="field-label">Notas</label>
+        <input class="input" value="${ui.escape(t.notes||'')}" oninput="_transferState.notes=this.value" placeholder="Concepto / referencia (opcional)">
+      </div>
+    </div>
+  `;
+
+  const container = document.getElementById('transfer-form-body');
+  if (container) container.innerHTML = html;
+}
+
+function setTransferDest(id) {
+  _transferState.toId = id;
+  // Reset tasa al cambiar destino (porque cambia el par de monedas)
+  _transferState.rate = 0;
+  _transferState.useCustomRate = false;
+  renderTransferForm();
+}
+
+function setTransferAmount(val) {
+  _transferState.amount = val;
+  // No re-render: solo refresca el preview de conversión sin perder foco
+  refreshTransferPreview();
+}
+
+/** Refresca solo el preview (Salida → Entrada) sin re-renderizar el form */
+function refreshTransferPreview() {
+  if (!_transferState) return;
+  const t = _transferState;
+  const from = db.getById(db.COLLECTIONS.bankAccounts, t.fromId);
+  const to = t.toId ? db.getById(db.COLLECTIONS.bankAccounts, t.toId) : null;
+  if (!to) return;
+  const sameCurrency = from.currency === to.currency;
+  const amt = parseFloat(t.amount) || 0;
+  let amountInDest = amt;
+  if (!sameCurrency && t.rate > 0) {
+    let amtInVES = 0;
+    if (from.currency === 'VES') amtInVES = amt;
+    else if (from.currency === 'USD' || from.currency === 'EUR') amtInVES = amt * t.rate;
+    if (to.currency === 'VES') amountInDest = amtInVES;
+    else if (to.currency === 'USD' || to.currency === 'EUR') amountInDest = t.rate > 0 ? amtInVES / t.rate : 0;
+    amountInDest = Math.round(amountInDest * 100) / 100;
+  }
+  // Actualizar elementos preview en el DOM
+  const previewOut = document.getElementById('transfer-preview-out');
+  const previewIn = document.getElementById('transfer-preview-in');
+  if (previewOut) previewOut.textContent = currency.format(amt, from.currency);
+  if (previewIn) previewIn.textContent = currency.format(amountInDest, to.currency);
+
+  // Mostrar/ocultar warning de saldo insuficiente
+  const insufficient = amt > 0 && amt > (from.balance || 0);
+  const warningEl = document.getElementById('transfer-insufficient');
+  if (warningEl) warningEl.style.display = insufficient ? 'block' : 'none';
+}
+
+function selectTransferRate(rateType, value) {
+  _transferState.rateType = rateType;
+  _transferState.rate = parseFloat(value) || 0;
+  _transferState.rateLabel = currency.getRate(rateType)?.label || rateType;
+  _transferState.useCustomRate = false;
+  renderTransferForm();
+}
+
+function useTransferCustomRate() {
+  _transferState.useCustomRate = true;
+  _transferState.rateType = 'CUSTOM';
+  _transferState.rateLabel = 'Tasa personalizada';
+  renderTransferForm();
+}
+
+function updateTransferCustomRate(val) {
+  _transferState.rate = parseFloat(val) || 0;
+  refreshTransferPreview();
+}
+
+function confirmTransfer() {
+  const t = _transferState;
+  if (!t) return;
+  if (!t.toId) { ui.toast('Selecciona cuenta destino', 'error'); return; }
+  const amt = parseFloat(t.amount) || 0;
+  if (amt <= 0) { ui.toast('Monto inválido', 'error'); return; }
+
+  const from = db.getById(db.COLLECTIONS.bankAccounts, t.fromId);
+  const to = db.getById(db.COLLECTIONS.bankAccounts, t.toId);
+  const sameCcy = from.currency === to.currency;
+
+  if (!sameCcy) {
+    // Si custom, leer del DOM (porque updateTransferCustomRate no re-renderiza)
+    if (t.useCustomRate) {
+      const inp = document.querySelector('input[type="number"][step="0.0001"]');
+      if (inp) t.rate = parseFloat(inp.value) || 0;
+    }
+    if (!t.rate || t.rate <= 0) { ui.toast('Indica una tasa válida', 'error'); return; }
+  }
+
+  try {
+    const result = payments.transferBetweenAccounts({
+      fromAccountId: t.fromId,
+      toAccountId: t.toId,
+      amount: amt,
+      rate: sameCcy ? null : t.rate,
+      rateType: sameCcy ? null : t.rateType,
+      rateLabel: sameCcy ? null : t.rateLabel,
+      date: t.date,
+      notes: t.notes
+    });
+    ui.closeModal();
+    _transferState = null;
+    const msg = result.crossCurrency
+      ? `Transferencia: ${currency.format(amt, from.currency)} → ${currency.format(result.to.amount, to.currency)} (tasa ${result.rate.toLocaleString('es-VE',{maximumFractionDigits:4})})`
+      : `Transferencia de ${currency.format(amt, from.currency)} completada`;
+    ui.toast(msg, 'success');
+    render();
+  } catch (err) {
+    ui.toast(err.message, 'error');
+  }
+}
+
+render();
+
+
+// Exponer funciones a window (para que onclick="" del HTML pueda llamarlas)
+
+// Sincronizar variables de estado del módulo con window
+try { Object.defineProperty(window, 'view', { get: () => view, set: (val) => { view = val; }, configurable: true }); } catch(e) {}
+try { Object.defineProperty(window, 'selectedId', { get: () => selectedId, set: (val) => { selectedId = val; }, configurable: true }); } catch(e) {}
+
+Object.assign(window, {
+  render: typeof render !== 'undefined' ? render : undefined,
+  renderList: typeof renderList !== 'undefined' ? renderList : undefined,
+  renderDetail: typeof renderDetail !== 'undefined' ? renderDetail : undefined,
+  openDetail: typeof openDetail !== 'undefined' ? openDetail : undefined,
+  backToList: typeof backToList !== 'undefined' ? backToList : undefined,
+  newAccount: typeof newAccount !== 'undefined' ? newAccount : undefined,
+  editAccount: typeof editAccount !== 'undefined' ? editAccount : undefined,
+  openForm: typeof openForm !== 'undefined' ? openForm : undefined,
+  saveAccount: typeof saveAccount !== 'undefined' ? saveAccount : undefined,
+  adjustBalance: typeof adjustBalance !== 'undefined' ? adjustBalance : undefined,
+  saveAdjust: typeof saveAdjust !== 'undefined' ? saveAdjust : undefined,
+  newManualMove: typeof newManualMove !== 'undefined' ? newManualMove : undefined,
+  saveMove: typeof saveMove !== 'undefined' ? saveMove : undefined,
+  recalcBalances: typeof recalcBalances !== 'undefined' ? recalcBalances : undefined,
+  confirmRecalc: typeof confirmRecalc !== 'undefined' ? confirmRecalc : undefined,
+  quickDeposit: typeof quickDeposit !== 'undefined' ? quickDeposit : undefined,
+  quickWithdraw: typeof quickWithdraw !== 'undefined' ? quickWithdraw : undefined,
+  confirmQuickMove: typeof confirmQuickMove !== 'undefined' ? confirmQuickMove : undefined,
+  openTransfer: typeof openTransfer !== 'undefined' ? openTransfer : undefined,
+  setTransferDest: typeof setTransferDest !== 'undefined' ? setTransferDest : undefined,
+  setTransferAmount: typeof setTransferAmount !== 'undefined' ? setTransferAmount : undefined,
+  selectTransferRate: typeof selectTransferRate !== 'undefined' ? selectTransferRate : undefined,
+  useTransferCustomRate: typeof useTransferCustomRate !== 'undefined' ? useTransferCustomRate : undefined,
+  updateTransferCustomRate: typeof updateTransferCustomRate !== 'undefined' ? updateTransferCustomRate : undefined,
+  refreshTransferPreview: typeof refreshTransferPreview !== 'undefined' ? refreshTransferPreview : undefined,
+  confirmTransfer: typeof confirmTransfer !== 'undefined' ? confirmTransfer : undefined,
+  _setDetailFilter: typeof _setDetailFilter !== 'undefined' ? _setDetailFilter : undefined,
+  _clearDetailFilters: typeof _clearDetailFilters !== 'undefined' ? _clearDetailFilters : undefined,
+  _renderDetailContent: typeof _renderDetailContent !== 'undefined' ? _renderDetailContent : undefined,
+});
+});
+</script>
+</body>
+</html>
