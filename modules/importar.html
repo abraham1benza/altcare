@@ -15,6 +15,11 @@
 <script src="../assets/js/tax.js"></script>
 <script src="../assets/js/inventory.js"></script>
 <script src="../assets/js/ui.js"></script>
+<script src="../assets/js/sales.js"></script>
+<script src="../assets/js/purchases.js"></script>
+<script src="../assets/js/commissions.js"></script>
+<script src="../assets/js/payments.js"></script>
+<script src="../assets/js/reconciliation.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script>
 moduleInit('importar').then(async (ok) => {
@@ -31,6 +36,14 @@ let cobranzasVendorId = '';
 // Días de crédito por default para calcular fecha de vencimiento (fecha + N días).
 // Editable desde el paso 1 antes de subir el Excel.
 let cobranzasCreditDays = 30;
+
+// Para el tab "clientes": vendedor por defecto aplicado a las filas que NO
+// traen su propio vendedor en el Excel. El vendedor del archivo tiene prioridad.
+let clientesDefaultVendorId = '';
+
+// Para el tab "conciliacion": resultado del parseo del estado de cuenta.
+let reconData = null;          // { cobros:[], gastos:[], errors:[] }
+let reconBankAccountId = '';   // cuenta bancaria (VES) donde entraron/salieron los movimientos
 
 const IMPORTERS = {
   pt: {
@@ -58,6 +71,17 @@ DISTRIBUIDORA EJEMPLO C.A,J-12345678-9,JUAN PÉREZ,Distribuidor,AV PRINCIPAL CAR
 PROVEEDOR EJEMPLO,J-87654321-0,MARIA GOMEZ,AV BOLIVAR VALENCIA,0241-1234567,proveedor@ejemplo.com`,
     columnsHelp: '<strong>nombre</strong> y <strong>rif</strong> son obligatorios. El resto opcional.'
   },
+  conciliacion: {
+    label: 'Conciliar Pagos',
+    icon: '🏦',
+    description: 'Subí el estado de cuenta del banco. El sistema separa COBROS (entran) de GASTOS (salen), extrae la cédula/RIF de cada cobro y lo concilia con las cuentas por cobrar. El dólar se ancla a la tasa BCV del DÍA del pago (el bolívar cambia a diario). Los cobros que no matcheen se pueden asignar a mano; los gastos van en un cuadro aparte con descripción editable.',
+    example: `Fecha;Referencia;Descripción;Importe;Saldo
+26-05-2026;60186;CR.I/REC 0134 V018458721;601.231,74;2.126.458,12
+26-05-2026;60187;COMIS. CR.I OB REC;-9.018,47;2.117.439,65
+22-05-2026;60157;TRAV0024565489000007797;158.058,00;872.977,41`,
+    columnsHelp: '<strong>Fecha</strong>: del movimiento (anclará el dólar) · <strong>Descripción</strong>: el sistema lee la cédula/RIF (ej. V018458721) · <strong>Importe</strong>: positivo = cobro, negativo = gasto. Formato de banco venezolano (BNC, etc.) detectado automáticamente.'
+  },
+
   cobranzas: {
     label: 'Cuentas por Cobrar',
     icon: '💰',
@@ -75,6 +99,7 @@ function setTab(tab) {
   csvText = '';
   parsedRows = [];
   parseErrors = [];
+  reconData = null;
   render();
 }
 
@@ -101,6 +126,8 @@ function render() {
       <p class="text-muted mb-24" style="font-size:13px;line-height:1.5;">${config.description}</p>
 
       ${activeTab === 'cobranzas' ? renderCobranzasVendorPicker() : ''}
+      ${activeTab === 'clientes' ? renderClientesVendorPicker() : ''}
+      ${activeTab === 'conciliacion' ? renderConciliacionAccountPicker() : ''}
 
       <div class="card mb-24" style="padding:14px 18px;background:#f0f9ff;border-color:#bae6fd;">
         <div style="font-weight:600;font-size:13px;color:#0369a1;margin-bottom:8px;">📋 Formato esperado</div>
@@ -118,14 +145,15 @@ function render() {
               ${activeTab === 'pt' ? 'Excel con columnas: producto, cantidad, costo, precios.' : ''}
               ${activeTab === 'proveedores' ? 'Excel con columnas: nombre, RIF, contacto, dirección, teléfono, email.' : ''}
               ${activeTab === 'cobranzas' ? 'Excel del sistema anterior con saldos por cobrar. Si tiene varias hojas (ej. una por vendedora), solo se procesa la primera con datos — repetí el proceso por hoja eligiendo distinta vendedora.' : ''}
+              ${activeTab === 'conciliacion' ? 'Estado de cuenta exportado del banco (BNC u otro) en .xlsx o .csv. Detecta cobros y gastos automáticamente.' : ''}
               Detección automática de encabezados.
             </div>
           </div>
-          ${activeTab === 'cobranzas' && !cobranzasVendorId
-            ? `<button class="btn btn-secondary" disabled style="opacity:0.5;cursor:not-allowed;" title="Elegí primero la vendedora">${ui.icon('upload')||'📁'} Seleccionar archivo .xlsx</button>`
+          ${(activeTab === 'cobranzas' && !cobranzasVendorId) || (activeTab === 'conciliacion' && !reconBankAccountId)
+            ? `<button class="btn btn-secondary" disabled style="opacity:0.5;cursor:not-allowed;" title="${activeTab === 'conciliacion' ? 'Elegí primero la cuenta bancaria' : 'Elegí primero la vendedora'}">${ui.icon('upload')||'📁'} Seleccionar archivo</button>`
             : `<label class="btn btn-primary" style="cursor:pointer;">
-                ${ui.icon('upload')||'📁'} Seleccionar archivo .xlsx
-                <input type="file" accept=".xlsx,.xls" style="display:none;" onchange="onExcelFileChange(event)">
+                ${ui.icon('upload')||'📁'} Seleccionar archivo${activeTab === 'conciliacion' ? ' (.xlsx o .csv)' : ' .xlsx'}
+                <input type="file" accept="${activeTab === 'conciliacion' ? '.xlsx,.xls,.csv' : '.xlsx,.xls'}" style="display:none;" onchange="onExcelFileChange(event)">
               </label>`}
         </div>
       </div>
@@ -144,7 +172,8 @@ function render() {
         </div>
       </details>
 
-      ${parsedRows.length > 0 ? renderPreview() : ''}
+      ${activeTab === 'conciliacion' && reconData ? renderConciliacionPreview() : ''}
+      ${activeTab !== 'conciliacion' && parsedRows.length > 0 ? renderPreview() : ''}
       ${parseErrors.length > 0 ? renderErrors() : ''}
     `
   });
@@ -461,7 +490,7 @@ function onExcelFileChange(event) {
       // fechas se formatean según el regional del Excel y la ambigüedad
       // M/D vs D/M arruina el parseo. Para los otros tabs mantenemos raw:false
       // que preserva el comportamiento histórico de strings formateados.
-      const useRaw = (activeTab === 'cobranzas');
+      const useRaw = (activeTab === 'cobranzas' || activeTab === 'conciliacion');
       const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '', raw: useRaw });
       processExcelRows(rows);
     } catch (err) {
@@ -500,6 +529,8 @@ function processExcelRows(rows) {
     ? ['nombre','descripcion','rif','tipo','direc','telefono','vendedor','email']
     : activeTab === 'cobranzas'
     ? ['fecha','razon','social','nota','factura','monto','saldo','pendiente']
+    : activeTab === 'conciliacion'
+    ? ['fecha','referencia','descrip','importe','saldo','concepto','monto']
     : ['nombre','descripcion','rif','direc','telefono','email'];
 
   let headerRowIdx = -1;
@@ -534,6 +565,7 @@ function processExcelRows(rows) {
   else if (activeTab === 'clientes') parseExcelClientes(dataRows, colMap);
   else if (activeTab === 'proveedores') parseExcelProveedores(dataRows, colMap);
   else if (activeTab === 'cobranzas') parseExcelCobranzas(dataRows, colMap);
+  else if (activeTab === 'conciliacion') { parseConciliacion(headers, dataRows); return; }
 
   const validCount = parsedRows.filter(r => !r._error && !r._duplicate).length;
   const dupCount = parsedRows.filter(r => r._duplicate).length;
@@ -835,6 +867,16 @@ function importCliente(row) {
       }
     }
     salesRepName = matchedNames.join(' / ');
+  }
+
+  // Fallback: si la fila no trajo vendedor y se eligió un vendedor por defecto
+  // en el picker del tab Clientes, asignarlo. El vendedor del Excel tiene prioridad.
+  if (salesRepUserIds.length === 0 && clientesDefaultVendorId) {
+    const defVendor = db.getById(db.COLLECTIONS.users, clientesDefaultVendorId);
+    if (defVendor) {
+      salesRepUserIds.push(defVendor.id);
+      salesRepName = defVendor.fullName || defVendor.username;
+    }
   }
 
   const customer = {
@@ -1587,13 +1629,391 @@ function importCobranza(row, customerCache) {
   db.save(db.COLLECTIONS.salesOrders, doc);
 }
 
+// =============================================================================
+// TAB CLIENTES: picker de vendedor por defecto
+// =============================================================================
+
+/**
+ * Picker opcional de vendedor por defecto para el tab Clientes. Las filas del
+ * Excel que traigan su propio vendedor lo conservan; las que NO, se asignan a
+ * este vendedor. Si no se elige ninguno, las filas sin vendedor quedan sin asignar.
+ */
+function renderClientesVendorPicker() {
+  const users = db.getAll(db.COLLECTIONS.users).filter(u => u.active !== false);
+  const selected = users.find(u => u.id === clientesDefaultVendorId);
+  return `
+    <div class="card mb-24" style="padding:14px 18px;background:#eff6ff;border-color:#bfdbfe;">
+      <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap;">
+        <div style="flex:1;min-width:240px;">
+          <div style="font-weight:600;font-size:13px;color:#1e40af;margin-bottom:4px;">👤 Vendedor por defecto (opcional)</div>
+          <div class="text-muted" style="font-size:11px;line-height:1.5;">
+            Se asigna a las filas que <strong>no</strong> traigan vendedor en la columna del Excel.
+            Si el Excel ya trae vendedor en una fila, ese tiene prioridad.
+          </div>
+        </div>
+        <div style="min-width:220px;">
+          <label class="field-label" style="font-size:11px;color:#1e40af;margin-bottom:0;">Asignar sin-vendedor a</label>
+          <select class="select" style="font-size:13px;" onchange="setClientesDefaultVendor(this.value)">
+            <option value="">— Dejar sin asignar —</option>
+            ${users.map(u => {
+              const name = u.fullName || u.username;
+              const roleLabel = (auth.ROLES && auth.ROLES[u.role] && auth.ROLES[u.role].label) || u.role || '';
+              return `<option value="${u.id}" ${u.id===clientesDefaultVendorId?'selected':''}>${ui.escape(name)}${roleLabel?` (${ui.escape(roleLabel)})`:''}</option>`;
+            }).join('')}
+          </select>
+        </div>
+      </div>
+      ${selected ? `<div style="margin-top:10px;font-size:12px;color:#1e40af;">✓ Filas sin vendedor → <strong>${ui.escape(selected.fullName || selected.username)}</strong></div>` : ''}
+    </div>
+  `;
+}
+
+function setClientesDefaultVendor(uid) {
+  clientesDefaultVendorId = uid;
+  render();
+}
+
+// =============================================================================
+// TAB CONCILIACIÓN: picker de cuenta bancaria + parseo + preview + confirmar
+// =============================================================================
+
+/**
+ * Paso 1 obligatorio: elegir la cuenta bancaria (en Bs) a la que pertenece el
+ * estado de cuenta. Los cobros suman a esa cuenta y los gastos restan.
+ */
+function renderConciliacionAccountPicker() {
+  const accounts = db.getAll(db.COLLECTIONS.bankAccounts).filter(a => a.active !== false);
+  const vesAccounts = accounts.filter(a => (a.currency || 'VES') === 'VES');
+  const list = vesAccounts.length ? vesAccounts : accounts;
+  const selected = list.find(a => a.id === reconBankAccountId);
+
+  if (!list.length) {
+    return `<div class="card mb-24" style="padding:14px 18px;background:#fef2f2;border-color:#fecaca;">
+      <div style="font-weight:600;font-size:13px;color:#991b1b;">⚠️ No hay cuentas bancarias</div>
+      <div class="text-muted" style="font-size:12px;margin-top:4px;">Creá primero una cuenta bancaria en el módulo Cuentas Bancarias para poder conciliar.</div>
+    </div>`;
+  }
+
+  return `
+    <div class="card mb-24" style="padding:16px 18px;background:#fffbeb;border-color:#fde68a;">
+      <div style="font-weight:600;font-size:13px;color:#92400e;margin-bottom:8px;">🏦 Paso 1 · Cuenta bancaria del estado de cuenta</div>
+      <div class="text-muted" style="font-size:12px;line-height:1.5;margin-bottom:10px;">
+        Elegí a qué cuenta pertenece este estado de cuenta. Los cobros entran y los gastos salen de esta cuenta,
+        con el dólar anclado a la tasa BCV del día de cada movimiento.
+      </div>
+      <div style="max-width:360px;">
+        <label class="field-label" style="font-size:11px;color:#92400e;margin-bottom:0;">Cuenta</label>
+        <select class="select" style="font-size:13px;" onchange="setReconBankAccount(this.value)">
+          <option value="">— Elegí una cuenta —</option>
+          ${list.map(a => `<option value="${a.id}" ${a.id===reconBankAccountId?'selected':''}>${ui.escape(a.name)} · ${ui.escape(a.bank||'')} (${a.currency||'VES'})</option>`).join('')}
+        </select>
+      </div>
+      ${selected ? `<div style="margin-top:10px;padding:8px 12px;background:#fef3c7;border-radius:6px;font-size:12px;color:#78350f;">✓ Conciliando contra <strong>${ui.escape(selected.name)}</strong></div>` : ''}
+    </div>
+  `;
+}
+
+function setReconBankAccount(id) {
+  reconBankAccountId = id;
+  reconData = null; // descartar preview previo: hay que re-subir con la cuenta correcta
+  render();
+}
+
+/**
+ * Parsea el estado de cuenta usando el motor de reconciliation.js.
+ */
+function parseConciliacion(headers, dataRows) {
+  parseErrors = [];
+  if (!reconBankAccountId) {
+    parseErrors.push('Elegí la cuenta bancaria primero (paso 1) antes de subir el estado de cuenta');
+    render();
+    return;
+  }
+  const colMap = reconciliation.mapHeaders(headers);
+  if (colMap.fecha === undefined || colMap.importe === undefined) {
+    parseErrors.push('No se encontraron las columnas Fecha e Importe. Verificá que el estado de cuenta tenga esas columnas.');
+    render();
+    return;
+  }
+  reconData = reconciliation.parseStatement(dataRows, colMap);
+  if (reconData.errors && reconData.errors.length) {
+    reconData.errors.forEach(e => parseErrors.push(e));
+  }
+  const nCob = reconData.cobros.length, nGas = reconData.gastos.length;
+  const nMatch = reconData.cobros.filter(c => c.status === 'MATCHED').length;
+  ui.toast(`Estado de cuenta leído: ${nCob} cobros (${nMatch} conciliados), ${nGas} gastos`, nCob || nGas ? 'success' : 'info', 5000);
+  render();
+}
+
+const RECON_STATUS_BADGE = {
+  MATCHED:   '<span class="badge badge-paid" style="font-size:9.5px;">✓ Conciliado</span>',
+  NO_DEBT:   '<span class="badge" style="font-size:9.5px;background:#fef3c7;color:#92400e;">Cliente sin deuda</span>',
+  UNMATCHED: '<span class="badge badge-danger" style="font-size:9.5px;">Sin identificar</span>'
+};
+
+function renderConciliacionPreview() {
+  if (!reconData) return '';
+  const { cobros, gastos } = reconData;
+  const totalCobrosVes = cobros.reduce((s, c) => s + c.montoVes, 0);
+  const totalCobrosUsd = cobros.reduce((s, c) => s + c.usd, 0);
+  const aplicables = cobros.filter(c => c.status === 'MATCHED' && c.assignedInvoiceId);
+  const totalGastosVes = gastos.filter(g => g.include).reduce((s, g) => s + g.montoVes, 0);
+
+  return `
+    ${renderCobrosTable(cobros, totalCobrosVes, totalCobrosUsd, aplicables.length)}
+    ${renderGastosTable(gastos, totalGastosVes)}
+    <div class="card mb-24" style="padding:16px 20px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px;">
+      <div style="font-size:12px;" class="text-muted">
+        Se aplicarán <strong>${aplicables.length}</strong> cobros a sus facturas y se registrarán
+        <strong>${gastos.filter(g => g.include).length}</strong> gastos en la cuenta bancaria.
+        Los cobros sin identificar se omiten hasta que los asignes.
+      </div>
+      <button class="btn btn-primary" onclick="confirmConciliacion()" ${aplicables.length === 0 && totalGastosVes === 0 ? 'disabled style="opacity:0.5;"' : ''}>
+        ${ui.icon('check')||'✓'} Confirmar conciliación
+      </button>
+    </div>
+  `;
+}
+
+function renderCobrosTable(cobros, totalVes, totalUsd, nAplicables) {
+  if (!cobros.length) return '<div class="card mb-24" style="padding:16px;"><div class="text-muted" style="font-size:13px;">No se detectaron cobros (créditos) en el estado de cuenta.</div></div>';
+  const customers = db.getAll(db.COLLECTIONS.customers).filter(c => c.active !== false);
+
+  return `
+    <div class="card mb-24" style="padding:0;">
+      <div style="padding:14px 20px;border-bottom:1px solid var(--border);background:linear-gradient(180deg,#ecfdf5 0%,transparent 100%);display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
+        <div>
+          <div class="card-title">💵 Cobros detectados</div>
+          <div class="text-muted" style="font-size:12px;margin-top:2px;">${cobros.length} créditos · <span style="color:var(--accent-ink);">${nAplicables} listos para aplicar</span></div>
+        </div>
+        <div style="text-align:right;font-size:11px;">
+          <div><strong>${currency.format(totalVes,'VES')}</strong></div>
+          <div class="text-muted">≈ ${currency.format(totalUsd,'USD')} (tasa del día c/u)</div>
+        </div>
+      </div>
+      <div class="table-wrap" style="border-radius:0;max-height:520px;overflow-y:auto;">
+        <table style="font-size:12px;">
+          <thead style="position:sticky;top:0;background:var(--surface);z-index:1;">
+            <tr><th>Fecha</th><th>Descripción / Cédula</th><th style="text-align:right;">Monto Bs</th><th style="text-align:right;">USD (día)</th><th>Cliente</th><th>Factura</th><th>Estado</th></tr>
+          </thead>
+          <tbody>${cobros.map(c => renderCobroRow(c, customers)).join('')}</tbody>
+        </table>
+      </div>
+    </div>
+  `;
+}
+
+function renderCobroRow(c, customers) {
+  // Selector de cliente (si está sin identificar o para corregir)
+  const customerCell = c.matchedCustomerId
+    ? `<span class="td-strong" style="font-size:11.5px;">${ui.escape(c.matchedCustomerName)}</span>`
+    : `<select class="select" style="font-size:11px;padding:4px;" onchange="assignCobroCustomer('${c.id}', this.value)">
+         <option value="">— elegir cliente —</option>
+         ${customers.map(cu => `<option value="${cu.id}">${ui.escape(cu.name)}${cu.rif?` · ${ui.escape(cu.rif)}`:''}</option>`).join('')}
+       </select>`;
+
+  // Selector de factura (FIFO sugerida, editable)
+  let invoiceCell = '<span class="text-muted" style="font-size:11px;">—</span>';
+  if (c.openInvoices && c.openInvoices.length) {
+    invoiceCell = `<select class="select" style="font-size:11px;padding:4px;" onchange="assignCobroInvoice('${c.id}', this.value)">
+      ${c.openInvoices.map(inv => `<option value="${inv.id}" ${inv.id===c.assignedInvoiceId?'selected':''}>${ui.escape(inv.code)} · ${currency.format(inv.remaining, inv.currency)}</option>`).join('')}
+    </select>`;
+  } else if (c.status === 'NO_DEBT') {
+    invoiceCell = '<span style="font-size:10.5px;color:#92400e;">sin facturas abiertas</span>';
+  }
+
+  // === CELDA DE TASA / USD ===
+  // Si la tasa NO es la exacta del día del pago, todo se pinta en ámbar para que
+  // salte a la vista que es aproximada (la más cercana hacia atrás o el fallback).
+  // El bolívar cambia a diario, así que esto es crítico revisarlo.
+  const noRate = !c.rate || c.rate <= 0;
+  const aprox = !c.rateExact;
+  const rateBorder = noRate ? 'var(--danger)' : (aprox ? '#d97706' : 'var(--border)');
+  const rateBg = noRate ? '#fef2f2' : (aprox ? '#fffbeb' : 'transparent');
+  const usdColor = aprox && !noRate ? '#b45309' : 'inherit';
+
+  const usdCell = `
+    <td style="text-align:right;${aprox && !noRate ? 'background:#fffbeb;' : ''}">
+      <span class="td-mono" style="color:${usdColor};font-weight:${aprox?'600':'400'};">${currency.format(c.usd,'USD')}</span><br>
+      <input type="number" step="0.01" value="${c.rate || ''}"
+        style="width:78px;font-size:11px;padding:3px;border:1px solid ${rateBorder};border-radius:4px;background:${rateBg};color:${aprox && !noRate ? '#b45309' : 'inherit'};"
+        onchange="setCobroRate('${c.id}', this.value)"
+        title="Tasa BCV usada (${c.rateDate || 's/f'}). ${c.rateExact ? 'Exacta del día del pago.' : 'NO es la tasa del día — es la más cercana disponible. Editá con la tasa real de ' + c.fecha + ' si la tenés.'}">
+      ${noRate
+        ? `<div style="font-size:9px;color:var(--danger);font-weight:600;line-height:1.2;margin-top:1px;">⚠ sin tasa — ponela</div>`
+        : (aprox
+          ? `<div style="font-size:9px;color:#d97706;font-weight:600;line-height:1.2;margin-top:1px;" title="La tasa exacta del ${c.fecha} no está guardada. Esta es la del ${c.rateDate}.">⚠ tasa aprox. (${c.rateDate})</div>`
+          : `<div style="font-size:9px;color:#16a34a;line-height:1.2;margin-top:1px;">✓ tasa del día</div>`)}
+    </td>`;
+
+  return `
+    <tr style="${c.status==='UNMATCHED'?'background:#fef2f2;':c.status==='NO_DEBT'?'background:#fffbeb;':''}">
+      <td><span class="td-mono" style="font-size:11px;">${c.fecha}</span></td>
+      <td>
+        <div style="font-size:11px;">${ui.escape(c.descripcion)}</div>
+        ${c.bankDoc ? `<div style="font-size:10px;color:var(--accent-ink);">📇 ${ui.escape(c.bankDoc)}</div>` : '<div style="font-size:10px;color:var(--danger);">sin cédula en descripción</div>'}
+      </td>
+      <td style="text-align:right;"><span class="td-mono">${currency.format(c.montoVes,'VES')}</span></td>
+      ${usdCell}
+      <td>${customerCell}</td>
+      <td>${invoiceCell}</td>
+      <td>${RECON_STATUS_BADGE[c.status] || ''}</td>
+    </tr>
+  `;
+}
+
+function renderGastosTable(gastos, totalVes) {
+  if (!gastos.length) return '';
+  // Categorías presentes (para la herramienta de descripción masiva por categoría)
+  const cats = [...new Set(gastos.map(g => g.category))];
+  const bulkTool = `
+    <div style="padding:10px 20px;border-bottom:1px solid var(--border);background:#f9fafb;display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+      <span style="font-size:11px;color:var(--ink-2);font-weight:600;">✍️ Descripción rápida por categoría:</span>
+      <select id="bulk-gasto-cat" class="select" style="font-size:11px;padding:4px;max-width:200px;">
+        ${cats.map(k => `<option value="${k}">${ui.escape(reconciliation.EXPENSE_LABELS[k] || k)}</option>`).join('')}
+      </select>
+      <input id="bulk-gasto-desc" class="input" style="font-size:11px;padding:5px;max-width:260px;" placeholder="Ej: Comisión bancaria mayo">
+      <button class="btn btn-secondary" style="font-size:11px;padding:5px 10px;" onclick="applyBulkGastoDesc()">Aplicar a todos</button>
+    </div>`;
+
+  return `
+    <div class="card mb-24" style="padding:0;">
+      <div style="padding:14px 20px;border-bottom:1px solid var(--border);background:linear-gradient(180deg,#fef2f2 0%,transparent 100%);display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
+        <div>
+          <div class="card-title">🧾 Gastos / Egresos</div>
+          <div class="text-muted" style="font-size:12px;margin-top:2px;">${gastos.length} débitos · escribí la descripción antes de cargar · salen de la cuenta elegida</div>
+        </div>
+        <div style="text-align:right;font-size:11px;">
+          <div style="color:var(--danger);"><strong>−${currency.format(totalVes,'VES')}</strong></div>
+          <div class="text-muted">solo los marcados</div>
+        </div>
+      </div>
+      ${bulkTool}
+      <div class="table-wrap" style="border-radius:0;max-height:420px;overflow-y:auto;">
+        <table style="font-size:12px;">
+          <thead style="position:sticky;top:0;background:var(--surface);z-index:1;">
+            <tr><th style="width:30px;">✓</th><th>Fecha</th><th>Concepto (banco)</th><th>Categoría</th><th>Descripción</th><th style="text-align:right;">Monto Bs</th></tr>
+          </thead>
+          <tbody>${gastos.map(g => renderGastoRow(g)).join('')}</tbody>
+        </table>
+      </div>
+    </div>
+  `;
+}
+
+/**
+ * Aplica una descripción a todos los gastos de la categoría elegida en la
+ * herramienta de "descripción rápida". Útil cuando hay muchos gastos repetidos
+ * (ej. 22 comisiones bancarias iguales) y no querés escribir uno por uno.
+ */
+function applyBulkGastoDesc() {
+  if (!reconData) return;
+  const cat = document.getElementById('bulk-gasto-cat')?.value;
+  const desc = (document.getElementById('bulk-gasto-desc')?.value || '').trim();
+  if (!cat || !desc) { ui.toast('Elegí categoría y escribí una descripción', 'info'); return; }
+  let n = 0;
+  reconData.gastos.forEach(g => { if (g.category === cat) { g.customDesc = desc; n++; } });
+  ui.toast(`Descripción aplicada a ${n} gastos`, 'success');
+  render();
+}
+
+function renderGastoRow(g) {
+  const catOptions = Object.entries(reconciliation.EXPENSE_LABELS)
+    .map(([k, v]) => `<option value="${k}" ${k===g.category?'selected':''}>${ui.escape(v)}</option>`).join('');
+  return `
+    <tr style="${g.include?'':'opacity:0.45;'}">
+      <td style="text-align:center;"><input type="checkbox" ${g.include?'checked':''} onchange="toggleGasto('${g.id}', this.checked)"></td>
+      <td><span class="td-mono" style="font-size:11px;">${g.fecha}</span></td>
+      <td><span style="font-size:11px;">${ui.escape(g.descripcion)}</span></td>
+      <td><select class="select" style="font-size:11px;padding:4px;" onchange="setGastoCategory('${g.id}', this.value)">${catOptions}</select></td>
+      <td><input class="input" style="font-size:11px;padding:5px;" placeholder="Descripción del gasto..." value="${ui.escape(g.customDesc||'')}" onchange="setGastoDesc('${g.id}', this.value)"></td>
+      <td style="text-align:right;"><span class="td-mono" style="color:var(--danger);">−${currency.format(g.montoVes,'VES')}</span></td>
+    </tr>
+  `;
+}
+
+// --- Handlers de edición de cobros/gastos ---
+
+function findCobro(id) { return reconData && reconData.cobros.find(c => c.id === id); }
+function findGasto(id) { return reconData && reconData.gastos.find(g => g.id === id); }
+
+function assignCobroCustomer(id, customerId) {
+  const c = findCobro(id); if (!c) return;
+  c.matchedCustomerId = customerId;
+  const cust = customerId ? db.getById(db.COLLECTIONS.customers, customerId) : null;
+  c.matchedCustomerName = cust ? cust.name : '';
+  const open = customerId ? reconciliation.getOpenInvoicesForCustomer(customerId) : [];
+  c.openInvoices = open.map(i => ({ id: i.id, code: i.code, remaining: i.total - (i.paidAmount||0), currency: i.currency, issueDate: i.issueDate }));
+  c.assignedInvoiceId = open.length ? open[0].id : '';
+  c.suggestedInvoiceId = c.assignedInvoiceId;
+  c.status = customerId ? (open.length ? 'MATCHED' : 'NO_DEBT') : 'UNMATCHED';
+  render();
+}
+
+function assignCobroInvoice(id, invoiceId) {
+  const c = findCobro(id); if (!c) return;
+  c.assignedInvoiceId = invoiceId;
+  c.status = invoiceId ? 'MATCHED' : (c.matchedCustomerId ? 'NO_DEBT' : 'UNMATCHED');
+  render();
+}
+
+function setCobroRate(id, val) {
+  const c = findCobro(id); if (!c) return;
+  const r = parseFloat(val) || 0;
+  c.rate = r;
+  c.rateExact = true; // el usuario la fijó manualmente
+  c.usd = r > 0 ? Math.round((c.montoVes / r) * 100) / 100 : 0;
+  render();
+}
+
+function toggleGasto(id, val) { const g = findGasto(id); if (g) { g.include = val; render(); } }
+function setGastoCategory(id, val) { const g = findGasto(id); if (g) g.category = val; }
+function setGastoDesc(id, val) { const g = findGasto(id); if (g) g.customDesc = val; }
+
+function confirmConciliacion() {
+  if (!reconData) return;
+  if (!reconBankAccountId) { ui.toast('Falta elegir la cuenta bancaria', 'error'); return; }
+
+  const aplicables = reconData.cobros.filter(c => c.status === 'MATCHED' && c.assignedInvoiceId);
+  const gastosIncluidos = reconData.gastos.filter(g => g.include);
+
+  if (!confirm(`Vas a aplicar ${aplicables.length} cobros a sus facturas y registrar ${gastosIncluidos.length} gastos en la cuenta bancaria. ¿Continuar?`)) return;
+
+  let okCob = 0, okGas = 0, fail = 0;
+  const errs = [];
+
+  for (const c of aplicables) {
+    try { reconciliation.applyCobro(c, reconBankAccountId); okCob++; }
+    catch (e) { fail++; errs.push(`Cobro ${c.referencia}: ${e.message}`); }
+  }
+  for (const g of gastosIncluidos) {
+    try { reconciliation.applyGasto(g, reconBankAccountId); okGas++; }
+    catch (e) { fail++; errs.push(`Gasto ${g.referencia}: ${e.message}`); }
+  }
+
+  if (fail === 0) {
+    ui.toast(`✓ ${okCob} cobros aplicados, ${okGas} gastos registrados`, 'success', 4000);
+    reconData = null;
+    parseErrors = [];
+    setTimeout(() => { window.location.href = 'pagos.html'; }, 1500);
+  } else {
+    ui.toast(`${okCob} cobros + ${okGas} gastos OK, ${fail} fallaron`, 'error', 8000);
+    parseErrors = errs;
+    render();
+  }
+}
+
 render();
 
 Object.assign(window, {
   setTab, onCsvChange, clearCsv, parseCsv, confirmImport, onExcelFileChange,
   setCobranzasVendor, setCobranzasCreditDays,
   openCustomerPickerForRow, closeCustomerPicker, onCustomerPickerSearch,
-  assignCustomerToRow, clearCustomerAssignment
+  assignCustomerToRow, clearCustomerAssignment,
+  setClientesDefaultVendor,
+  setReconBankAccount, confirmConciliacion,
+  assignCobroCustomer, assignCobroInvoice, setCobroRate,
+  toggleGasto, setGastoCategory, setGastoDesc, applyBulkGastoDesc
 });
 
 }); // end moduleInit
