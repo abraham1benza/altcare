@@ -490,7 +490,13 @@ function onExcelFileChange(event) {
       // fechas se formatean según el regional del Excel y la ambigüedad
       // M/D vs D/M arruina el parseo. Para los otros tabs mantenemos raw:false
       // que preserva el comportamiento histórico de strings formateados.
-      const useRaw = (activeTab === 'cobranzas' || activeTab === 'conciliacion');
+      // Para cobranzas usamos raw:true para que las fechas lleguen como Date.
+      // Para conciliacion usamos raw:false: el banco mezcla formatos (Importe en
+      // formato venezolano "-68.087,25" y Saldo en americano "715,123.67"), y si
+      // dejamos que XLSX parsee los números los DESTRUYE (lee "-68.087,25" como
+      // -68.08725). Con raw:false llegan como texto y reconciliation.parseMonto
+      // los interpreta bien. parseFecha también maneja las fechas como string.
+      const useRaw = (activeTab === 'cobranzas');
       const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '', raw: useRaw });
       processExcelRows(rows);
     } catch (err) {
@@ -1804,13 +1810,55 @@ function renderCobrosTable(cobros, totalVes, totalUsd, nAplicables) {
 }
 
 function renderCobroRow(c, customers) {
-  // Selector de cliente (si está sin identificar o para corregir)
-  const customerCell = c.matchedCustomerId
-    ? `<span class="td-strong" style="font-size:11.5px;">${ui.escape(c.matchedCustomerName)}</span>`
-    : `<select class="select" style="font-size:11px;padding:4px;" onchange="assignCobroCustomer('${c.id}', this.value)">
-         <option value="">— elegir cliente —</option>
-         ${customers.map(cu => `<option value="${cu.id}">${ui.escape(cu.name)}${cu.rif?` · ${ui.escape(cu.rif)}`:''}</option>`).join('')}
-       </select>`;
+  // === Selector de cliente con BUSCADOR inline ===
+  // Si ya hay cliente matcheado por cédula, mostramos su nombre con un link "cambiar"
+  // por si el match automático fue incorrecto. Si no hay match, mostramos un input
+  // de búsqueda que filtra los clientes en vivo a medida que escribís.
+  let customerCell;
+  if (c.matchedCustomerId) {
+    customerCell = `
+      <div>
+        <div class="td-strong" style="font-size:11.5px;">${ui.escape(c.matchedCustomerName)}</div>
+        <a href="javascript:void(0)" onclick="clearCobroCustomer('${c.id}')" style="font-size:10px;color:var(--accent-ink);text-decoration:underline;">cambiar</a>
+      </div>`;
+  } else {
+    // Buscador inline: input + lista filtrada que aparece debajo cuando hay query.
+    // El query se guarda en c._search (estado por fila) para sobrevivir el render.
+    const query = (c._search || '').toLowerCase().trim();
+    let matches = [];
+    if (query.length >= 1) {
+      matches = customers.filter(cu => {
+        const name = (cu.name||'').toLowerCase();
+        const rif  = (cu.rif||'').toLowerCase();
+        const code = (cu.code||'').toLowerCase();
+        return name.includes(query) || rif.includes(query) || code.includes(query);
+      }).slice(0, 8); // máximo 8 resultados para no saturar
+    }
+    customerCell = `
+      <div style="position:relative;min-width:180px;">
+        <input type="text"
+               class="input"
+               style="font-size:11px;padding:5px;width:100%;"
+               placeholder="Buscar cliente o RIF..."
+               value="${ui.escape(c._search || '')}"
+               oninput="onCobroCustomerSearch('${c.id}', this.value)"
+               id="search-${c.id}">
+        ${query.length >= 1 ? `
+          <div style="position:absolute;top:100%;left:0;right:0;background:white;border:1px solid var(--border);border-radius:6px;max-height:220px;overflow-y:auto;z-index:50;box-shadow:0 4px 12px rgba(0,0,0,0.1);margin-top:2px;">
+            ${matches.length === 0
+              ? `<div style="padding:8px;font-size:11px;color:var(--ink-3);">Sin coincidencias para "${ui.escape(c._search)}"</div>`
+              : matches.map(cu => `
+                  <div onclick="assignCobroCustomer('${c.id}', '${cu.id}')"
+                       style="padding:7px 10px;cursor:pointer;border-bottom:1px solid var(--border);font-size:11px;"
+                       onmouseover="this.style.background='#f3f4f6'"
+                       onmouseout="this.style.background='white'">
+                    <div class="td-strong" style="font-size:11.5px;">${ui.escape(cu.name)}</div>
+                    ${cu.rif ? `<div class="text-muted" style="font-size:10px;">${ui.escape(cu.rif)}</div>` : ''}
+                  </div>`).join('')
+            }
+          </div>` : ''}
+      </div>`;
+  }
 
   // Selector de factura (FIFO sugerida, editable)
   let invoiceCell = '<span class="text-muted" style="font-size:11px;">—</span>';
@@ -1940,6 +1988,7 @@ function findGasto(id) { return reconData && reconData.gastos.find(g => g.id ===
 function assignCobroCustomer(id, customerId) {
   const c = findCobro(id); if (!c) return;
   c.matchedCustomerId = customerId;
+  c._search = ''; // limpiar query del buscador al asignar
   const cust = customerId ? db.getById(db.COLLECTIONS.customers, customerId) : null;
   c.matchedCustomerName = cust ? cust.name : '';
   const open = customerId ? reconciliation.getOpenInvoicesForCustomer(customerId) : [];
@@ -1947,6 +1996,40 @@ function assignCobroCustomer(id, customerId) {
   c.assignedInvoiceId = open.length ? open[0].id : '';
   c.suggestedInvoiceId = c.assignedInvoiceId;
   c.status = customerId ? (open.length ? 'MATCHED' : 'NO_DEBT') : 'UNMATCHED';
+  render();
+}
+
+/**
+ * Actualiza el texto del buscador inline de cliente para un cobro y refresca
+ * solo si el query pasa el umbral. Usa preserveFocus para no perder el cursor.
+ */
+function onCobroCustomerSearch(id, val) {
+  const c = findCobro(id); if (!c) return;
+  c._search = val || '';
+  if (ui.preserveFocus) {
+    ui.preserveFocus(() => render());
+  } else {
+    render();
+    // restaurar foco después del re-render
+    setTimeout(() => {
+      const el = document.getElementById('search-' + id);
+      if (el) { el.focus(); el.setSelectionRange(el.value.length, el.value.length); }
+    }, 0);
+  }
+}
+
+/**
+ * Limpia el cliente asignado para volver al modo búsqueda — sirve para cuando
+ * el match automático fue incorrecto y el usuario quiere reasignar a mano.
+ */
+function clearCobroCustomer(id) {
+  const c = findCobro(id); if (!c) return;
+  c.matchedCustomerId = '';
+  c.matchedCustomerName = '';
+  c.openInvoices = [];
+  c.assignedInvoiceId = '';
+  c.status = 'UNMATCHED';
+  c._search = '';
   render();
 }
 
@@ -2013,6 +2096,7 @@ Object.assign(window, {
   setClientesDefaultVendor,
   setReconBankAccount, confirmConciliacion,
   assignCobroCustomer, assignCobroInvoice, setCobroRate,
+  onCobroCustomerSearch, clearCobroCustomer,
   toggleGasto, setGastoCategory, setGastoDesc, applyBulkGastoDesc
 });
 
