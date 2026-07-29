@@ -845,7 +845,7 @@ const sales = {
    * - PEDIDO/COTIZACION/NOTA_ENTREGA → FACTURA: asigna número fiscal, recalcula IVA
    * - FACTURA → NOTA_ENTREGA: solo si no tiene pagos. Reversa fiscal.
    */
-  convertTo(docId, newStatus) {
+  async convertTo(docId, newStatus) {
     const doc = db.getById(db.COLLECTIONS.salesOrders, docId);
     if (!doc) throw new Error('Documento no encontrado');
     if (doc.cancelled) throw new Error('Documento anulado');
@@ -891,11 +891,35 @@ const sales = {
       doc.total = round(doc.subtotal + ivaAmount);
       doc.totalVES = doc.currency === 'VES' ? doc.total : round(doc.total * (doc.rateValue || 0));
 
-      // Asignar número de control y número de factura
-      const allInvoices = db.getAll(db.COLLECTIONS.salesOrders).filter(d => d.invoiceNumber);
-      const nextInvoice = allInvoices.length + 1;
-      doc.invoiceNumber = `${cfg.invoiceNumberPrefix||'F'}-${String(nextInvoice).padStart(8,'0')}`;
-      doc.controlNumber = `${cfg.invoiceControlNumberPrefix||'00'}-${String(nextInvoice).padStart(8,'0')}`;
+      // === Numeración fiscal atómica ===
+      // Antes: `allInvoices.length + 1`. Eso repetía el número si dos usuarios
+      // facturaban a la vez, y lo reutilizaba al borrar una factura. Ahora cada
+      // serie tiene su propio contador transaccional en Firestore.
+      //
+      // El piso se calcula desde los documentos ya emitidos para que, en la
+      // primera factura después de este cambio, el contador arranque por encima
+      // del último número usado con el método viejo y no repita ninguno.
+      const emitted = db.getAll(db.COLLECTIONS.salesOrders);
+      const maxInvoiceSeq = emitted.reduce((max, d) => Math.max(max, parseTrailingSeq(d.invoiceNumber)), 0);
+      const maxControlSeq = emitted.reduce((max, d) => Math.max(max, parseTrailingSeq(d.controlNumber)), 0);
+
+      const [invoiceSeq, controlSeq] = await Promise.all([
+        db.nextSequence('nextInvoiceNumber', {
+          prefix: `${cfg.invoiceNumberPrefix || 'F'}-`,
+          pad: 8,
+          floor: maxInvoiceSeq + 1
+        }),
+        // Serie independiente: SENIAT espera que el número de control tenga su
+        // propia secuencia autorizada, no que sea una copia del de factura.
+        db.nextSequence('nextControlNumber', {
+          prefix: `${cfg.invoiceControlNumberPrefix || '00'}-`,
+          pad: 8,
+          floor: maxControlSeq + 1
+        })
+      ]);
+
+      doc.invoiceNumber = invoiceSeq.formatted;
+      doc.controlNumber = controlSeq.formatted;
       doc.invoicedAt = new Date().toISOString();
     }
     // → NOTA_ENTREGA desde Pedido/Cotización: sin IVA
@@ -1735,4 +1759,16 @@ const sales = {
   }
 };
 
-function round(n) { return Math.round((parseFloat(n) || 0) * 100) / 100; }
+// round() vive en assets/js/utils.js (ver nota sobre la colisión de globales)
+
+/**
+ * Extrae el número final de un código tipo "F-00000042" → 42.
+ * Se usa para calcular el piso de las secuencias fiscales a partir de los
+ * documentos ya emitidos. Devuelve 0 si el código no tiene número.
+ */
+function parseTrailingSeq(code) {
+  if (!code) return 0;
+  const m = String(code).match(/(\d+)\s*$/);
+  const n = m ? parseInt(m[1], 10) : 0;
+  return Number.isFinite(n) ? n : 0;
+}

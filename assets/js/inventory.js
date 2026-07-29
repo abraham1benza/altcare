@@ -8,6 +8,11 @@ const inventory = {
   // ====== Tipos de movimiento ======
   // Cualquier cambio de stock pasa por aquí. Esto es lo que después
   // arma el kardex y la trazabilidad.
+  //
+  // `affectsStock: false` marca los movimientos que NO mueven el saldo físico.
+  // Reservar y liberar solo tocan el campo `reserved` del lote: el material
+  // sigue en el almacén. Si el kardex los sumara como entradas/salidas, toda
+  // MP que pasó por una OF quedaría descuadrada en exactamente lo reservado.
   MOVE_TYPES: {
     RECEIPT_MP:    { code: 'RECEIPT_MP',    label: 'Recepción de MP',          direction: 'in'  },
     INITIAL_LOAD:  { code: 'INITIAL_LOAD',  label: 'Carga inicial',             direction: 'in'  },
@@ -18,9 +23,14 @@ const inventory = {
     ADJUSTMENT_OUT:{ code: 'ADJUSTMENT_OUT',label: 'Ajuste negativo',           direction: 'out' },
     TRANSFER_OUT:  { code: 'TRANSFER_OUT',  label: 'Traspaso (salida)',         direction: 'out' },
     TRANSFER_IN:   { code: 'TRANSFER_IN',   label: 'Traspaso (entrada)',        direction: 'in'  },
-    RESERVATION:   { code: 'RESERVATION',   label: 'Reserva por OF',            direction: 'out' },
-    UNRESERVATION: { code: 'UNRESERVATION', label: 'Liberación de reserva',     direction: 'in'  },
+    RESERVATION:   { code: 'RESERVATION',   label: 'Reserva por OF',            direction: 'out', affectsStock: false },
+    UNRESERVATION: { code: 'UNRESERVATION', label: 'Liberación de reserva',     direction: 'in',  affectsStock: false },
     SCRAP:         { code: 'SCRAP',         label: 'Merma / descarte',          direction: 'out' }
+  },
+
+  /** true si el tipo de movimiento mueve el saldo físico del almacén */
+  affectsStock(type) {
+    return this.MOVE_TYPES[type]?.affectsStock !== false;
   },
 
   // ====== STOCK DE MATERIAS PRIMAS POR LOTE ======
@@ -68,16 +78,10 @@ const inventory = {
     const rateAtPurchase = bcvRate.value || 0;
     const unitCostNum = parseFloat(unitCost) || 0;
     const ccy = costCurrency || 'USD';
-    let unitCostUSD_atPurchase = 0;
-    if (ccy === 'USD') {
-      unitCostUSD_atPurchase = unitCostNum;
-    } else if (ccy === 'VES' && rateAtPurchase > 0) {
-      unitCostUSD_atPurchase = unitCostNum / rateAtPurchase;
-    } else if (ccy === 'EUR') {
-      const eurRate = currency.getRate('BCV_EUR');
-      const inVES = eurRate?.value ? unitCostNum * eurRate.value : 0;
-      unitCostUSD_atPurchase = rateAtPurchase > 0 ? inVES / rateAtPurchase : 0;
-    }
+    // costToUSD usa la tasa histórica de la fecha para TODAS las monedas.
+    // Antes el caso EUR tomaba la tasa de hoy aunque la recepción fuera
+    // retroactiva, mientras que el de VES sí usaba la histórica.
+    const unitCostUSD_atPurchase = costToUSD(unitCostNum, ccy, today);
 
     const lot = {
       code,
@@ -95,7 +99,7 @@ const inventory = {
       // === Tasa congelada al comprar ===
       rateAtPurchase: rateAtPurchase,
       rateTypeAtPurchase: 'BCV_USD',
-      unitCostUSD_atPurchase: Math.round(unitCostUSD_atPurchase * 10000) / 10000,
+      unitCostUSD_atPurchase,   // costToUSD ya redondea a 4 decimales
       // ===
       receiptDate: today,
       expiryDate: expiryDate || null,
@@ -131,9 +135,15 @@ const inventory = {
   reserveFromLot(lotId, quantity, reference) {
     const lot = db.getById(db.COLLECTIONS.rmLots, lotId);
     if (!lot) throw new Error('Lote no encontrado');
-    const available = (lot.balance || 0) - (lot.reserved || 0);
-    if (quantity > available) throw new Error(`Stock insuficiente. Disponible: ${available} ${lot.unit}`);
-    lot.reserved = (lot.reserved || 0) + parseFloat(quantity);
+    const qty = parseFloat(quantity);
+    if (!isFinite(qty) || qty <= 0) {
+      throw new Error('La cantidad a reservar debe ser un número mayor a cero');
+    }
+    const available = (parseFloat(lot.balance) || 0) - (parseFloat(lot.reserved) || 0);
+    if (qty > available + 1e-6) {
+      throw new Error(`Stock insuficiente. Disponible: ${round4(available)} ${lot.unit}`);
+    }
+    lot.reserved = round4((parseFloat(lot.reserved) || 0) + qty);
     db.save(db.COLLECTIONS.rmLots, lot);
     this.registerMove({
       type: 'RESERVATION',
@@ -157,7 +167,7 @@ const inventory = {
   unreserveFromLot(lotId, quantity, reference) {
     const lot = db.getById(db.COLLECTIONS.rmLots, lotId);
     if (!lot) throw new Error('Lote no encontrado');
-    lot.reserved = Math.max(0, (lot.reserved || 0) - parseFloat(quantity));
+    lot.reserved = round4(Math.max(0, (parseFloat(lot.reserved) || 0) - (parseFloat(quantity) || 0)));
     db.save(db.COLLECTIONS.rmLots, lot);
     this.registerMove({
       type: 'UNRESERVATION',
@@ -177,12 +187,32 @@ const inventory = {
     return lot;
   },
 
-  /** Consume material reservado (cuando la OF pasa a "terminada") */
+  /**
+   * Consume material reservado (cuando la OF pasa a "terminada").
+   * Valida contra el saldo del lote: antes se hacía `Math.max(0, ...)`, así que
+   * consumir de más dejaba el balance en 0 sin avisar y el material sobrante
+   * desaparecía del sistema en silencio.
+   */
   consumeFromLot(lotId, quantity, reference) {
     const lot = db.getById(db.COLLECTIONS.rmLots, lotId);
     if (!lot) throw new Error('Lote no encontrado');
-    lot.balance = Math.max(0, (lot.balance || 0) - parseFloat(quantity));
-    lot.reserved = Math.max(0, (lot.reserved || 0) - parseFloat(quantity));
+
+    const qty = parseFloat(quantity);
+    if (!isFinite(qty) || qty <= 0) {
+      throw new Error('La cantidad a consumir debe ser un número mayor a cero');
+    }
+
+    const balance = parseFloat(lot.balance) || 0;
+    // Tolerancia mínima por redondeo de punto flotante (ej: 0.1 + 0.2)
+    if (qty > balance + 1e-6) {
+      throw new Error(
+        `No se puede consumir ${qty} ${lot.unit} del lote ${lot.code}: ` +
+        `el saldo es ${round4(balance)} ${lot.unit}`
+      );
+    }
+
+    lot.balance = round4(balance - qty);
+    lot.reserved = round4(Math.max(0, (parseFloat(lot.reserved) || 0) - qty));
     db.save(db.COLLECTIONS.rmLots, lot);
     this.registerMove({
       type: 'CONSUMPTION',
@@ -332,11 +362,19 @@ const inventory = {
     return db.save(db.COLLECTIONS.finishedGoods, lot);
   },
 
-  /** Registra un movimiento en el kardex */
+  /**
+   * Registra un movimiento en el kardex.
+   *
+   * Congela `unitCostUSD` en el momento del movimiento. Sin esto el kardex
+   * sumaba `unitCost` crudo sin mirar `costCurrency`, mezclando bolívares con
+   * dólares en un mismo total — un número sin significado.
+   */
   registerMove(move) {
+    const timestamp = new Date().toISOString();
     const m = {
       ...move,
-      timestamp: new Date().toISOString(),
+      timestamp,
+      unitCostUSD: costToUSD(move.unitCost, move.costCurrency, timestamp.slice(0, 10)),
       user: auth.currentUser()?.username || 'system'
     };
     return db.save(db.COLLECTIONS.warehouseMoves, m);
@@ -348,19 +386,44 @@ const inventory = {
       .sort((a, b) => a.timestamp.localeCompare(b.timestamp));
   },
 
-  /** Calcula saldos corridos para el kardex valorizado */
+  /**
+   * Calcula saldos corridos para el kardex valorizado.
+   *
+   * Los movimientos con `affectsStock: false` (reservas y liberaciones) se
+   * devuelven en la lista para que se vean en la trazabilidad, pero NO alteran
+   * el saldo corrido: reservar no saca material del almacén.
+   */
   getValuedKardex(itemKind, itemId) {
     const moves = this.getKardex(itemKind, itemId);
     let runningQty = 0;
     let runningValue = 0;
     return moves.map(m => {
-      const dir = this.MOVE_TYPES[m.type]?.direction || 'in';
-      const sign = dir === 'in' ? 1 : -1;
+      const def = this.MOVE_TYPES[m.type];
+      const sign = (def?.direction || 'in') === 'in' ? 1 : -1;
+      const movesStock = def?.affectsStock !== false;
       const qty = (parseFloat(m.quantity) || 0) * sign;
-      const value = qty * (parseFloat(m.unitCost) || 0);
-      runningQty += qty;
-      runningValue += value;
-      return { ...m, signedQty: qty, signedValue: value, runningQty, runningValue };
+      // Siempre en USD. Los movimientos viejos no tienen unitCostUSD grabado,
+      // así que se convierte al vuelo con la tasa de su fecha.
+      const costUSD = m.unitCostUSD != null
+        ? (parseFloat(m.unitCostUSD) || 0)
+        : costToUSD(m.unitCost, m.costCurrency, (m.timestamp || '').slice(0, 10));
+      const value = qty * costUSD;
+      if (movesStock) {
+        runningQty += qty;
+        runningValue += value;
+      }
+      return {
+        ...m,
+        affectsStock: movesStock,
+        unitCostUSD: costUSD,
+        valueCurrency: 'USD',
+        signedQty: movesStock ? qty : 0,
+        signedValue: movesStock ? value : 0,
+        // Cantidad informativa del movimiento aunque no mueva stock
+        displayQty: qty,
+        runningQty: round4(runningQty),
+        runningValue: round4(runningValue)
+      };
     });
   },
 
@@ -527,4 +590,54 @@ const inventory = {
 function daysBetween(d1, d2) {
   const a = new Date(d1), b = new Date(d2);
   return Math.round((b - a) / (1000 * 60 * 60 * 24));
+}
+
+/**
+ * Redondea a 4 decimales para evitar que el error de punto flotante se acumule
+ * en los saldos (0.1 + 0.2 === 0.30000000000000004). 4 decimales es suficiente
+ * para gramos y mililitros sin perder precisión real.
+ */
+function round4(n) {
+  return Math.round((parseFloat(n) || 0) * 10000) / 10000;
+}
+
+/**
+ * Convierte un costo a USD usando la tasa BCV vigente en `dateStr`.
+ *
+ * El inventario se valoriza SIEMPRE en dólares: es la única forma de que el
+ * kardex sea comparable en el tiempo con una moneda local que se devalúa.
+ * Si no hay tasa histórica para esa fecha, `getRateOnDate` cae a la tasa
+ * actual (devuelve `found: false`).
+ *
+ * @param {number} amount
+ * @param {string} ccy      - 'USD' | 'VES' | 'EUR'
+ * @param {string} dateStr  - fecha YYYY-MM-DD
+ * @returns {number} monto en USD, 0 si no hay tasa para convertir
+ */
+function costToUSD(amount, ccy, dateStr) {
+  const n = parseFloat(amount) || 0;
+  if (!n) return 0;
+  const currencyCode = ccy || 'USD';
+  if (currencyCode === 'USD') return round4(n);
+
+  const date = dateStr || new Date().toISOString().slice(0, 10);
+  const usdRate = (typeof currency !== 'undefined')
+    ? (currency.getRateOnDate(date, 'BCV_USD')?.value || 0)
+    : 0;
+
+  if (currencyCode === 'VES') {
+    return usdRate > 0 ? round4(n / usdRate) : 0;
+  }
+
+  if (currencyCode === 'EUR') {
+    // EUR → VES → USD, ambas patas con la tasa de la misma fecha
+    const eurRate = (typeof currency !== 'undefined')
+      ? (currency.getRateOnDate(date, 'BCV_EUR')?.value || 0)
+      : 0;
+    if (!eurRate || !usdRate) return 0;
+    return round4((n * eurRate) / usdRate);
+  }
+
+  // Moneda desconocida: no inventar una conversión
+  return 0;
 }

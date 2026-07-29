@@ -155,6 +155,63 @@ const db = {
   },
 
   /**
+   * Reserva el siguiente número de una secuencia de forma ATÓMICA.
+   *
+   * Contar documentos existentes para sacar el siguiente número (el patrón
+   * `items.length + 1`) tiene dos fallas graves en numeración fiscal:
+   *   1. Dos usuarios que facturan a la vez obtienen el MISMO número.
+   *   2. Borrar un documento hace que su número se reutilice.
+   *
+   * Esto usa una transacción de Firestore sobre `config/main`: el servidor
+   * garantiza que dos clientes concurrentes reciban números distintos, y el
+   * contador solo avanza — nunca retrocede aunque se borren documentos.
+   *
+   * @param {string} field  - campo contador en config/main (ej: 'nextInvoiceNumber')
+   * @param {object} opts
+   * @param {string} opts.prefix - prefijo del código (ej: 'F')
+   * @param {number} opts.pad    - dígitos con relleno de ceros
+   * @param {number} opts.floor  - piso mínimo; ver nota de migración abajo
+   * @returns {Promise<{number: number, formatted: string}>}
+   */
+  async nextSequence(field, { prefix = '', pad = 8, floor = 1 } = {}) {
+    const fb = window.fb;
+    if (!fb || !fb.auth.currentUser) {
+      throw new Error('No hay sesión activa para reservar un número');
+    }
+    if (!fb.runTransaction) {
+      throw new Error('runTransaction no disponible: recargá la página para actualizar Firebase');
+    }
+
+    const ref = fb.doc(fb.db, COLLECTIONS.config, 'main');
+
+    const assigned = await fb.runTransaction(fb.db, async (tx) => {
+      const snap = await tx.get(ref);
+      const data = snap.exists() ? snap.data() : {};
+      const stored = parseInt(data[field], 10);
+
+      // `floor` cubre la migración: si el sistema ya emitió documentos con el
+      // método viejo, el contador arranca por encima del último emitido para
+      // no repetir números. Una vez que el contador supera el piso, manda él.
+      const value = Math.max(
+        Number.isFinite(stored) && stored > 0 ? stored : 1,
+        Number.isFinite(floor) && floor > 0 ? floor : 1
+      );
+
+      tx.set(ref, { [field]: value + 1 }, { merge: true });
+      return value;
+    });
+
+    // Reflejar el avance en la caché local para que no quede desfasada
+    const cachedConfig = _cache[COLLECTIONS.config]?.main;
+    if (cachedConfig) cachedConfig[field] = assigned + 1;
+
+    return {
+      number: assigned,
+      formatted: prefix + String(assigned).padStart(pad, '0')
+    };
+  },
+
+  /**
    * Genera un id único (similar a Firestore autoId)
    */
   generateId() {

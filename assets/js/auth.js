@@ -7,7 +7,7 @@
 
 const ROLES = {
   admin:       { label: 'Administrador',     modules: '*' },
-  gerente:     { label: 'Gerente',           modules: ['dashboard','tasas-cambio','configuracion','proveedores','clientes','almacenes','materias-primas','formulas','produccion','calidad','producto-terminado','almacen','trazabilidad','compras','cuentas-bancarias','metodos-pago','transportistas','pagos','ventas','comisiones','reportes','notificaciones','importar'] },
+  gerente:     { label: 'Gerente',           modules: ['dashboard','tasas-cambio','configuracion','proveedores','clientes','almacenes','materias-primas','formulas','produccion','calidad','producto-terminado','almacen','trazabilidad','compras','cuentas-bancarias','metodos-pago','transportistas','pagos','ventas','comisiones','reportes','notificaciones','importar','diagnostico'] },
   contador:    { label: 'Contador',          modules: ['dashboard','reportes','compras','ventas','pagos','cuentas-bancarias','tasas-cambio'] },
   ventas:      { label: 'Ventas',            modules: ['dashboard','clientes','ventas','pagos','notificaciones'] },
   compras:     { label: 'Compras',           modules: ['dashboard','proveedores','compras','pagos','notificaciones'] },
@@ -16,10 +16,29 @@ const ROLES = {
   calidad:     { label: 'Control Calidad',   modules: ['dashboard','calidad','trazabilidad'] }
 };
 
+/**
+ * Módulos que ve un perfil sin rol válido.
+ *
+ * Antes el fallback era `'admin'`: cualquier usuario cuyo documento en Firestore
+ * no tuviera el campo `role` — por un alta incompleta o un typo — quedaba con
+ * acceso total. El default seguro es el de MENOS privilegio, no el de más.
+ * Se deja el dashboard para que la persona pueda entrar y notar que le falta
+ * configuración, en vez de toparse con una pantalla en blanco.
+ */
+const FALLBACK_MODULES = ['dashboard'];
+
+/** Resuelve los módulos de un rol, con fallback de mínimo privilegio */
+function resolveRoleModules(role) {
+  if (!role) return FALLBACK_MODULES;
+  const def = ROLES[role];
+  if (!def) return FALLBACK_MODULES;   // rol desconocido: tampoco es admin
+  return def.modules;
+}
+
 // PERMISSIONS: estructura inversa { moduleName: [roles que tienen acceso] }
 // Compatibilidad con código que la usa así
 const PERMISSIONS = (() => {
-  const ALL_MODULES = ['dashboard','tasas-cambio','configuracion','proveedores','clientes','usuarios','almacenes','materias-primas','formulas','produccion','calidad','producto-terminado','almacen','trazabilidad','compras','cuentas-bancarias','metodos-pago','transportistas','pagos','ventas','comisiones','reportes','notificaciones','importar'];
+  const ALL_MODULES = ['dashboard','tasas-cambio','configuracion','proveedores','clientes','usuarios','almacenes','materias-primas','formulas','produccion','calidad','producto-terminado','almacen','trazabilidad','compras','cuentas-bancarias','metodos-pago','transportistas','pagos','ventas','comisiones','reportes','notificaciones','importar','diagnostico'];
   const out = {};
   ALL_MODULES.forEach(m => {
     out[m] = [];
@@ -373,8 +392,7 @@ const auth = {
     }
     // Evaluar perfil completo
     if (!this._profile) return true; // mientras no haya perfil cargado, no bloquear
-    const r = this._profile.role || 'admin';
-    const baseAllowed = ROLES[r]?.modules || [];
+    const baseAllowed = resolveRoleModules(this._profile.role);
     const extra = this._profile.extraModules || [];
     const hidden = this._profile.hiddenModules || [];
 
@@ -392,8 +410,7 @@ const auth = {
   /** Devuelve la lista efectiva de módulos del usuario actual (rol + extras − hidden) */
   getAllowedModules() {
     if (!this._profile) return [];
-    const r = this._profile.role || 'admin';
-    const base = ROLES[r]?.modules || [];
+    const base = resolveRoleModules(this._profile.role);
     if (base === '*') return ['*']; // admin tiene todo
     const extra = this._profile.extraModules || [];
     const hidden = this._profile.hiddenModules || [];

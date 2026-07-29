@@ -152,7 +152,5 @@ const formulas = {
   }
 };
 
-function round(n, dec = 2) {
-  const f = Math.pow(10, dec);
-  return Math.round((parseFloat(n) || 0) * f) / f;
-}
+// round() vive en assets/js/utils.js — antes estaba duplicado acá, en sales.js
+// y en tax.js, y la última copia cargada pisaba a las demás.

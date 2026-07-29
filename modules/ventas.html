@@ -9,6 +9,7 @@
 <body>
 <script type="module" src="../assets/js/firebase-init.js"></script>
 <script src="../assets/js/module-init-v2.js"></script>
+<script src="../assets/js/utils.js"></script>
 <script src="../assets/js/db.js"></script>
 <script src="../assets/js/auth.js"></script>
 <script src="../assets/js/currency.js"></script>
@@ -1868,9 +1869,10 @@ function convertTo(docId, newStatus) {
     message = `¿Convertir a ${labels[newStatus]}?`;
   }
 
-  ui.confirm(message, () => {
+  ui.confirm(message, async () => {
     try {
-      sales.convertTo(docId, newStatus);
+      // convertTo es async: reserva el número fiscal con una transacción
+      await sales.convertTo(docId, newStatus);
       ui.toast(`Convertido a ${labels[newStatus]}`, 'success');
       // Si se convierte a NE o Factura y no tiene lotes asignados, ir a asignación
       const updated = db.getById(db.COLLECTIONS.salesOrders, docId);
