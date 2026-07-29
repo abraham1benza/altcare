@@ -18,16 +18,23 @@
   --border-strong: #c9c0a8;
   --border-light: #f0ebde;
 
-  /* === TINTAS (negro logo) === */
-  --ink: #0a0a08;                /* casi negro como el logo */
-  --ink-2: #3a3833;
-  --ink-3: #7a766a;
-  --ink-4: #a8a294;
+  /* === TINTAS (negro logo) ===
+     Los valores de --ink-3 y --ink-4 se oscurecieron para cumplir WCAG AA
+     (4.5:1). Antes daban 3.88:1 y 2.54:1, y se usan justamente en el texto
+     más pequeño del sistema: etiquetas de campo, hints y celdas atenuadas.
+     Se conservó el tono exacto, solo bajó la luminosidad. */
+  --ink: #0a0a08;                /* casi negro como el logo — 18.19:1 */
+  --ink-2: #3a3833;              /* 10.75:1 */
+  --ink-3: #6f6c61;              /* 4.50:1 sobre surface-2 (era #7a766a) */
+  --ink-4: #7d7666;              /* 4.51:1 sobre blanco  (era #a8a294) */
 
-  /* === DORADO (color del logo) === */
+  /* === DORADO (color del logo) ===
+     --gold es un color de acento, no de texto: sobre blanco da 2.38:1, así que
+     se usa en bordes, fondos y marcas, nunca en texto pequeño. Para texto
+     dorado está --gold-deep. */
   --gold: #d4a017;               /* dorado del logo, ligeramente más sobrio */
   --gold-bright: #e4b520;        /* para acentos */
-  --gold-deep: #a67c0a;          /* dorado oscuro para hover */
+  --gold-deep: #8e6a09;          /* dorado oscuro para texto y hover — 4.48:1 sobre gold-soft */
   --gold-soft: #faf3d9;          /* dorado muy suave para fondos */
   --gold-tint: #f5e8b8;          /* fondo dorado claro */
 
@@ -37,9 +44,9 @@
   --accent-ink: #3d5a3c;
 
   /* === SEMÁNTICOS === */
-  --danger: #a83232;
+  --danger: #a83232;             /* 6.09:1 */
   --danger-soft: #f7e8e6;
-  --warning: #b8860b;
+  --warning: #916a09;            /* 4.51:1 (era #b8860b, 2.99:1 — ilegible en texto) */
   --warning-soft: #faf2dc;
   --success: #2d6a4f;
   --success-soft: #e3efe7;
@@ -975,7 +982,7 @@ tbody tr:hover { background: rgba(212, 160, 23, 0.04); }
 /* Anulada: gris con apariencia de "cancelado" */
 .badge-cancelled {
   background: #e5e7eb;
-  color: #6b7280;
+  color: #626875;          /* 4.52:1 — era #6b7280 (3.90:1), el único badge bajo */
   text-decoration: line-through;
 }
 
@@ -1382,24 +1389,256 @@ tbody tr:hover { background: rgba(212, 160, 23, 0.04); }
 .list-row-title { font-weight: 600; }
 .list-row-meta { font-size: 12px; color: var(--ink-3); }
 
-/* ============== SCROLLBAR ============== */
+/* NOTA: los bloques de scrollbar y .divider-section estaban repetidos aquí,
+   duplicando reglas ya definidas más arriba (líneas ~105 y ~452) con valores
+   ligeramente distintos — la segunda copia ganaba en silencio. Eliminados. */
 
-::-webkit-scrollbar { width: 10px; height: 10px; }
-::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: 10px; border: 2px solid var(--bg); }
-::-webkit-scrollbar-thumb:hover { background: var(--ink-3); }
+/* ============================================================================
+   ACCESIBILIDAD
+   ============================================================================ */
 
-/* ============== SECTION DIVIDER ============== */
-
-.divider-section {
-  margin: 32px 0 16px;
-  display: flex;
-  align-items: center;
-  gap: 12px;
+/* El foco solo era visible en .btn. Quien navega con teclado —o con el mouse
+   roto— no tenía forma de saber dónde estaba parado en inputs, enlaces y
+   filas clicables. */
+.input:focus-visible,
+.select:focus-visible,
+.textarea:focus-visible,
+a:focus-visible,
+.nav-item:focus-visible,
+.btn-icon:focus-visible,
+.modal-close:focus-visible,
+.kpi-clickable:focus-visible,
+[tabindex]:focus-visible,
+thead th[onclick]:focus-visible {
+  outline: 2px solid var(--gold);
+  outline-offset: 2px;
+  border-radius: var(--r-sm);
 }
-.divider-section::after {
-  content: '';
-  flex: 1;
-  height: 1px;
-  background: var(--border);
+
+/* Dentro de la barra lateral oscura el dorado sobre negro se pierde */
+.sidebar a:focus-visible,
+.sidebar button:focus-visible {
+  outline-color: var(--gold-bright);
+}
+
+/* Respetar a quien pidió menos animación en su sistema operativo: para
+   vestíbulo o migraña, los deslizamientos y rebotes no son un detalle. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+  .kpi-clickable:hover { transform: none; }
+}
+
+/* Salto al contenido para lectores de pantalla y teclado */
+.skip-link {
+  position: absolute;
+  left: -9999px;
+  top: 0;
+  z-index: 300;
+  padding: 10px 18px;
+  background: var(--ink);
+  color: var(--gold-bright);
+  border-radius: 0 0 var(--r-md) 0;
+  font-weight: 600;
+  font-size: 13px;
+}
+.skip-link:focus {
+  left: 0;
+}
+
+/* ============================================================================
+   RESPONSIVE — barra lateral como cajón en pantallas chicas
+   ============================================================================
+
+   Antes la barra seguía ocupando 200 px fijos hasta en un teléfono: casi la
+   mitad del ancho útil para el menú, dejando las tablas del ERP sin espacio.
+   Ahora por debajo de 760 px se convierte en un cajón deslizante.
+   ============================================================================ */
+
+.sidebar-toggle { display: none; }
+
+@media (max-width: 760px) {
+  .app {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .sidebar {
+    position: fixed;
+    top: 0;
+    left: 0;
+    bottom: 0;
+    width: 264px;
+    max-width: 84vw;
+    z-index: 120;
+    transform: translateX(-100%);
+    transition: transform var(--t-base);
+    box-shadow: none;
+  }
+  .sidebar.open {
+    transform: translateX(0);
+    box-shadow: 0 0 48px rgba(0, 0, 0, 0.45);
+  }
+
+  /* Velo que atenúa el contenido mientras el cajón está abierto */
+  .sidebar-scrim {
+    position: fixed;
+    inset: 0;
+    background: rgba(10, 10, 8, 0.5);
+    backdrop-filter: blur(2px);
+    -webkit-backdrop-filter: blur(2px);
+    z-index: 110;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity var(--t-base);
+  }
+  .sidebar-scrim.open {
+    opacity: 1;
+    pointer-events: auto;
+  }
+
+  .sidebar-toggle {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 38px;
+    height: 38px;
+    margin-right: 12px;
+    border-radius: var(--r-md);
+    border: 1px solid var(--border);
+    background: var(--surface);
+    color: var(--ink);
+    flex-shrink: 0;
+  }
+  .sidebar-toggle:hover { background: var(--surface-2); }
+
+  .topbar {
+    padding: 0 16px;
+    gap: 10px;
+  }
+  /* El título completo no cabe junto al botón y las píldoras de tasa */
+  .page-eyebrow { display: none; }
+  .page-title { font-size: 19px; }
+
+  .action-bar-title { font-size: 23px; }
+
+  /* En móvil las acciones de tabla necesitan ser tocables (44px de objetivo) */
+  .td-actions .btn-icon,
+  .btn-icon {
+    width: 38px;
+    height: 38px;
+  }
+}
+
+/* Evitar que el cajón quede abierto al volver a escritorio */
+@media (min-width: 761px) {
+  .sidebar-scrim { display: none; }
+}
+
+/* ============================================================================
+   IMPRESIÓN
+   ============================================================================
+
+   Un ERP de manufactura imprime constantemente: facturas, notas de entrega,
+   certificados de análisis, órdenes de fabricación. Sin reglas de impresión
+   salía la barra lateral, los botones y los fondos oscuros gastando tinta.
+
+   Para imprimir solo una parte de la vista, marcarla con class="print-area".
+   ============================================================================ */
+
+@media print {
+  /* Fondos claros y tinta negra: ahorra tóner y se lee mejor fotocopiado */
+  html, body {
+    background: #fff !important;
+    color: #000 !important;
+    font-size: 11pt;
+  }
+
+  /* Fuera todo lo que es navegación o acción */
+  .sidebar,
+  .sidebar-scrim,
+  .sidebar-toggle,
+  .topbar-actions,
+  .action-bar-right,
+  .table-toolbar,
+  .btn,
+  .btn-icon,
+  .toast-stack,
+  .modal-backdrop,
+  .fx-pill,
+  .kpi-action,
+  .empty-state-icon,
+  .no-print {
+    display: none !important;
+  }
+
+  .app {
+    display: block;
+  }
+  .content {
+    padding: 0;
+    max-width: none;
+  }
+  .topbar {
+    position: static;
+    border-bottom: 1px solid #000;
+    padding: 0 0 8pt;
+    height: auto;
+    background: none;
+    backdrop-filter: none;
+  }
+
+  /* Las tarjetas se vuelven bloques planos: sin sombra ni relleno de pantalla */
+  .card,
+  .kpi,
+  .table-wrap {
+    border: 1px solid #999 !important;
+    box-shadow: none !important;
+    break-inside: avoid;
+    page-break-inside: avoid;
+    background: #fff !important;
+  }
+
+  /* Que las tablas largas repitan encabezado en cada hoja */
+  thead { display: table-header-group; }
+  tfoot { display: table-footer-group; }
+  tr, img { break-inside: avoid; page-break-inside: avoid; }
+  thead th {
+    background: #eee !important;
+    color: #000 !important;
+    border-bottom: 1px solid #000;
+  }
+  tbody td { color: #000 !important; }
+  tbody tr:hover { background: none !important; }
+
+  /* Los badges impresos como recuadro con borde: el color de fondo casi nunca
+     sale en impresión monocroma y quedarían ilegibles */
+  .badge {
+    border: 1px solid #666 !important;
+    background: none !important;
+    color: #000 !important;
+  }
+  .badge::before { display: none; }
+
+  /* Mostrar a dónde apuntan los enlaces, que en papel no se pueden clicar */
+  a[href^="http"]::after {
+    content: " (" attr(href) ")";
+    font-size: 9pt;
+    color: #555;
+  }
+
+  /* Imprimir solo la zona marcada, si la hay */
+  body:has(.print-area) .app > *:not(.main),
+  body:has(.print-area) .main > *:not(.content) {
+    display: none !important;
+  }
+
+  @page {
+    margin: 14mm;
+  }
 }

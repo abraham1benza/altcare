@@ -261,8 +261,10 @@ const ui = {
     }
 
     document.body.innerHTML = `
+      <a class="skip-link" href="#page-content">Saltar al contenido</a>
       <div class="app">
-        <aside class="sidebar">
+        <div class="sidebar-scrim" id="sidebar-scrim" onclick="ui.toggleSidebar(false)"></div>
+        <aside class="sidebar" id="app-sidebar">
           <div class="brand">
             <div class="brand-logo">
               <img src="${window.ASSET_BASE}assets/img/logo.png" alt="Alternative Care" />
@@ -288,6 +290,13 @@ const ui = {
         <main class="main">
           <header class="topbar">
             <div class="page-title-wrap">
+              <button class="sidebar-toggle" onclick="ui.toggleSidebar()"
+                      aria-label="Abrir menú" aria-controls="app-sidebar" aria-expanded="false">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                     stroke-width="2" stroke-linecap="round" aria-hidden="true">
+                  <path d="M3 6h18M3 12h18M3 18h18"/>
+                </svg>
+              </button>
               ${pageEyebrow ? `<span class="page-eyebrow">${pageEyebrow}</span>` : ''}
               <h1 class="page-title">${pageTitle}</h1>
             </div>
@@ -326,6 +335,45 @@ const ui = {
         });
       });
     }, 0);
+  },
+
+  /**
+   * Abre o cierra la barra lateral en pantallas chicas.
+   *
+   * En escritorio la barra es parte de la grilla y este método no hace falta;
+   * abajo de 760px pasa a ser un cajón deslizante porque 200px fijos de menú
+   * en un teléfono dejaban las tablas del ERP sin ancho útil.
+   *
+   * @param {boolean} [force] - true abre, false cierra; sin argumento alterna
+   */
+  toggleSidebar(force) {
+    const sidebar = document.getElementById('app-sidebar');
+    const scrim = document.getElementById('sidebar-scrim');
+    if (!sidebar) return;
+
+    const open = force === undefined ? !sidebar.classList.contains('open') : !!force;
+    sidebar.classList.toggle('open', open);
+    if (scrim) scrim.classList.toggle('open', open);
+
+    const toggle = document.querySelector('.sidebar-toggle');
+    if (toggle) {
+      toggle.setAttribute('aria-expanded', String(open));
+      toggle.setAttribute('aria-label', open ? 'Cerrar menú' : 'Abrir menú');
+    }
+
+    // Bloquear el scroll del fondo mientras el cajón tapa la pantalla
+    document.body.style.overflow = open ? 'hidden' : '';
+
+    // Escape cierra: es lo que espera cualquiera con un panel superpuesto
+    if (open) {
+      this._sidebarEsc = (e) => { if (e.key === 'Escape') this.toggleSidebar(false); };
+      document.addEventListener('keydown', this._sidebarEsc);
+      const firstLink = sidebar.querySelector('a.nav-item');
+      if (firstLink) firstLink.focus();
+    } else if (this._sidebarEsc) {
+      document.removeEventListener('keydown', this._sidebarEsc);
+      this._sidebarEsc = null;
+    }
   },
 
   /** Muestra la pantalla de carga (logo + spinner) */
