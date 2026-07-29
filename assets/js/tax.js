@@ -73,4 +73,4 @@ const tax = {
   }
 };
 
-function round(n) { return Math.round((parseFloat(n) || 0) * 100) / 100; }
+// round() vive en assets/js/utils.js (ver nota sobre la colisión de globales)

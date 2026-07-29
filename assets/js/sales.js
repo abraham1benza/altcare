@@ -1759,7 +1759,7 @@ const sales = {
   }
 };
 
-function round(n) { return Math.round((parseFloat(n) || 0) * 100) / 100; }
+// round() vive en assets/js/utils.js (ver nota sobre la colisión de globales)
 
 /**
  * Extrae el número final de un código tipo "F-00000042" → 42.
