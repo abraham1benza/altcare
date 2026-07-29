@@ -1,0 +1,310 @@
+rules_version = '2';
+
+// =============================================================================
+// Alternative Care — Reglas de seguridad de Firestore
+// =============================================================================
+//
+// POR QUÉ ESTE ARCHIVO EXISTE
+//
+// La matriz ROLES de assets/js/auth.js decide qué módulos se DIBUJAN en la
+// interfaz. Eso es cosmética: cualquiera con la consola del navegador abierta
+// puede llamar a `db.save(...)` sobre cualquier colección y saltarse por
+// completo esa matriz. Lo único que de verdad protege los datos son estas
+// reglas, porque se evalúan en el servidor de Firebase.
+//
+// Hasta ahora vivían solo en la consola de Firebase: sin versionar, sin
+// respaldo y sin forma de revisar qué cambió. Ahora están en el repo.
+//
+// CÓMO DESPLEGARLAS
+//
+//   firebase deploy --only firestore:rules
+//
+// O pegando el contenido en Firebase Console → Firestore → Reglas.
+// IMPORTANTE: mientras no se desplieguen, este archivo no protege nada.
+//
+// MODELO
+//
+//   - Deny por defecto: lo que no está listado abajo queda prohibido.
+//   - Sin sesión no se lee ni se escribe nada.
+//   - LECTURA: amplia entre el personal autenticado para la data operativa
+//     (todos trabajan sobre el mismo inventario), y restringida por rol en lo
+//     sensible: usuarios, auditoría, bancos, pagos, comisiones y préstamos.
+//   - ESCRITURA: acotada al dominio de cada rol.
+//
+// COSTO
+//
+//   Las funciones consultan el perfil con get() sobre users/{uid}. Firestore
+//   cobra esa lectura por evaluación de regla. Si en el futuro pesa, conviene
+//   migrar el rol a un custom claim del token de Auth, que no cuesta lecturas.
+//
+// =============================================================================
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ===== HELPERS =====
+
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function profile() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+    }
+
+    function hasProfile() {
+      return signedIn()
+        && exists(/databases/$(database)/documents/users/$(request.auth.uid));
+    }
+
+    // Un perfil sin campo `role` NO es admin: se queda sin rol efectivo.
+    // Refleja el fallback de mínimo privilegio de auth.js.
+    function role() {
+      return hasProfile() ? profile().get('role', '') : '';
+    }
+
+    function isAdmin() {
+      return role() == 'admin';
+    }
+
+    // El gerente ve y opera todo el negocio, pero no administra usuarios.
+    function isManager() {
+      return role() in ['admin', 'gerente'];
+    }
+
+    function hasAnyRole(roles) {
+      return role() in roles;
+    }
+
+    // Personal autenticado y con perfil dado de alta.
+    function isStaff() {
+      return hasProfile() && role() != '';
+    }
+
+    // ===== USUARIOS =====
+    // Cada quien lee su propio perfil (auth.js lo necesita al iniciar sesión).
+    // Solo el admin lista y modifica a los demás.
+    //
+    // OJO: el rol vive dentro de este documento, así que permitir que alguien
+    // edite su propio perfil sería permitirle ascenderse a admin. Por eso la
+    // escritura es exclusiva del admin.
+    match /users/{userId} {
+      allow get: if signedIn() && (request.auth.uid == userId || isAdmin());
+      allow list: if isAdmin();
+      allow write: if isAdmin();
+    }
+
+    // ===== CONFIGURACIÓN =====
+    // Todos leen la config (IVA, datos fiscales, formato de lote).
+    // Solo el admin la edita... con una excepción necesaria:
+    //
+    // La numeración fiscal atómica (db.nextSequence) incrementa los contadores
+    // nextInvoiceNumber / nextControlNumber dentro de una transacción. Quien
+    // factura tiene que poder tocar ESOS DOS CAMPOS y ningún otro.
+    match /config/{docId} {
+      allow read: if isStaff();
+      allow create, delete: if isAdmin();
+      allow update: if isAdmin()
+        || (
+          hasAnyRole(['gerente', 'contador', 'ventas'])
+          && request.resource.data.diff(resource.data).affectedKeys()
+               .hasOnly(['nextInvoiceNumber', 'nextControlNumber'])
+        );
+    }
+
+    // ===== TASAS DE CAMBIO =====
+    match /rates/{docId} {
+      allow read: if isStaff();
+      allow write: if hasAnyRole(['admin', 'gerente', 'contador']);
+    }
+    match /historicalRates/{docId} {
+      allow read: if isStaff();
+      // Se escriben solas al snapshotear la tasa del día; no se borran nunca:
+      // el histórico es lo que permite valorizar el inventario hacia atrás.
+      allow create, update: if hasAnyRole(['admin', 'gerente', 'contador']);
+      allow delete: if isAdmin();
+    }
+
+    // ===== MAESTROS COMERCIALES =====
+    match /customers/{docId} {
+      allow read: if isStaff();
+      allow write: if hasAnyRole(['admin', 'gerente', 'ventas']);
+    }
+    match /suppliers/{docId} {
+      allow read: if isStaff();
+      allow write: if hasAnyRole(['admin', 'gerente', 'compras']);
+    }
+    match /carriers/{docId} {
+      allow read: if isStaff();
+      allow write: if hasAnyRole(['admin', 'gerente', 'ventas']);
+    }
+
+    // ===== ALMACENES E INVENTARIO =====
+    match /warehouses/{docId} {
+      allow read: if isStaff();
+      allow write: if hasAnyRole(['admin', 'gerente', 'almacen']);
+    }
+    match /locations/{docId} {
+      allow read: if isStaff();
+      allow write: if hasAnyRole(['admin', 'gerente', 'almacen']);
+    }
+    match /rawMaterials/{docId} {
+      allow read: if isStaff();
+      allow write: if hasAnyRole(['admin', 'gerente', 'almacen', 'compras']);
+    }
+    match /rmLots/{docId} {
+      allow read: if isStaff();
+      // Producción consume lotes al terminar una OF, por eso escribe acá.
+      allow write: if hasAnyRole(['admin', 'gerente', 'almacen', 'compras', 'produccion']);
+    }
+    match /finishedGoods/{docId} {
+      allow read: if isStaff();
+      // Calidad libera o rechaza lotes; ventas descuenta al facturar.
+      allow write: if hasAnyRole(['admin', 'gerente', 'almacen', 'produccion', 'calidad', 'ventas']);
+    }
+    match /packaging/{docId} {
+      allow read: if isStaff();
+      allow write: if hasAnyRole(['admin', 'gerente', 'almacen', 'produccion']);
+    }
+
+    // Kardex: la bitácora del inventario. Se agrega, nunca se reescribe.
+    // Permitir editar o borrar movimientos sería permitir falsificar la
+    // trazabilidad, que es justamente lo que audita un ente regulador.
+    match /warehouseMoves/{docId} {
+      allow read: if isStaff();
+      allow create: if isStaff();
+      allow update: if false;
+      allow delete: if isAdmin();
+    }
+
+    // ===== PRODUCCIÓN Y CALIDAD =====
+    match /formulas/{docId} {
+      allow read: if isStaff();
+      allow write: if hasAnyRole(['admin', 'gerente', 'produccion']);
+    }
+    match /formulaVersions/{docId} {
+      allow read: if isStaff();
+      // Versionar es append-only: editar una fórmula crea una versión nueva,
+      // no pisa la anterior. Reescribir una versión rompería la trazabilidad
+      // de los lotes ya fabricados con ella.
+      allow create: if hasAnyRole(['admin', 'gerente', 'produccion']);
+      allow update: if false;
+      allow delete: if isAdmin();
+    }
+    match /presentations/{docId} {
+      allow read: if isStaff();
+      allow write: if hasAnyRole(['admin', 'gerente', 'produccion']);
+    }
+    match /productionOrders/{docId} {
+      allow read: if isStaff();
+      allow write: if hasAnyRole(['admin', 'gerente', 'produccion']);
+    }
+    match /packagingOrders/{docId} {
+      allow read: if isStaff();
+      allow write: if hasAnyRole(['admin', 'gerente', 'produccion']);
+    }
+    match /qcTests/{docId} {
+      allow read: if isStaff();
+      // Solo Calidad aprueba o rechaza. Que Producción pudiera firmar su
+      // propio control de calidad anula el sentido del control.
+      allow write: if hasAnyRole(['admin', 'gerente', 'calidad']);
+    }
+
+    // ===== COMPRAS =====
+    match /purchaseOrders/{docId} {
+      allow read: if hasAnyRole(['admin', 'gerente', 'contador', 'compras']);
+      allow write: if hasAnyRole(['admin', 'gerente', 'compras']);
+    }
+    match /purchaseReceipts/{docId} {
+      allow read: if hasAnyRole(['admin', 'gerente', 'contador', 'compras', 'almacen']);
+      allow write: if hasAnyRole(['admin', 'gerente', 'compras', 'almacen']);
+    }
+    match /supplierInvoices/{docId} {
+      allow read: if hasAnyRole(['admin', 'gerente', 'contador', 'compras']);
+      allow write: if hasAnyRole(['admin', 'gerente', 'contador', 'compras']);
+    }
+    match /withholdingVouchers/{docId} {
+      allow read: if hasAnyRole(['admin', 'gerente', 'contador', 'compras']);
+      allow write: if hasAnyRole(['admin', 'gerente', 'contador']);
+    }
+
+    // ===== VENTAS =====
+    match /salesOrders/{docId} {
+      allow read: if hasAnyRole(['admin', 'gerente', 'contador', 'ventas', 'almacen']);
+      allow write: if hasAnyRole(['admin', 'gerente', 'ventas']);
+    }
+    match /salesInvoices/{docId} {
+      allow read: if hasAnyRole(['admin', 'gerente', 'contador', 'ventas']);
+      allow write: if hasAnyRole(['admin', 'gerente', 'ventas']);
+    }
+    match /creditNotes/{docId} {
+      allow read: if hasAnyRole(['admin', 'gerente', 'contador', 'ventas']);
+      allow write: if hasAnyRole(['admin', 'gerente', 'contador', 'ventas']);
+    }
+    match /debitNotes/{docId} {
+      allow read: if hasAnyRole(['admin', 'gerente', 'contador', 'ventas']);
+      allow write: if hasAnyRole(['admin', 'gerente', 'contador', 'ventas']);
+    }
+
+    // ===== DINERO =====
+    // Más cerrado que el resto: aquí no entra producción ni almacén.
+    match /bankAccounts/{docId} {
+      allow read: if hasAnyRole(['admin', 'gerente', 'contador']);
+      allow write: if hasAnyRole(['admin', 'gerente', 'contador']);
+    }
+    match /paymentMethods/{docId} {
+      allow read: if isStaff();
+      allow write: if hasAnyRole(['admin', 'gerente', 'contador']);
+    }
+    match /payments/{docId} {
+      allow read: if hasAnyRole(['admin', 'gerente', 'contador', 'ventas', 'compras']);
+      allow write: if hasAnyRole(['admin', 'gerente', 'contador', 'ventas', 'compras']);
+    }
+    match /bankMoves/{docId} {
+      allow read: if hasAnyRole(['admin', 'gerente', 'contador']);
+      allow write: if hasAnyRole(['admin', 'gerente', 'contador']);
+    }
+
+    // ===== COMISIONES Y PRÉSTAMOS =====
+    // Datos de remuneración: solo dirección y contabilidad.
+    match /commissionEvents/{docId} {
+      allow read: if hasAnyRole(['admin', 'gerente', 'contador']);
+      allow write: if hasAnyRole(['admin', 'gerente', 'contador', 'ventas']);
+    }
+    match /commissionPayments/{docId} {
+      allow read: if hasAnyRole(['admin', 'gerente', 'contador']);
+      allow write: if hasAnyRole(['admin', 'gerente', 'contador']);
+    }
+    match /loans/{docId} {
+      allow read: if hasAnyRole(['admin', 'gerente', 'contador']);
+      allow write: if hasAnyRole(['admin', 'gerente', 'contador']);
+    }
+
+    // ===== NOTIFICACIONES =====
+    match /notificationTemplates/{docId} {
+      allow read: if isStaff();
+      allow write: if isManager();
+    }
+    match /notificationLog/{docId} {
+      allow read: if isStaff();
+      allow create: if isStaff();
+      allow update, delete: if isManager();
+    }
+
+    // ===== AUDITORÍA =====
+    // Append-only e inmutable. Un log que el propio usuario puede editar o
+    // borrar no sirve como auditoría. Ni siquiera el admin lo modifica.
+    match /auditLog/{docId} {
+      allow read: if isManager();
+      allow create: if isStaff();
+      allow update, delete: if false;
+    }
+
+    // ===== DENY POR DEFECTO =====
+    // Toda colección no declarada arriba queda cerrada. Si se agrega una
+    // colección nueva a db.js, hay que declararla acá o no funcionará.
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
