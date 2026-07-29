@@ -78,16 +78,10 @@ const inventory = {
     const rateAtPurchase = bcvRate.value || 0;
     const unitCostNum = parseFloat(unitCost) || 0;
     const ccy = costCurrency || 'USD';
-    let unitCostUSD_atPurchase = 0;
-    if (ccy === 'USD') {
-      unitCostUSD_atPurchase = unitCostNum;
-    } else if (ccy === 'VES' && rateAtPurchase > 0) {
-      unitCostUSD_atPurchase = unitCostNum / rateAtPurchase;
-    } else if (ccy === 'EUR') {
-      const eurRate = currency.getRate('BCV_EUR');
-      const inVES = eurRate?.value ? unitCostNum * eurRate.value : 0;
-      unitCostUSD_atPurchase = rateAtPurchase > 0 ? inVES / rateAtPurchase : 0;
-    }
+    // costToUSD usa la tasa histórica de la fecha para TODAS las monedas.
+    // Antes el caso EUR tomaba la tasa de hoy aunque la recepción fuera
+    // retroactiva, mientras que el de VES sí usaba la histórica.
+    const unitCostUSD_atPurchase = costToUSD(unitCostNum, ccy, today);
 
     const lot = {
       code,
@@ -105,7 +99,7 @@ const inventory = {
       // === Tasa congelada al comprar ===
       rateAtPurchase: rateAtPurchase,
       rateTypeAtPurchase: 'BCV_USD',
-      unitCostUSD_atPurchase: Math.round(unitCostUSD_atPurchase * 10000) / 10000,
+      unitCostUSD_atPurchase,   // costToUSD ya redondea a 4 decimales
       // ===
       receiptDate: today,
       expiryDate: expiryDate || null,
@@ -368,11 +362,19 @@ const inventory = {
     return db.save(db.COLLECTIONS.finishedGoods, lot);
   },
 
-  /** Registra un movimiento en el kardex */
+  /**
+   * Registra un movimiento en el kardex.
+   *
+   * Congela `unitCostUSD` en el momento del movimiento. Sin esto el kardex
+   * sumaba `unitCost` crudo sin mirar `costCurrency`, mezclando bolívares con
+   * dólares en un mismo total — un número sin significado.
+   */
   registerMove(move) {
+    const timestamp = new Date().toISOString();
     const m = {
       ...move,
-      timestamp: new Date().toISOString(),
+      timestamp,
+      unitCostUSD: costToUSD(move.unitCost, move.costCurrency, timestamp.slice(0, 10)),
       user: auth.currentUser()?.username || 'system'
     };
     return db.save(db.COLLECTIONS.warehouseMoves, m);
@@ -400,7 +402,12 @@ const inventory = {
       const sign = (def?.direction || 'in') === 'in' ? 1 : -1;
       const movesStock = def?.affectsStock !== false;
       const qty = (parseFloat(m.quantity) || 0) * sign;
-      const value = qty * (parseFloat(m.unitCost) || 0);
+      // Siempre en USD. Los movimientos viejos no tienen unitCostUSD grabado,
+      // así que se convierte al vuelo con la tasa de su fecha.
+      const costUSD = m.unitCostUSD != null
+        ? (parseFloat(m.unitCostUSD) || 0)
+        : costToUSD(m.unitCost, m.costCurrency, (m.timestamp || '').slice(0, 10));
+      const value = qty * costUSD;
       if (movesStock) {
         runningQty += qty;
         runningValue += value;
@@ -408,6 +415,8 @@ const inventory = {
       return {
         ...m,
         affectsStock: movesStock,
+        unitCostUSD: costUSD,
+        valueCurrency: 'USD',
         signedQty: movesStock ? qty : 0,
         signedValue: movesStock ? value : 0,
         // Cantidad informativa del movimiento aunque no mueva stock
@@ -590,4 +599,45 @@ function daysBetween(d1, d2) {
  */
 function round4(n) {
   return Math.round((parseFloat(n) || 0) * 10000) / 10000;
+}
+
+/**
+ * Convierte un costo a USD usando la tasa BCV vigente en `dateStr`.
+ *
+ * El inventario se valoriza SIEMPRE en dólares: es la única forma de que el
+ * kardex sea comparable en el tiempo con una moneda local que se devalúa.
+ * Si no hay tasa histórica para esa fecha, `getRateOnDate` cae a la tasa
+ * actual (devuelve `found: false`).
+ *
+ * @param {number} amount
+ * @param {string} ccy      - 'USD' | 'VES' | 'EUR'
+ * @param {string} dateStr  - fecha YYYY-MM-DD
+ * @returns {number} monto en USD, 0 si no hay tasa para convertir
+ */
+function costToUSD(amount, ccy, dateStr) {
+  const n = parseFloat(amount) || 0;
+  if (!n) return 0;
+  const currencyCode = ccy || 'USD';
+  if (currencyCode === 'USD') return round4(n);
+
+  const date = dateStr || new Date().toISOString().slice(0, 10);
+  const usdRate = (typeof currency !== 'undefined')
+    ? (currency.getRateOnDate(date, 'BCV_USD')?.value || 0)
+    : 0;
+
+  if (currencyCode === 'VES') {
+    return usdRate > 0 ? round4(n / usdRate) : 0;
+  }
+
+  if (currencyCode === 'EUR') {
+    // EUR → VES → USD, ambas patas con la tasa de la misma fecha
+    const eurRate = (typeof currency !== 'undefined')
+      ? (currency.getRateOnDate(date, 'BCV_EUR')?.value || 0)
+      : 0;
+    if (!eurRate || !usdRate) return 0;
+    return round4((n * eurRate) / usdRate);
+  }
+
+  // Moneda desconocida: no inventar una conversión
+  return 0;
 }
