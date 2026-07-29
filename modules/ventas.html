@@ -1868,9 +1868,10 @@ function convertTo(docId, newStatus) {
     message = `¿Convertir a ${labels[newStatus]}?`;
   }
 
-  ui.confirm(message, () => {
+  ui.confirm(message, async () => {
     try {
-      sales.convertTo(docId, newStatus);
+      // convertTo es async: reserva el número fiscal con una transacción
+      await sales.convertTo(docId, newStatus);
       ui.toast(`Convertido a ${labels[newStatus]}`, 'success');
       // Si se convierte a NE o Factura y no tiene lotes asignados, ir a asignación
       const updated = db.getById(db.COLLECTIONS.salesOrders, docId);

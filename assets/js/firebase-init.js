@@ -13,7 +13,8 @@ import {
 import {
   initializeFirestore, persistentLocalCache, persistentMultipleTabManager,
   collection, doc, getDoc, getDocs, setDoc, addDoc, updateDoc, deleteDoc,
-  query, where, orderBy, limit, serverTimestamp, onSnapshot, writeBatch, Timestamp
+  query, where, orderBy, limit, serverTimestamp, onSnapshot, writeBatch, Timestamp,
+  runTransaction, increment
 } from "https://www.gstatic.com/firebasejs/10.13.2/firebase-firestore.js";
 
 const firebaseConfig = {
@@ -63,7 +64,8 @@ window.fb = {
   createUserWithEmailAndPassword, sendPasswordResetEmail, updatePassword, deleteUser,
   browserLocalPersistence, indexedDBLocalPersistence,
   collection, doc, getDoc, getDocs, setDoc, addDoc, updateDoc, deleteDoc,
-  query, where, orderBy, limit, serverTimestamp, onSnapshot, writeBatch, Timestamp
+  query, where, orderBy, limit, serverTimestamp, onSnapshot, writeBatch, Timestamp,
+  runTransaction, increment
 };
 
 window.dispatchEvent(new CustomEvent('firebase-ready'));
