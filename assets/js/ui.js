@@ -50,6 +50,7 @@ const NAV_STRUCTURE = [
       { id: 'metodos-pago',      label: 'Métodos de pago',   href: 'modules/metodos-pago.html' },
       { id: 'importar',          label: 'Importar',          href: 'modules/importar.html' },
       { id: 'usuarios',          label: 'Usuarios',          href: 'modules/usuarios.html' },
+      { id: 'diagnostico',       label: 'Diagnóstico',       href: 'modules/diagnostico.html' },
       { id: 'configuracion',     label: 'Configuración',     href: 'modules/configuracion.html' }
     ]
   }

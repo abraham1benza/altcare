@@ -1,0 +1,378 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Diagnóstico · altcare</title>
+<link rel="stylesheet" href="../assets/css/styles.css">
+</head>
+<body>
+<script type="module" src="../assets/js/firebase-init.js"></script>
+<script src="../assets/js/module-init-v2.js"></script>
+<script src="../assets/js/db.js"></script>
+<script src="../assets/js/auth.js"></script>
+<script src="../assets/js/currency.js"></script>
+<script src="../assets/js/tax.js"></script>
+<script src="../assets/js/inventory.js"></script>
+<script src="../assets/js/ui.js"></script>
+<script>
+/* =============================================================================
+   DIAGNÓSTICO DE CONSISTENCIA
+
+   Compara lo que el sistema DICE que tiene contra lo que sus propios registros
+   implican. Es de solo lectura: reporta, nunca corrige. Arreglar un descuadre
+   automáticamente sería tapar el síntoma sin saber la causa.
+
+   Qué revisa:
+     1. Saldo de cada lote vs. la suma de su kardex
+     2. Lotes con más reservado que existencia
+     3. Saldos negativos
+     4. Números fiscales duplicados o repetidos
+     5. Movimientos sin costo en USD (no valorizables)
+     6. Lotes vencidos que siguen con saldo disponible
+   ============================================================================= */
+
+const TOL = 0.001;   // tolerancia de redondeo, en unidades de inventario
+
+function fmt(n, dec = 4) {
+  const v = parseFloat(n) || 0;
+  return v.toLocaleString('es-VE', { minimumFractionDigits: 0, maximumFractionDigits: dec });
+}
+
+function esc(s) {
+  return String(s ?? '').replace(/[&<>"']/g, m => (
+    { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[m]
+  ));
+}
+
+/** Suma el kardex de un lote considerando solo movimientos que mueven stock */
+function kardexBalanceForLot(lotId) {
+  const moves = db.query(db.COLLECTIONS.warehouseMoves, m => m.lotId === lotId);
+  return moves.reduce((sum, m) => {
+    if (!inventory.affectsStock(m.type)) return sum;
+    const dir = inventory.MOVE_TYPES[m.type]?.direction || 'in';
+    const sign = dir === 'in' ? 1 : -1;
+    return sum + (parseFloat(m.quantity) || 0) * sign;
+  }, 0);
+}
+
+// ===== CHEQUEOS =====
+
+/** 1. El saldo guardado del lote debe coincidir con la suma de su kardex */
+function checkLotBalances() {
+  const rows = [];
+  const sets = [
+    { col: db.COLLECTIONS.rmLots, kind: 'MP' },
+    { col: db.COLLECTIONS.finishedGoods, kind: 'PT' }
+  ];
+  for (const { col, kind } of sets) {
+    for (const lot of db.getAll(col)) {
+      if (lot.active === false) continue;
+      const stored = parseFloat(lot.balance) || 0;
+      const derived = kardexBalanceForLot(lot.id);
+      const diff = stored - derived;
+      if (Math.abs(diff) > TOL) {
+        rows.push({
+          kind,
+          code: lot.code || lot.id,
+          name: lot.rawMaterialName || lot.productName || lot.formulaName || '—',
+          stored, derived, diff,
+          unit: lot.unit || ''
+        });
+      }
+    }
+  }
+  return rows;
+}
+
+/** 2. Reservar más de lo que existe deja stock disponible negativo */
+function checkOverReserved() {
+  return db.getAll(db.COLLECTIONS.rmLots)
+    .filter(l => l.active !== false)
+    .map(l => ({
+      code: l.code || l.id,
+      name: l.rawMaterialName || '—',
+      balance: parseFloat(l.balance) || 0,
+      reserved: parseFloat(l.reserved) || 0,
+      unit: l.unit || ''
+    }))
+    .filter(l => l.reserved > l.balance + TOL);
+}
+
+/** 3. Ningún lote debería tener saldo negativo */
+function checkNegativeBalances() {
+  const out = [];
+  for (const [col, kind] of [[db.COLLECTIONS.rmLots, 'MP'], [db.COLLECTIONS.finishedGoods, 'PT']]) {
+    for (const l of db.getAll(col)) {
+      const b = parseFloat(l.balance) || 0;
+      if (b < -TOL) {
+        out.push({ kind, code: l.code || l.id, name: l.rawMaterialName || l.productName || l.formulaName || '—', balance: b, unit: l.unit || '' });
+      }
+    }
+  }
+  return out;
+}
+
+/** 4. Numeración fiscal: ningún número puede aparecer dos veces */
+function checkFiscalDuplicates() {
+  const docs = db.getAll(db.COLLECTIONS.salesOrders);
+  const dups = [];
+  for (const field of ['invoiceNumber', 'controlNumber']) {
+    const seen = new Map();
+    for (const d of docs) {
+      const v = d[field];
+      if (!v) continue;
+      if (!seen.has(v)) seen.set(v, []);
+      seen.get(v).push(d.code || d.id);
+    }
+    for (const [value, owners] of seen) {
+      if (owners.length > 1) {
+        dups.push({ field, value, owners });
+      }
+    }
+  }
+  return dups;
+}
+
+/** 5. Movimientos que no se pueden valorizar (sin costo USD resoluble) */
+function checkUnvaluedMoves() {
+  const moves = db.getAll(db.COLLECTIONS.warehouseMoves);
+  const bad = moves.filter(m => {
+    if (!inventory.affectsStock(m.type)) return false;
+    const hasStored = m.unitCostUSD != null && parseFloat(m.unitCostUSD) > 0;
+    const cost = parseFloat(m.unitCost) || 0;
+    // Sin costo declarado no hay nada que valorizar, y eso es legítimo
+    // (un ajuste puede no tener costo). Lo problemático es tener costo en
+    // una moneda que no se pudo convertir.
+    if (!hasStored && cost > 0 && (m.costCurrency && m.costCurrency !== 'USD')) return true;
+    return false;
+  });
+  // Agrupar por moneda para que el reporte sea legible
+  const byCcy = {};
+  bad.forEach(m => {
+    const k = m.costCurrency || '—';
+    byCcy[k] = (byCcy[k] || 0) + 1;
+  });
+  return { total: bad.length, byCcy };
+}
+
+/** 6. Lotes vencidos que siguen contando como disponibles */
+function checkExpiredWithStock() {
+  const today = new Date().toISOString().slice(0, 10);
+  const out = [];
+  for (const [col, kind] of [[db.COLLECTIONS.rmLots, 'MP'], [db.COLLECTIONS.finishedGoods, 'PT']]) {
+    for (const l of db.getAll(col)) {
+      if (l.active === false) continue;
+      const bal = parseFloat(l.balance) || 0;
+      if (l.expiryDate && l.expiryDate < today && bal > TOL) {
+        out.push({
+          kind,
+          code: l.code || l.id,
+          name: l.rawMaterialName || l.productName || l.formulaName || '—',
+          expiryDate: l.expiryDate,
+          balance: bal,
+          unit: l.unit || ''
+        });
+      }
+    }
+  }
+  return out;
+}
+
+// ===== RENDER =====
+
+function severityBadge(count, warnOnly) {
+  if (count === 0) return '<span class="badge badge-success">Sin hallazgos</span>';
+  const cls = warnOnly ? 'badge-warning' : 'badge-danger';
+  return `<span class="badge ${cls}">${count} ${count === 1 ? 'hallazgo' : 'hallazgos'}</span>`;
+}
+
+function section(title, description, count, bodyHtml, warnOnly) {
+  return `
+    <div class="card mb-16">
+      <div class="card-header">
+        <div>
+          <div class="card-title">${esc(title)}</div>
+          <div class="text-muted" style="font-size:12.5px;margin-top:4px;max-width:70ch;">${esc(description)}</div>
+        </div>
+        ${severityBadge(count, warnOnly)}
+      </div>
+      ${count === 0
+        ? '<p class="text-muted" style="font-size:13px;">Todo correcto.</p>'
+        : bodyHtml}
+    </div>`;
+}
+
+function table(headers, rows) {
+  return `
+    <div class="scroll-x">
+      <table>
+        <thead><tr>${headers.map(h => `<th>${esc(h)}</th>`).join('')}</tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>`;
+}
+
+function render() {
+  const balances = checkLotBalances();
+  const overReserved = checkOverReserved();
+  const negatives = checkNegativeBalances();
+  const fiscalDups = checkFiscalDuplicates();
+  const unvalued = checkUnvaluedMoves();
+  const expired = checkExpiredWithStock();
+
+  const criticalCount = balances.length + negatives.length + fiscalDups.length;
+  const warnCount = overReserved.length + expired.length + (unvalued.total > 0 ? 1 : 0);
+
+  const summary = `
+    <div class="grid grid-3 mb-24">
+      <div class="kpi">
+        <div class="kpi-label">Descuadres críticos</div>
+        <div class="kpi-value" style="color:${criticalCount ? 'var(--danger)' : 'var(--success)'};">${criticalCount}</div>
+        <div class="kpi-value-sub">Saldos, negativos y numeración fiscal</div>
+      </div>
+      <div class="kpi">
+        <div class="kpi-label">Advertencias</div>
+        <div class="kpi-value" style="color:${warnCount ? 'var(--warning)' : 'var(--success)'};">${warnCount}</div>
+        <div class="kpi-value-sub">Requieren revisión, no bloquean</div>
+      </div>
+      <div class="kpi">
+        <div class="kpi-label">Movimientos analizados</div>
+        <div class="kpi-value">${fmt(db.getAll(db.COLLECTIONS.warehouseMoves).length, 0)}</div>
+        <div class="kpi-value-sub">Registros del kardex</div>
+      </div>
+    </div>`;
+
+  const balancesBody = table(
+    ['Tipo', 'Lote', 'Ítem', 'Saldo guardado', 'Según kardex', 'Diferencia'],
+    balances.map(r => `
+      <tr>
+        <td><span class="badge badge-plain">${esc(r.kind)}</span></td>
+        <td class="td-mono td-strong">${esc(r.code)}</td>
+        <td>${esc(r.name)}</td>
+        <td class="td-mono">${fmt(r.stored)} ${esc(r.unit)}</td>
+        <td class="td-mono">${fmt(r.derived)} ${esc(r.unit)}</td>
+        <td class="td-mono td-strong" style="color:var(--danger);">${r.diff > 0 ? '+' : ''}${fmt(r.diff)}</td>
+      </tr>`).join('')
+  );
+
+  const overBody = table(
+    ['Lote', 'Materia prima', 'Existencia', 'Reservado', 'Faltante'],
+    overReserved.map(r => `
+      <tr>
+        <td class="td-mono td-strong">${esc(r.code)}</td>
+        <td>${esc(r.name)}</td>
+        <td class="td-mono">${fmt(r.balance)} ${esc(r.unit)}</td>
+        <td class="td-mono">${fmt(r.reserved)} ${esc(r.unit)}</td>
+        <td class="td-mono td-strong" style="color:var(--warning);">${fmt(r.reserved - r.balance)}</td>
+      </tr>`).join('')
+  );
+
+  const negBody = table(
+    ['Tipo', 'Lote', 'Ítem', 'Saldo'],
+    negatives.map(r => `
+      <tr>
+        <td><span class="badge badge-plain">${esc(r.kind)}</span></td>
+        <td class="td-mono td-strong">${esc(r.code)}</td>
+        <td>${esc(r.name)}</td>
+        <td class="td-mono td-strong" style="color:var(--danger);">${fmt(r.balance)} ${esc(r.unit)}</td>
+      </tr>`).join('')
+  );
+
+  const fiscalBody = table(
+    ['Campo', 'Número repetido', 'Documentos que lo usan'],
+    fiscalDups.map(r => `
+      <tr>
+        <td>${r.field === 'invoiceNumber' ? 'N° Factura' : 'N° Control'}</td>
+        <td class="td-mono td-strong" style="color:var(--danger);">${esc(r.value)}</td>
+        <td class="td-mono">${r.owners.map(esc).join(' · ')}</td>
+      </tr>`).join('')
+  );
+
+  const expiredBody = table(
+    ['Tipo', 'Lote', 'Ítem', 'Venció', 'Saldo'],
+    expired.map(r => `
+      <tr>
+        <td><span class="badge badge-plain">${esc(r.kind)}</span></td>
+        <td class="td-mono td-strong">${esc(r.code)}</td>
+        <td>${esc(r.name)}</td>
+        <td class="td-mono">${esc(r.expiryDate)}</td>
+        <td class="td-mono">${fmt(r.balance)} ${esc(r.unit)}</td>
+      </tr>`).join('')
+  );
+
+  const unvaluedBody = `
+    <p style="font-size:13px;">
+      ${fmt(unvalued.total, 0)} movimientos tienen costo en una moneda que no se pudo
+      convertir a dólares, probablemente porque falta la tasa histórica de su fecha.
+      No entran en el valor del inventario.
+    </p>
+    <div class="flex-gap mt-8">
+      ${Object.entries(unvalued.byCcy).map(([ccy, n]) =>
+        `<span class="badge badge-warning">${esc(ccy)}: ${fmt(n, 0)}</span>`).join('')}
+    </div>`;
+
+  ui.renderLayout({
+    activeModule: 'diagnostico',
+    pageEyebrow: 'Sistema',
+    pageTitle: 'Diagnóstico',
+    contentHtml: `
+      <div class="action-bar">
+        <div class="action-bar-left">
+          <div class="action-bar-title">Consistencia de datos</div>
+          <div class="action-bar-count">${new Date().toLocaleString('es-VE')}</div>
+        </div>
+        <div class="action-bar-right">
+          <button class="btn btn-secondary" onclick="location.reload()">Volver a analizar</button>
+        </div>
+      </div>
+
+      <div class="card mb-24" style="border-left:3px solid var(--gold);">
+        <p style="font-size:13px;line-height:1.6;max-width:80ch;">
+          Este informe es de <strong>solo lectura</strong>: detecta desviaciones y no
+          corrige nada. Un descuadre casi siempre tiene una causa concreta
+          —un consumo mal cargado, un ajuste sin registrar— y corregirlo
+          automáticamente taparía esa causa en vez de resolverla.
+        </p>
+      </div>
+
+      ${summary}
+
+      ${section(
+        'Saldo de lotes contra su kardex',
+        'El saldo guardado en cada lote debe ser igual a la suma de sus movimientos de entrada y salida. Si no coincide, hubo un cambio de stock que no dejó registro en el kardex, o al revés.',
+        balances.length, balancesBody, false)}
+
+      ${section(
+        'Saldos negativos',
+        'Ningún lote puede tener existencia negativa. Indica consumos por encima de lo disponible.',
+        negatives.length, negBody, false)}
+
+      ${section(
+        'Numeración fiscal duplicada',
+        'Cada número de factura y de control debe ser único. Un número repetido es un problema ante el SENIAT, no solo un error de datos.',
+        fiscalDups.length, fiscalBody, false)}
+
+      ${section(
+        'Reservado por encima de la existencia',
+        'Órdenes de fabricación que reservan más material del que hay físicamente en el lote.',
+        overReserved.length, overBody, true)}
+
+      ${section(
+        'Movimientos sin valorizar',
+        'Movimientos cuyo costo no se pudo llevar a dólares por falta de tasa histórica en esa fecha.',
+        unvalued.total > 0 ? 1 : 0, unvaluedBody, true)}
+
+      ${section(
+        'Lotes vencidos con existencia',
+        'Material que pasó su fecha de vencimiento pero sigue contando como stock disponible.',
+        expired.length, expiredBody, true)}
+    `
+  });
+}
+
+moduleInit('diagnostico').then(async (ok) => {
+  if (!ok) return;
+  render();
+});
+</script>
+</body></html>
